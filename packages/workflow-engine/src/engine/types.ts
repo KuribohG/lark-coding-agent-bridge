@@ -795,6 +795,8 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;
   resolveWorkspace?(root: WorkflowRoot, workflowId: string, workspaceId: string): Promise<void>;
   workspace?(state: WorkspaceStateView, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+  /** The repository a worktree of this workflow was made from and its isolation, as the `workspace` options that make another like it. */
+  workspaceOrigin?(state: WorkspaceStateView, workspaceId: string): Promise<{ repo: string; isolation?: 'clone' }>;
   /** Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). */
   /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
   tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;

@@ -10,7 +10,11 @@ const MAX_BODY = 512_000;
  * A landing waits through its prechecks and its train's checks, which may each run for hours on a loaded host;
  * six hours keeps that wait inside the worker's own tool deadline, which the scheduler bounds at seven.
  */
-const LONG_CALLS: Record<string, number> = { submit_work: 6 * 3_600_000, configure_landing: 6 * 3_600_000 };
+const LONG_CALLS: Record<string, number> = { submit_work: 6 * 3_600_000, configure_landing: 6 * 3_600_000,
+  // Checking out a worktree for each member it adds, or removing those of the members it cleans up, takes longer than
+  // the others are given even for one member of a large repository. The caller that gave up was told nothing of an
+  // addition that then went through, and its repeated call was refused while the first was still at work.
+  staff_swarm: 3_600_000 };
 const CALL_TIMEOUT_MS = 15_000;
 /** While a long call is pending the response sends whitespace this often, which keeps the client's idle timers from firing. */
 const KEEPALIVE_MS = 20_000;

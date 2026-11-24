@@ -88,6 +88,50 @@ describe('managed workflow worktrees with real Git', () => {
     expect(await git(ws.path,'rev-parse','HEAD')).toBe(h.base);
   }, 30_000);
 
+  it('leaves the key of a creation that made nothing free for other inputs, and says what stood in the way', async () => {
+    const h = await fixture();
+    const rows = () => { const db = new Database(h.path); try { return (db.prepare("SELECT key FROM workspace_records WHERE kind='op:create'").all() as Array<{ key: string }>).map(row => row.key); } finally { db.close(); } };
+    // An untracked file in the checkout: the refusal names it and the checkout, and records nothing.
+    await writeFile(join(h.repo, 'stray'), 'x');
+    await expect(h.create('member')).rejects.toThrow(/uncommitted changes \(\?\? stray, in .*repo\)/);
+    expect(rows()).toEqual([]);
+    await rm(join(h.repo, 'stray'));
+    // A directory that is no checkout, named or taken from the workflow: each refusal says which directory and what to pass.
+    const plain = join(h.dir, 'plain'); await mkdir(plain);
+    await expect(h.op('create', 'member', { repo: plain })).rejects.toThrow('repo is not a Git checkout: ' + plain);
+    const elsewhere = { ...h.ctx, state: { ...h.state, root: { ...h.root, cwdRealpath: plain } } };
+    await expect(h.manager.perform(elsewhere, { kind: 'create', key: 'member' })).rejects.toThrow(/directory of this workflow is not a Git checkout \(.*plain\).*repo option/);
+    expect(rows()).toEqual([]);
+    // The key those attempts used takes inputs that work, and once a worktree exists it is held to them.
+    const ws = await h.op<WorkspaceBinding>('create', 'member', { base: h.base });
+    expect(await readFile(join(ws.path, 'shared.txt'), 'utf8')).toBe('baseline\n');
+    await expect(h.create('member')).rejects.toThrow('key conflict');
+    expect((await h.op<WorkspaceBinding>('create', 'member', { base: h.base })).id).toBe(ws.id);
+  }, 30_000);
+
+  it('takes over a creation that was left unfinished with nothing made, and keeps one that has a worktree', async () => {
+    const h = await fixture(), made = await h.create('made');
+    const db = new Database(h.path);
+    // What an earlier version left of a creation that failed over its inputs: an unfinished record with no worktree.
+    db.prepare("INSERT INTO workspace_records VALUES (?,?,?,'op:create','digest-of-other-inputs',0,'{}',?)").run(randomUUID(), h.state.workflowId, 'stuck', Date.now());
+    // An unfinished creation that did make a worktree is still held to its inputs.
+    db.prepare("UPDATE workspace_records SET done=0 WHERE key='made'").run();
+    db.close();
+    await h.restart();
+    const ws = await h.create('stuck');
+    expect(await git(ws.path, 'rev-parse', 'HEAD')).toBe(h.base);
+    await expect(h.op('create', 'made', { base: h.base })).rejects.toThrow('key conflict');
+    expect((await h.create('made')).id).toBe(made.id);
+  }, 30_000);
+
+  it('tells where a worktree came from as the options that make another like it', async () => {
+    const h = await fixture(), ws = await h.create('a');
+    expect(h.manager.origin(h.state.workflowId, ws.id)).toEqual({ repo: ws.repository });
+    const clone = await h.op<WorkspaceBinding>('create', 'c', { isolation: 'clone' });
+    expect(h.manager.origin(h.state.workflowId, clone.id)).toEqual({ repo: ws.repository, isolation: 'clone' });
+    expect(() => h.manager.origin('another-workflow', ws.id)).toThrow('ownership');
+  }, 30_000);
+
   it('creates a batch of worktrees at once, each at its baseline and clean', async () => {
     const h = await fixture();
     const made = await Promise.all(Array.from({ length: 12 }, (_, i) => h.create('batch/' + i)));

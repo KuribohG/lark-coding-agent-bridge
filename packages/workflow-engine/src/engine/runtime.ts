@@ -137,6 +137,8 @@ export class WorkflowRuntime {
         signal.throwIfAborted();
         return this.workspaceManager().perform({ state, signal }, input);
       },
+      // Reads a record of this workflow and makes nothing: the creation it prepares is what the policy is asked about.
+      workspaceOrigin: async (state, id) => this.workspaceManager().origin(state.workflowId, id),
       tell: async (_workflowId, taskId, text, messageId) => {
         const run = this.runs.get(taskId);
         return !run ? 'inactive' : run.send ? run.send(text, messageId) : 'unsupported';

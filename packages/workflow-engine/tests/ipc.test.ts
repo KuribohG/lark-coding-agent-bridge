@@ -63,14 +63,15 @@ describe('workflow IPC', () => {
     expect(Date.now() - again).toBeLessThan(2000);
   });
 
-  it('answers a long call it cannot finish with a request to repeat it when it closes', async () => {
+  // staff_swarm makes worktrees before it answers, so it waits like a landing does rather than giving up after seconds.
+  it.each(['submit_work', 'staff_swarm'])('answers a long call (%s) it cannot finish with a request to repeat it when it closes', async method => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-ipc-'));
     cleanup.push(() => rm(dir, { recursive: true, force: true }));
     const endpointFile = join(dir, 'endpoint.json');
     let entered!: () => void; const running = new Promise<void>(resolve => { entered = resolve; });
     const first = new WorkflowIpc(() => { entered(); return new Promise(() => {}); }, undefined, endpointFile); await first.listen();
     const binding = first.bind({ kind: 'worker', scopeId: 'topic', workflowId: 'w', taskId: 't', attemptId: 'a' }, Date.now() + 60_000);
-    const pending = callWorkflow('submit_work', { operationId: 'land' }, binding.env);
+    const pending = callWorkflow(method, { operationId: 'land' }, binding.env);
     await running;
     // The work never ends, and the service still closes, without waiting for the caller to drop its connection.
     const closing = Date.now();
@@ -78,6 +79,6 @@ describe('workflow IPC', () => {
     expect(Date.now() - closing).toBeLessThan(2000);
     const second = new WorkflowIpc(async (_caller, method, args) => ({ method, args }), undefined, endpointFile); await second.listen(); cleanup.push(() => second.close());
     second.bind({ kind: 'worker', scopeId: 'topic', workflowId: 'w', taskId: 't', attemptId: 'a2' }, Date.now() + 60_000, binding.tokenHash);
-    expect(await pending).toEqual({ method: 'submit_work', args: { operationId: 'land' } });
+    expect(await pending).toEqual({ method, args: { operationId: 'land' } });
   });
 });

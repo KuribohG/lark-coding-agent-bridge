@@ -118,6 +118,12 @@ export class WorkflowWorkspaces {
     this.db.prepare('INSERT INTO workspace_records VALUES (@id,@workflow,@key,@kind,@digest,@done,@data,@created)').run(row);
     return row;
   }
+  /** Whether an unfinished creation has yet to record a worktree: until then nothing of it exists outside its own record. */
+  private unmade(op: RecordRow): boolean {
+    return op.kind === 'op:create' && !op.done
+      && !this.db.prepare('SELECT 1 FROM workspace_records WHERE workflow=? AND key=?').get(op.workflow, `@${op.id}/workspace`);
+  }
+  private forget(op: RecordRow): void { this.db.prepare('DELETE FROM workspace_records WHERE id=?').run(op.id); }
   private internal<T>(op: RecordRow, kind: string, suffix: string, make: (id: string) => T): T {
     const key = `@${op.id}/${suffix}`;
     return this.db.transaction(() => {
@@ -190,10 +196,21 @@ export class WorkflowWorkspaces {
   private async repository(root: WorkflowRoot, signal: AbortSignal, repo?: unknown): Promise<{ repository: string; commonDir: string }> {
     const start = repo === undefined ? root.cwdRealpath : scriptText(repo, 'repository path', 1024);
     if (!isAbsolute(start)) throw new Error('repo must be an absolute path');
-    const repository = await realpath((await this.git(start, ['rev-parse', '--show-toplevel'], signal)).stdout.trim());
+    // Git's own refusal names neither the directory it looked in nor the option that says where to look instead.
+    const top = await this.git(start, ['rev-parse', '--show-toplevel'], signal, true);
+    if (top.code) throw new Error(repo === undefined
+      ? `The directory of this workflow is not a Git checkout (${start}): name the checkout to work in with the repo option, an absolute path to its root`
+      : `repo is not a Git checkout: ${start}`);
+    const repository = await realpath(top.stdout.trim());
     if (repository !== await realpath(start)) throw new Error(repo === undefined ? 'Workspace operations require the authorized repository root as cwd, or a repo option' : 'repo must be the root of a Git checkout');
     const commonDir = await realpath(resolve(repository, (await this.git(repository, ['rev-parse', '--git-common-dir'], signal)).stdout.trim()));
     return { repository, commonDir };
+  }
+
+  /** The checkout a worktree was made from and how it is kept apart from it, as the options that make another like it. */
+  origin(workflowId: string, id: string): { repo: string; isolation?: 'clone' } {
+    const ws = this.value<WorkspaceBinding>(id, workflowId, 'workspace');
+    return { repo: ws.repository, ...(ws.isolation ? { isolation: ws.isolation } : {}) };
   }
 
   async binding(root: WorkflowRoot, workflowId: string, id: string, signal: AbortSignal): Promise<WorkspaceBinding> {
@@ -351,17 +368,25 @@ export class WorkflowWorkspaces {
     const name = scriptText(key, 'workspace operation key', 100);
     if (name.startsWith('@') || name.trim() !== name) throw new Error('Invalid workspace operation key');
     const workflow = ctx.state.workflowId, lock = workflow + ':' + name;
-    if (this.activeKeys.has(lock)) throw new Error('Workspace operation is already running');
+    if (this.activeKeys.has(lock)) throw new Error('Workspace operation is already running; repeat the same call once it has finished');
     this.activeKeys.add(lock);
     try {
       ctx.signal.throwIfAborted();
       const digest = workflowDigest({ kind, args, root: ctx.state.root });
       let op = this.db.prepare('SELECT * FROM workspace_records WHERE workflow=? AND key=?').get(workflow, name) as RecordRow | undefined;
+      // A creation that made nothing holds neither its key nor its inputs: one found unfinished is asked again with others.
+      if (op && kind === 'create' && op.digest !== digest && this.unmade(op)) { this.forget(op); op = undefined; }
       if (op && (op.kind !== `op:${kind}` || op.digest !== digest)) throw new Error('Workspace key conflict: replay the original inputs');
       if (kind === 'approve' && !ctx.state.script?.calls.some(call => call.taskId === args.taskId)) throw new Error('Review task must belong to the current script run');
       if (op?.done) return JSON.parse(op.data);
       op ??= this.insert(workflow, name, `op:${kind}`, {}, digest, 0);
-      const result = await this.apply(ctx, op, String(kind), args);
+      let result: unknown;
+      try { result = await this.apply(ctx, op, String(kind), args); } catch (error) {
+        // Kept, the record of a creation that failed over its inputs refuses the key to any other input while the same
+        // input fails again: a member that staff_swarm could not give a worktree could never be added under its name.
+        if (kind === 'create' && this.unmade(op)) this.forget(op);
+        throw error;
+      }
       ctx.signal.throwIfAborted(); this.save(op, result, 1); return result;
     } finally { this.activeKeys.delete(lock); }
   }
@@ -383,7 +408,9 @@ export class WorkflowWorkspaces {
       if (prior.repository) seed = { repository: prior.repository, commonDir: prior.commonDir, baseCommit: prior.baseCommit };
       else {
         const repo = await this.repository(ctx.state.root, ctx.signal, args.repo);
-        if ((await this.git(repo.repository, ['status', '--porcelain', '--untracked-files=all'], ctx.signal)).stdout.trim()) throw new Error('Authorized checkout has uncommitted changes; choose a clean committed baseline first');
+        const dirty = (await this.git(repo.repository, ['status', '--porcelain', '--untracked-files=all'], ctx.signal)).stdout.split('\n').filter(line => line.trim());
+        // Whoever is refused is often not who left the files there: it is told which ones stand in the way and where.
+        if (dirty.length) throw new Error(`Authorized checkout has uncommitted changes (${dirty.slice(0, 5).map(line => line.trim().slice(0, 200)).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''}, in ${repo.repository}); choose a clean committed baseline first`);
         // A clone reads the source's objects from disk; ones a partial clone would fetch on demand are not there.
         if (isolation.isolation && (await this.git(repo.repository, ['config', '--get-regexp', '^(extensions\\.partialclone|remote\\..*\\.promisor)$'], ctx.signal, true)).stdout.trim()) throw new Error('Clone workspaces do not support partial-clone repositories');
         seed = { ...repo, baseCommit: await this.revision(repo.repository, args.base, ctx.signal) }; this.save(op, seed);

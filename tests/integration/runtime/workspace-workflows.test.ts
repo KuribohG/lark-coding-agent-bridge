@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile, mkdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -19,15 +19,17 @@ afterEach(async () => { for (const close of closes.splice(0).reverse()) await cl
 async function git(cwd: string, ...argv: string[]) {
   return (await promisify(execFile)('git', argv, { cwd })).stdout.trim();
 }
-async function harness(perform?: (opts: AgentRunOptions, index: number) => Promise<string>) {
+/** `chat` runs the workflow in a directory that is no checkout, as a bridge does from a chat workspace; the repository is then named to the script. */
+async function harness(perform?: (opts: AgentRunOptions, index: number) => Promise<string>, where: 'repo' | 'chat' = 'repo') {
   const dir = await mkdtemp(join(tmpdir(), 'workspace-runtime-'));
   closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const repo = join(dir, 'repo'); await mkdir(repo); await git(repo, 'init', '-b', 'main');
   await git(repo, 'config', 'user.name', 'Test'); await git(repo, 'config', 'user.email', 'test@localhost');
   await git(repo, 'config', 'core.autocrlf', 'false');
   await writeFile(join(repo, 'value.txt'), 'original\n'); await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'base');
-  const root = { scopeId: 'test', profile: 'test', agentKind: 'codex' as const, cwdRealpath: repo, policyFingerprint: 'full', catalogBinding: 'root', modelSettings: {} };
-  const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: repo, cwdRealpath: repo, accessMode: 'full', sandbox: 'danger-full-access', permissionMode: 'bypassPermissions', access: { ok: true, reason: 'allowed-user' }, attachments: [], policyFingerprint: 'full', expiresAt: Date.now() + 60_000 };
+  const cwd = where === 'repo' ? repo : join(dir, 'chat'); await mkdir(cwd, { recursive: true });
+  const root = { scopeId: 'test', profile: 'test', agentKind: 'codex' as const, cwdRealpath: cwd, policyFingerprint: 'full', catalogBinding: 'root', modelSettings: {} };
+  const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: cwd, cwdRealpath: cwd, accessMode: 'full', sandbox: 'danger-full-access', permissionMode: 'bypassPermissions', access: { ok: true, reason: 'allowed-user' }, attachments: [], policyFingerprint: 'full', expiresAt: Date.now() + 60_000 };
   const adapter = new FakeAgentAdapter({ id: 'codex', capabilities: { finalAnswer: 'separate-event', input: 'unsupported' } });
   let index = 0;
   const run = adapter.run.bind(adapter);
@@ -177,6 +179,37 @@ describe('workspace script runtime', () => {
       expect(again.workspaces).toEqual(added.workspaces);
     } finally { release(); }
   }, 60_000);
+
+  it('makes an added member a worktree like the one of the member it is added like, when the workflow itself runs outside a checkout', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const h = await harness(async () => { await gate; return 'done'; }, 'chat');
+    try {
+      // One member works in the workflow's directory, one in a worktree of the repository and one in a clone of it.
+      await h.call('run_script', { args: { repo: h.repo }, script: `
+        const tree = await createWorkspace({key:'tree', repo: args.repo}), clone = await createWorkspace({key:'clone', repo: args.repo, isolation: 'clone'});
+        return await swarm('Write in parallel',{key:'crew',members:[{name:'p0',harness:'codex',model:'worker'},
+          {name:'t0',harness:'codex',model:'worker',workspace:tree.id},{name:'c0',harness:'codex',model:'worker',workspace:clone.id}]});` });
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(h.adapter.runs).toHaveLength(3); }, { timeout: 30_000, interval: 30 });
+      const main = { kind: 'main' as const, scopeId: 'test', workflowId: h.state().workflowId };
+      const staff = (args: object) => h.runtime.kernel.call(main, 'staff_swarm', { operationId: randomUUID(), ...args }) as Promise<{ workspaces: Array<{ name: string; workspace: string }> }>;
+      const path = (id: string) => join(h.dir, 'worktrees', h.state().workflowId, id);
+      // Like a member without a worktree, the repository would be the workflow's directory, which is none: the refusal says so.
+      await expect(staff({ add: ['t1'], workspace: true })).rejects.toThrow(/not a Git checkout .*repo option/);
+      expect(h.state().swarms![0]!.members.some(member => member.name === 't1')).toBe(false);
+      // The name that call could not add is not lost: like a member with a worktree, it gets one from the same repository.
+      const tree = (await staff({ add: ['t1'], like: 't0', workspace: true })).workspaces[0]!;
+      expect(tree.name).toBe('t1');
+      expect(h.state().swarms![0]!.members.find(member => member.name === 't1')!.workspace).toBe(tree.workspace);
+      expect(await readFile(join(path(tree.workspace), 'value.txt'), 'utf8')).toBe('original\n');
+      expect((await stat(join(path(tree.workspace), '.git'))).isFile()).toBe(true);
+      // Like the member in a clone, it gets a clone; a worktree of the repository is still there for the asking.
+      const clone = (await staff({ add: ['c1'], like: 'c0', workspace: true })).workspaces[0]!;
+      expect(await readFile(join(path(clone.workspace), 'value.txt'), 'utf8')).toBe('original\n');
+      expect((await stat(join(path(clone.workspace), '.git'))).isDirectory()).toBe(true);
+      const shared = (await staff({ add: ['c2'], like: 'c0', workspace: { isolation: 'worktree' } })).workspaces[0]!;
+      expect((await stat(join(path(shared.workspace), '.git'))).isFile()).toBe(true);
+    } finally { release(); }
+  }, 90_000);
 
   it('releases a retired member worktree and leaves running or failed ones alone', async () => {
     let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });

@@ -307,8 +307,8 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
   if (!ctx.host.workspace) throw new Error('Workspace creation is unavailable in this workflow');
   if (state.parent) throw new Error('Workspace operations are unavailable in this workflow');
   if (state.status !== 'active' || state.script?.status !== 'running') throw new Error('Workflow is inactive');
-  const options = input.workspace === true ? {} : input.workspace;
-  if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['base', 'repo', 'isolation'].includes(key))) throw new Error('workspace is true or an object with base, repo and isolation');
+  const given = input.workspace === true ? {} : input.workspace as Record<string, unknown>;
+  if (!given || typeof given !== 'object' || Array.isArray(given) || Object.keys(given).some(key => !['base', 'repo', 'isolation'].includes(key))) throw new Error('workspace is true or an object with base, repo and isolation');
   const swarm = runningSwarm(state, input.swarm);
   const like = likeMember(swarm, input.like);
   if (like.workflowTool) throw new Error('Workspace v1 does not support nested workflow delegation');
@@ -331,6 +331,12 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
   const signal = new AbortController().signal;
   // One view for the whole staffing call: every member's worktree is created against the same state snapshot.
   const view = ctx.store.workspaceView(state);
+  // A new member works where the member it is added like works: unless the call says otherwise, its worktree comes from
+  // the same repository and is kept apart from it the same way. The workflow's own directory is the repository only for
+  // a member like one without a worktree, and under a bridge that directory is often no checkout at all.
+  const origin = like.workspace !== undefined && (given.repo === undefined || given.isolation === undefined)
+    ? await ctx.host.workspaceOrigin?.(view, like.workspace) : undefined;
+  const options = { ...origin, ...given };
   const made = await Promise.all(names.map(async name => {
     const created = await ctx.host.workspace!(view, { kind: 'create', key: `staff/${swarm.id}/${name}`, ...options }, signal) as { id?: unknown };
     if (typeof created?.id !== 'string') throw new Error('Workspace creation did not return an ID');
