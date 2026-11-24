@@ -50,6 +50,8 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
   private finishedTools = new Set<number>();
   private steps = new Map<number, ObjectValue>();
   private usage = new Map<number, ObjectValue>();
+  private responseSegments = new Map<number, string>();
+  private nonResponseStepIndices = new Set<number>();
   private stepSubagentIds = new Map<string, string>();
   private subagentTasks = new Map<string, { label: string; agentId?: string; state: 'running' | 'completed' | 'failed' | 'stopped' }>();
   private latestUsageStep = -1;
@@ -57,6 +59,8 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
   private latestMainUsageStep = -1;
   private latestMainUsage?: ObjectValue;
   private notices: AgentEvent[] = [];
+
+  constructor(private readonly answerIncludesInterimText = false) {}
 
   stderr(line: string): void {
     if (/denied|requires? approval|permission.*(?:reject|block|allow)/i.test(line)) {
@@ -104,8 +108,14 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
           }
         }
       }
+      if (step.step_type === 'tool' || step.step_type === 'subagent' || step.step_type === 'system_message') {
+        this.nonResponseStepIndices.add(index);
+      }
       const delta = text(update.text_delta);
-      if (step.step_type === 'agent_response' && delta) events.push({ type: 'text', delta });
+      if (step.step_type === 'agent_response' && delta) {
+        this.responseSegments.set(index, (this.responseSegments.get(index) ?? '') + delta);
+        events.push({ type: 'text', delta });
+      }
       if (step.step_type === 'thinking' && delta) events.push({ type: 'thinking', delta });
       if (step.step_type === 'tool') {
         const info = object(step.tool_info);
@@ -173,7 +183,27 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
       });
       if (result.status === 'SUCCESS') {
         if (typeof result.response !== 'string') return [...events, this.error('agy SUCCESS result is missing response')];
-        events.push({ type: 'final_text', content: result.response }, this.done('normal'));
+        let finalContent = result.response;
+        if (!this.answerIncludesInterimText) {
+          const segments = [...this.responseSegments.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([idx, body]) => ({ idx, body: body.trim() }))
+            .filter(item => Boolean(item.body));
+          if (segments.length >= 2) {
+            const last = segments[segments.length - 1]!;
+            const earlier = segments.slice(0, -1);
+            const hasInterveningActivity = [...this.nonResponseStepIndices].some(i => i > earlier[0]!.idx && i < last.idx);
+            const normRes = result.response.replace(/\r\n/g, '\n').trim();
+            const normLast = last.body.replace(/\r\n/g, '\n').trim();
+            if (hasInterveningActivity && normLast && normRes.endsWith(normLast)) {
+              for (const seg of earlier) {
+                events.push({ type: 'interim_answer', content: seg.body });
+              }
+              finalContent = last.body;
+            }
+          }
+        }
+        events.push({ type: 'final_text', content: finalContent }, this.done('normal'));
       } else if (result.status === 'CANCELED' || result.status === 'INTERRUPTED') {
         events.push(this.done('interrupted'));
       } else {

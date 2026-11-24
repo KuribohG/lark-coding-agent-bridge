@@ -190,7 +190,7 @@ export class AgyAdapter implements AgentAdapter {
       agent: this.id, runId: options.runId, command: this.options.binary ?? 'agy', args,
       cwd: options.cwd!, env: spawnEnv,
       stdin: `${JSON.stringify({ event: 'user', message: { content } })}\n`,
-      translator: new AgyStreamTranslator(), strictJson: true,
+      translator: new AgyStreamTranslator(options.answerIncludesInterimText === true), strictJson: true,
       deadlineAt: options.deadlineAt, execSandbox: options.execSandbox, stopGraceMs: options.stopGraceMs ?? 1000, stopSignal: 'SIGINT',
     }), this.capabilities);
   }

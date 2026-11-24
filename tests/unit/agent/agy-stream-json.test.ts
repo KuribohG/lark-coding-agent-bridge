@@ -287,4 +287,49 @@ describe('Antigravity stream protocol', () => {
       { type: 'done', sessionId: 'conversation-1', terminationReason: 'interrupted' },
     ]);
   });
+
+  it('separates earlier interim waiting notices from authoritative final response when interleaved with subagent activity', () => {
+    const t = new AgyStreamTranslator();
+    t.translate(init);
+    t.translate(step(1, { step_type: 'agent_response', state: 'ACTIVE', text_delta: '已启动两位审查员，正在等待汇报。' }));
+    t.translate(step(1, { step_type: 'agent_response', state: 'DONE', text_delta: '\n' }));
+    t.translate(step(2, {
+      step_type: 'subagent',
+      state: 'DONE',
+      tool_name: 'invoke_subagent',
+      subagent_info: { subagents: [{ type_name: 'research', role: 'Reviewer A', conversation_id: 'rev-a-1' }] },
+    }));
+    t.translate(step(3, { step_type: 'agent_response', state: 'DONE', text_delta: '已收到 Reviewer A，正等待 Reviewer B。\n' }));
+    t.translate(step(4, { step_type: 'system_message', state: 'DONE' }));
+    const verdict = '### 交付结论：**不能交付（BLOCK）**\n\n完整核验报告如下。';
+    t.translate(step(5, { step_type: 'agent_response', state: 'DONE', text_delta: `${verdict}\n` }));
+
+    const events = t.translate(result('SUCCESS', {
+      response: `已启动两位审查员，正在等待汇报。\n已收到 Reviewer A，正等待 Reviewer B。\n${verdict}\n`,
+    }));
+    expect(events).toContainEqual({ type: 'interim_answer', content: '已启动两位审查员，正在等待汇报。' });
+    expect(events).toContainEqual({ type: 'interim_answer', content: '已收到 Reviewer A，正等待 Reviewer B。' });
+    expect(events).toContainEqual({ type: 'final_text', content: verdict });
+
+    // Opt-in answerIncludesInterimText keeps full concatenated result.response
+    const tFull = new AgyStreamTranslator(true);
+    tFull.translate(init);
+    tFull.translate(step(1, { step_type: 'agent_response', state: 'DONE', text_delta: '等待中\n' }));
+    tFull.translate(step(2, { step_type: 'tool', state: 'DONE', tool_name: 'read_file', tool_info: { output: 'ok' } }));
+    tFull.translate(step(3, { step_type: 'agent_response', state: 'DONE', text_delta: '结论' }));
+    expect(tFull.translate(result('SUCCESS', { response: '等待中\n结论' }))).toEqual([
+      { type: 'final_text', content: '等待中\n结论' },
+      { type: 'done', sessionId: 'conversation-1', terminationReason: 'normal' },
+    ]);
+
+    // Consecutive agent_response steps without intervening tools/subagents keep full response
+    const tNoGap = new AgyStreamTranslator();
+    tNoGap.translate(init);
+    tNoGap.translate(step(1, { step_type: 'agent_response', state: 'DONE', text_delta: '第一段' }));
+    tNoGap.translate(step(2, { step_type: 'agent_response', state: 'DONE', text_delta: '第二段' }));
+    expect(tNoGap.translate(result('SUCCESS', { response: '第一段第二段' }))).toEqual([
+      { type: 'final_text', content: '第一段第二段' },
+      { type: 'done', sessionId: 'conversation-1', terminationReason: 'normal' },
+    ]);
+  });
 });
