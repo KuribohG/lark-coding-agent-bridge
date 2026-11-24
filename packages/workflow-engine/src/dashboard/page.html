@@ -274,7 +274,12 @@ function onRoute() {
   Object.assign(S, route);
   S.dirty = S.drawerDirty = true;
   paintSidebar();
+  markTab();
   refresh();
+}
+/** The header is painted again only when the summary changes; which tab is current changes without that. */
+function markTab() {
+  for (const link of document.querySelectorAll('#head .tabs a')) link.classList.toggle('on', link.dataset.tab === S.tab);
 }
 window.addEventListener('hashchange', onRoute);
 
@@ -443,7 +448,7 @@ function paintHead() {
       h('span', { title: s.scope }, '会话 ', copyable(s.scope, '…' + s.scope.slice(-12))), h('span', { class: 'clip', style: 'max-width:340px', title: s.cwd }, s.cwd), h('span', {}, '状态版本 ', String(s.version))),
     s.goal ? h('div', { class: 'goal prose' + (S.open.has(goalKey) ? '' : ' clip'), title: '点击展开/收起', style: 'cursor:pointer', onclick: () => { toggle(goalKey); paintHead(); } }, s.goal) : null,
     h('div', { class: 'tiles' }, tiles),
-    h('nav', { class: 'tabs' }, TABS.map(([key, title]) => h('a', { class: key === S.tab ? 'on' : '', href: makeHash({ tab: key, q: {} }) }, title,
+    h('nav', { class: 'tabs' }, TABS.map(([key, title]) => h('a', { class: key === S.tab ? 'on' : '', data: { tab: key }, href: makeHash({ tab: key, q: {} }) }, title,
       key === 'members' && s.members.total ? h('span', { class: 'count' }, String(s.members.total)) : key === 'work' && s.work ? h('span', { class: 'count' }, String(s.work.total)) : key === 'turns' ? h('span', { class: 'count' }, String(s.turns.total)) : null))));
 }
 function toggle(key) { if (S.open.has(key)) S.open.delete(key); else S.open.add(key); }
