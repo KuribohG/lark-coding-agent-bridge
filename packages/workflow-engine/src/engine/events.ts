@@ -1,6 +1,6 @@
 import type {
   DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MainWake, MailboxReceipt, OpenAsk, PostResolution, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
-  WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
+  WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowTodo, WorkflowWait, WorkflowWorkItem,
 } from './types';
 import type { RecordKind } from './records';
 
@@ -29,6 +29,9 @@ export type DomainEvent =
   | { type: 'deadline_extended'; deadlineAt: number }
   | { type: 'concurrency_changed'; maxConcurrentWorkers: number }
   | { type: 'charter_set'; text: string; by: string; at: number }
+  | { type: 'status_set'; by: string; text: string; at: number }
+  /** The to-do table brought in step with the situations that hold: entries added or changed, and the IDs that left. */
+  | { type: 'todos_updated'; upsert?: WorkflowTodo[]; remove?: number[]; at: number }
   /** The main agent's wake-up as it stands after being set, rearmed or cancelled. */
   | { type: 'main_wake_set'; wake?: MainWake }
   | { type: 'artifact_added'; artifact: StoredArtifact }
@@ -94,11 +97,13 @@ export type DomainEvent =
    */
   | { type: 'board_post_resolved'; seq: number; postId: string; topic: string; resolved?: PostResolution; ask?: OpenAsk }
   | { type: 'direct_message_recorded'; taskId: string; message: DirectMessage }
+  /** Messages that waited for a member's next turn entered the turn it is in, whose input they are from now on. */
+  | { type: 'turn_mail_shown'; taskId: string; messageIds: string[] }
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
   /** `archivedCalls`: the swarm's archived turns, which count as calls of the new run like its other completed turns. */
   | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[]; archivedCalls?: number; reopened?: boolean }
-  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string; timer?: boolean }
+  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string; timer?: boolean; at?: number }
   /** A member's own wake-up; without `at` it is cancelled. */
   | { type: 'swarm_member_timer_set'; swarmId: string; member: string; at?: number; note?: string }
   | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
@@ -106,23 +111,17 @@ export type DomainEvent =
   | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
   | { type: 'swarm_member_workspace_cleaned'; swarmId: string; member: string }
   | { type: 'swarm_member_revived'; swarmId: string; member: string; auto?: boolean }
+  /**
+   * The member goes on under its name in a new session. A turn it had not finished is given up, and what that turn
+   * held of its messages is unread again. `cursor` is the member's last turn in the script's record, after which the
+   * new session's turns follow.
+   */
+  | { type: 'swarm_member_replaced'; swarmId: string; member: string; by?: string; brief?: string; cursor?: string }
   /** The member consumes `queue` from now on instead of the queue it had; `role`, when given, replaces its role. */
   | { type: 'swarm_member_moved'; swarmId: string; member: string; queue: string; role?: string }
-  /**
-   * `post`: the seq of the notice the lead was sent, which it resolves to say that the queue has no work for now.
-   * `resumed`: the queue was fed and ran dry again before that had lasted, so its spell goes on.
-   */
-  | { type: 'swarm_queue_starved'; swarmId: string; queue: string; at: number; told?: 'lead' | 'main'; post?: number; resumed?: true }
-  /**
-   * `at` closes the starved spell for the queue's record of them; journals of earlier builds carry none. The spell is
-   * over, and its entry leaves, only with `over`: the queue has stayed fed, or nobody is left to tell of it.
-   */
-  | { type: 'swarm_queue_fed'; swarmId: string; queue: string; at?: number; over?: true }
-  /** These items' outcomes were posted to their lead, or have no lead left to go to. */
-  | { type: 'swarm_handoffs_delivered'; swarmId: string; items: string[] }
+  /** These items' outcomes were in the brief of their lead's turn, or have no lead left to go to. */
+  | { type: 'swarm_results_seen'; swarmId: string; items: string[] }
   | { type: 'swarm_turns_extended'; swarmId: string; maxTurns: number }
-  | { type: 'swarm_nudged'; swarmId: string }
-  | { type: 'swarm_stalled'; swarmId: string }
   | { type: 'swarm_finish_requested'; swarmId: string; result: string }
   | { type: 'swarm_ended'; swarmId: string; stop: NonNullable<WorkflowSwarm['stop']>; reason?: string }
   // Event waits
@@ -144,11 +143,13 @@ export type DomainEvent =
   /**
    * A change to an item by whoever plans it, or a note the engine keeps on it. `held` says who set it aside and why
    * (with `hold: true`), `dependsOn` replaces what it waits on, `supersededBy` names its replacement, `settled`
-   * declares it done without a claim, and `ready` and `stuckOn` record what its planner was told of it.
+   * declares it done without a claim and `amend` rewrites what it asks for.
    */
   | { type: 'work_updated'; itemId: string; priority?: number; hold?: boolean; assignee?: string | null; at: number;
       held?: { by: string; at: number; reason?: string }; dependsOn?: string[]; supersededBy?: string;
-      settled?: { by: string; result: unknown }; ready?: number; stuckOn?: string | null }
+      settled?: { by: string; result: unknown };
+      /** What the item asks for, rewritten while nobody had claimed it. */
+      amend?: { title?: string; input?: unknown; writes?: string[]; resources?: string[] } }
   | { type: 'work_claimed'; claim: WorkClaim }
   | { type: 'claim_frozen'; claimId: string; reason: string }
   | { type: 'claim_renewed'; claimId: string; leaseUntil: number }
@@ -157,7 +158,8 @@ export type DomainEvent =
   /** The member's next attempt took over the claim a restart had left held. */
   | { type: 'claim_adopted'; claimId: string; by: { taskId: string; attemptId: string } }
   /** A claim that ended without completing its item; `retry` returns the item to the queue while attempts remain. */
-  | { type: 'claim_ended'; claimId: string; status: 'failed' | 'released' | 'expired' | 'cancelled'; reason: string; retry: boolean; at: number }
+  /** `counted`: the attempt failed through its member (it gave the item up, or its turn broke down) and counts against the item's attempts. */
+  | { type: 'claim_ended'; claimId: string; status: 'failed' | 'released' | 'expired' | 'cancelled'; reason: string; retry: boolean; at: number; counted?: boolean }
   | { type: 'work_progress_saved'; itemId: string; state: unknown; at: number }
   | { type: 'work_completed'; claimId: string; result: unknown; at: number }
   | { type: 'work_operation_recorded'; operation: Operation };
@@ -190,9 +192,17 @@ const DURABLE = new Set<DomainEvent['type']>([
   'script_succeeded', 'script_failed', 'workflow_created',
   'workflow_completed', 'workflow_cancelled', 'workflow_paused', 'workflow_interrupted',
   'swarm_ended', 'swarm_finish_requested',
-  // A change of direction: a worker that never hears of it keeps working toward the old one.
-  'charter_set',
+  // A change of direction: a worker that never hears of it keeps working toward the old one. A lead's account of
+  // how the work stands is a model's output, which nothing recomputes.
+  'charter_set', 'status_set',
 ]);
+
+/**
+ * Events that journals of earlier builds hold and nothing reads any more: what a swarm had told whom was kept in
+ * state of its own for each kind of notice, which the to-do table replaced. A workflow that was running when the
+ * build changed is restored without them and goes on under the current rules.
+ */
+export const RETIRED_EVENTS: ReadonlySet<string> = new Set(['swarm_queue_starved', 'swarm_queue_fed', 'swarm_handoffs_delivered', 'swarm_nudged', 'swarm_stalled']);
 
 /** Whether a commit carrying this event must be synced to disk (see DURABLE). */
 export function durableEvent(type: string): boolean {

@@ -72,15 +72,15 @@ export const BOARD_MAX_DELIVERIES = 32_768;
 export const BOARD_DEFAULT_TOPIC = 'general';
 /** Rules and rulings every member must know: only the main agent, the script and a swarm's lead post in it. */
 export const BOARD_ANNOUNCE_TOPIC = 'announce';
-/** The outcomes of the work items members completed or gave up, posted by the system to the lead that planned them when its next turn starts. */
-export const BOARD_HANDOFF_TOPIC = 'handoff';
 /**
  * What members saw while working that the plan does not account for. They post it naming nobody, so that it wakes
  * nobody and does not become work until a lead has held it against the goal at its review.
  */
 export const BOARD_NOTICED_TOPIC = 'noticed';
-/** Outcomes of work items a swarm keeps for its leads' next turns; past this many the newest are not handed over. */
-export const SWARM_MAX_HANDOFFS = 1024;
+/** The longest delay a wake-up may ask for (wake_me, of a member and of the main agent). */
+export const WAKE_MAX_MINUTES = 24 * 60;
+/** Outcomes of work items a swarm keeps for its leads' next turns; past this many the newest are left to the items themselves. */
+export const SWARM_MAX_RESULTS = 1024;
 /** Distinct topics of one board. A topic is a workstream, not a tag for one post. */
 export const BOARD_MAX_TOPICS = 64;
 /** Latest posts of each topic the board keeps the seq of, so they are found without reading the feed. */
@@ -88,6 +88,15 @@ export const BOARD_TOPIC_RECENT = 8;
 /** Asks that may be open at once, on the board and from one asker: an ask is for what its author waits on, not for every post. */
 export const BOARD_MAX_ASKS = 128;
 export const BOARD_MAX_ASKS_EACH = 8;
+/**
+ * Asks and answers that enter a running turn (turn-mail.ts): how many at once, how long after the last time, and how
+ * many in one turn. Each takes the member's attention off its task, so what is beyond these waits for its next turn.
+ */
+export const TURN_MAIL_BATCH = 4;
+export const TURN_MAIL_GAP_MS = 5_000;
+export const TURN_MAIL_PER_TURN = 16;
+/** Characters of one post quoted in a running turn; read_board has the rest. */
+export const TURN_MAIL_TEXT = 2000;
 
 export const WORK_MAX_ITEMS = 4096;
 export const WORK_MAX_CLAIMS = 8192;

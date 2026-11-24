@@ -140,6 +140,8 @@ export interface MailboxMessage {
   createdAt: number;
   receiptId?: string;
   consumedByTurnId?: string;
+  /** The turn the message was put into while it ran (turn-mail.ts): it is input of that turn, which consumes it when it completes. */
+  shownInTurnId?: string;
   /** Set on the delivery of a board post to one of its recipients: the post's seq. The text lives on the post. */
   post?: number;
 }
@@ -185,8 +187,6 @@ export interface BoardPost {
   ask?: { within: number };
   /** The seq of the ask this post answers. */
   answers?: number;
-  /** The seqs of the asks that this post, which the system made, tells its reader are still unanswered. */
-  overdue?: number[];
 }
 /**
  * An ask that nobody has answered yet. Kept beside the posts, which leave the state as the board grows, so that the
@@ -203,9 +203,6 @@ export interface OpenAsk {
   within: number;
   /** How the post begins, for those told of it. */
   excerpt: string;
-  /** Who above the one asked has been told that it is unanswered (agentIds, or `main`), and when the last of them was. */
-  told?: string[];
-  toldAt?: number;
 }
 export interface SwarmMember {
   name: string;
@@ -229,14 +226,26 @@ export interface SwarmMember {
    * them, is handed the results of their items, and is told when one runs dry or one of its members fails.
    */
   leads?: string[];
+  /** For a member that leads queues: the lead it answers to, when that is not the lead of the swarm. */
+  under?: string;
   /** The available work the member was last woken for; the same set does not wake it twice. */
   lastWake?: string;
+  /** When the member's latest turn was scheduled: what it is told of after that was not in the brief of that turn. */
+  briefedAt?: number;
   /** Wake-ups used after the opening turn. */
   turns: number;
   /** Its unfinished turn is retried under the same key when the script is replayed. */
   retryPending?: boolean;
   stopped?: 'failed' | 'retired';
   detail?: string;
+  /**
+   * The member goes on in a new session that has not had a turn yet (staff_swarm's replace): who replaced the old
+   * one when that was a lead, how the old one had ended, and what the new one is to know. The next turn opens the new
+   * session with the task, the rules and what the old one left behind.
+   */
+  takeover?: { by?: string; was?: 'failed' | 'retired'; detail?: string; brief?: string };
+  /** Sessions the member has had, when more than one. */
+  sessions?: number;
   /** Times the engine put the member back to work after a failed turn, without anyone asking. */
   autoRevived?: number;
   /** A wake-up the member asked for with wake_me: when it is due and what it is for. Cleared by the turn it starts. */
@@ -265,39 +274,52 @@ export interface WorkflowSwarm {
   /** Board seq of the swarm's brief, and of the last post when it ended. */
   firstPost: number;
   lastPost?: number;
-  /** Reminders sent to the lead while everyone was idle, since a member other than the lead last ran. */
-  nudges: number;
-  /** The reminders went unanswered and the main agent has been told; cleared when a turn starts. */
-  stalled?: boolean;
   finish?: { result: string };
-  /**
-   * Queues whose consumers are idle with nothing to claim: since when, when the lead and the main agent were last
-   * told, and the notices the lead was sent in this spell (`posts`, the latest few) while nobody who plans the queue
-   * has added work to it since. A queue that has work to claim again, or whose consumers are busy, is fed (`fedAt`),
-   * and the entry leaves once it has stayed so for a while: an item that is taken at once does not end the spell, and
-   * neither restarts what it waits for nor has the lead told again. `from` is where a spell that went on after being
-   * fed is counted from, so that the time it was fed is not counted as dry.
-   */
-  starved?: Record<string, { since: number; leadAt?: number; mainAt?: number; posts?: number[]; fedAt?: number; from?: number }>;
-  /**
-   * Queues that are left without work on purpose: a notice that the queue had run dry (`post`) was resolved, which
-   * is how the lead that answers for it, or the main agent, says that it has no work for now. Nobody is told again
-   * that such a queue is dry. It stops resting when someone who plans it adds an item to it, or the notice is reopened.
-   */
-  resting?: Record<string, { since: number; post: number }>;
-  /** What the starved spells of each queue that are over add up to: how many there were, and how long they lasted. */
+  /** What the dry spells of each queue that are over add up to: how many there were, and how long they lasted. */
   dry?: Record<string, { spells: number; ms: number; longest: number }>;
   /**
-   * Work items that were completed or failed for good under a member's claim and whose outcome no lead has been given
-   * yet, oldest first; a swarm without a lead keeps none. They are gathered and handed to the lead that planned each
-   * of them when its next turn is scheduled.
+   * Work items that were completed or failed for good under a member's claim and whose outcome the lead that planned
+   * them has not been shown yet, oldest first; a swarm without a lead keeps none. They go into the brief of that
+   * lead's next turn, and wake it once enough have gathered or the oldest has waited long enough.
    */
-  handoffs?: Array<{ item: string; worker: string }>;
+  results?: Array<{ item: string; worker: string; at: number }>;
   members: SwarmMember[];
   /** Turns whose task is still in the state, oldest first; `archivedTurns` counts the completed ones that left it. */
   turns: Array<{ key: string; member: string; taskId: string }>;
   archivedTurns?: number;
 }
+/**
+ * Something that waits on someone: a situation that holds in the workflow and that one member, or the main agent,
+ * answers for. Nothing raises a to-do when something happens; every scheduling pass works out the situations that hold
+ * and keeps this table in step with them, so a to-do is there for as long as its cause is and goes when the cause
+ * does, whoever saw to it and however long the host was down in between.
+ */
+export interface WorkflowTodo {
+  /** Small and stable, for those who read and answer it. */
+  id: number;
+  /** What it is about; the same situation has the same subject for as long as it lasts. */
+  subject: string;
+  kind: string;
+  /** Since when the situation has held. */
+  since: number;
+  /**
+   * Whom it was told to, in order: whoever answers for it first, then those above as it stayed open. The last one
+   * holds it now. Empty while the situation is younger than its grace time, which nobody is told of.
+   */
+  told: Array<{ who: string; at: number; by?: string; note?: string }>;
+  /** Since when the situation has not held; the to-do goes once that has lasted (a queue fed for a moment is still dry). */
+  goneAt?: number;
+  /** Whoever holds it has said that it need not be acted on now: until `until`, or for as long as the situation lasts. */
+  deferred?: { by: string; at: number; until?: number; note?: string };
+}
+
+/** How the work on the goal stands in the part one lead answers for, as that lead last wrote it. */
+export interface StatusNote {
+  text: string;
+  at: number;
+  version: number;
+}
+
 /**
  * The goal as it stands now. The workflow's goal and a swarm's task are fixed when they start; the charter is what the
  * main agent or a lead replaces when the direction changes, and every worker turn is given the version in force.
@@ -391,8 +413,20 @@ export interface WorkflowWorkItem {
    * and that nothing orders are reported to whoever adds, reads or claims one of them.
    */
   writes?: string[];
+  /** How many attempts of its own a member may fail before the item fails for good (see `failures`). */
   maxAttempts: number;
+  /** Claims granted so far; a claim is named by the item and this number. */
   generation: number;
+  /**
+   * Attempts that failed through the member that held the item: it gave the item up as something to try again, or
+   * its turn broke down. Handing an item back, a lease that ran out and a turn that was stopped are not counted, so
+   * an item does not fail for good because the host restarted or its member was told to stop.
+   */
+  failures?: number;
+  /** Claims in a row that ended with neither saved progress nor a counted failure: the item goes round without moving. */
+  idleClaims?: number;
+  /** How often the item was amended since it was added (title, input, writes, resources). */
+  revision?: number;
   status: 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled';
   /**
    * A condition, not work: nobody claims it. Whoever plans it, or added it, declares it met with settle_work, and what
@@ -402,17 +436,12 @@ export interface WorkflowWorkItem {
   gate?: boolean;
   /** Set aside by whoever plans the queue: the item keeps its place but is not handed out until the hold is lifted. */
   hold?: boolean;
-  /**
-   * Who set the item aside (a member's name, or `main`), when and why; a hold that predates this record has neither.
-   * `ready` is when whoever answers for the hold was told that nothing else is in the item's way.
-   */
-  held?: { by?: string; at: number; reason?: string; ready?: number };
+  /** Who set the item aside (a member's name, or `main`), when and why. Whoever set it aside answers for it: see the `aside` to-do. */
+  held?: { by?: string; at: number; reason?: string };
   /** The keys of the items this one replaced when it was added. */
   supersedes?: string[];
   /** The key of the item that replaced this one: what waited on this item waits on that one instead. */
   supersededBy?: string;
-  /** The dependency, cancelled or failed for good, that whoever plans the item was told keeps it from ever being claimed. */
-  stuckOn?: string;
   /** Who declared the item done without claiming it (a member's name, or `main`). */
   settledBy?: string;
   claimId?: string;
@@ -436,6 +465,8 @@ export interface WorkClaim {
   taskId: string;
   attemptId: string;
   generation: number;
+  /** The item's progress version when the claim was granted, which tells a claim that saved progress from one that did not. */
+  progress?: number;
   leaseUntil: number;
   status: 'active' | 'completed' | 'failed' | 'released' | 'expired' | 'cancelled';
   createdAt: number;
@@ -575,7 +606,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'swarm_stalled' | 'swarm_attention' | 'landing_attention' | 'review_due' | 'ask_open';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'landing_attention' | 'review_due' | 'todo' | 'ask';
   taskId?: string;
   artifactRef?: string;
   summary: string;
@@ -584,8 +615,6 @@ export interface WorkflowEvent {
    * has stopped, a branch that is halted. The notice is settled when that is no longer so, whoever saw to it.
    */
   subject?: string;
-  /** The seqs of the asks the notice is about: the ones the main agent is asked, or told are still unanswered. It is settled once none of them is open. */
-  asks?: number[];
   acknowledged: boolean;
   notified: boolean;
   /** Absent on events recorded before timing was tracked. */
@@ -641,6 +670,10 @@ export interface WorkflowState {
   mailbox?: AgentMailbox;
   board?: WorkflowBoard;
   charter?: WorkflowCharter;
+  /** How the work stands, by the name of the lead that wrote it. */
+  statuses?: Record<string, StatusNote>;
+  /** What waits on someone now (see WorkflowTodo); `next` is the ID the next one gets. */
+  todos?: { next: number; open: WorkflowTodo[] };
   mainWake?: MainWake;
   direct?: DirectMessage[];
   swarms?: WorkflowSwarm[];

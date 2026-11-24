@@ -1,29 +1,32 @@
-import { CHARTER_MAX_TEXT, WAKE_MAX_MINUTES, setCharter, setMainWake } from '../steering';
+import { WAKE_MAX_MINUTES } from '../limits';
+import { STATUS_MAX_TEXT, setGoal, setMainWake, setStatus } from '../steering';
 import { setMemberTimer } from '../swarm';
 import { memberOperation } from './members';
 import type { WorkflowToolPlugin } from './types';
 import { versioned } from './versioned';
 
-/** Keeping long-running work on course: the charter that carries the current goal, and wake-ups that do not depend on a post. */
+/** Keeping long-running work on course: the goal, the status notes of the leads, and wake-ups that nothing else brings about. */
 export const steeringTools: WorkflowToolPlugin = {
   id: 'steering',
   memberInstructions: [
-    'The charter is the goal of the workflow and where the work on it stands: it opens with the goal and how to tell that it is met, and goes on with how far off that is now, what is being tried, what was ruled out and the priorities. '
-      + 'The prompt of every turn carries the current version (read_context has it in charter, where changed says that it was replaced since your last turn); '
-      + 'where it differs from the request, the task or earlier announcements, the charter wins. Only the main agent and the lead of a swarm can change it.',
-    `wake_me({operationId,afterMinutes,note?}) wakes a swarm member for one turn after afterMinutes minutes (1–${WAKE_MAX_MINUTES}) without anyone naming it. To wait for a long build, test or queue, or to check on something later, `
+    'The prompt of every turn carries the goal in force, when the main agent has set one, and the status notes of the leads you work under (read_context has both). The goal says what is wanted and how to tell that it is met; '
+      + 'where it differs from the request, the task or earlier rulings, the goal wins, and only the main agent changes it. A status says how the work stands: how far off the goal is, what is being tried, what was ruled out and the priorities.',
+    `wake_me({operationId,afterMinutes,note?}) wakes a swarm member for one turn after afterMinutes minutes (1–${WAKE_MAX_MINUTES}) without anyone asking for it. To wait for a long build, test or queue, or to check on something later, `
       + 'save a checkpoint, set it and end the turn; do not hold the turn polling or sleeping. A member has one timer: calling again replaces it, and afterMinutes 0 cancels it. '
-      + 'It stays set when a post or new work wakes you earlier, and it counts as a wake-up like being named.',
+      + 'It stays set when something else wakes you earlier, and it counts as a wake-up.',
   ].join('\n'),
-  leadInstructions: `set_charter({operationId,text}), for the lead of a swarm, replaces the whole charter (at most ${CHARTER_MAX_TEXT} characters). It opens with the goal and how to tell that it is met, which you carry over as they were given; `
-    + 'below them you write how far off the goal is now by that test, what is being tried and what was ruled out, the priorities, what is out of scope and how results are measured. '
-    + 'When the direction, the priorities or the measures change, change the charter instead of only announcing it.',
+  leadInstructions: `set_status({operationId,text}) replaces your status note (at most ${STATUS_MAX_TEXT} characters): how far off the goal your part is now by its test, what is being tried, what was ruled out and where the evidence is, `
+    + 'what is not known yet that would change the plan, the priorities, and what each part that has a lead of its own must deliver. The members that work under you are given it at every turn, and writing it wakes nobody. '
+    + 'It does not change the goal: when results show that the goal cannot be met as stated or is not what is wanted, ask whoever stands above you.',
   tools: [
     {
-      name: 'set_charter',
-      main: { doc: 'set_charter(text)', ...versioned((ctx, state, args) => setCharter(state, args, 'main', ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      name: 'set_goal',
+      main: { doc: 'set_goal(text)', ...versioned((ctx, state, args) => setGoal(state, args, ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+    },
+    {
+      name: 'set_status',
       worker: { verifiesRoot: true,
-        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'set_charter', args, agent => setCharter(state, args, agent.key, ctx.now())) },
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'set_status', args, agent => setStatus(state, agent.key, args, ctx.now())) },
     },
     {
       name: 'wake_me',

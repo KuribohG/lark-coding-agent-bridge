@@ -6,8 +6,16 @@ import { lifecycleTools } from './lifecycle';
 import { memberContextTools } from './members';
 import { nestedWorkflowTools } from './nested-workflow';
 import { steeringTools } from './steering';
+import { todoTools } from './todos';
 import type { MainTool, WorkerTool, WorkflowToolPlugin } from './types';
 import { workQueueTools } from './work-queue';
+
+/** Operations of earlier builds, and what does their work now: a session that still knows one is told. */
+const REPLACED: Record<string, string> = {
+  post_board: 'ask({to,text}) asks one member for an answer or an action, answer({ask,text}) answers an ask, and note({text,topic?}) records what nobody has to act on',
+  set_charter: 'the main agent sets the goal with set_goal(text), and a lead writes how the work stands with set_status({text})',
+  task_status: 'read_context returns the checkpoint and checkpointVersion',
+};
 
 /** Resolves operation names to their plugin implementations and assembles the matching agent instructions. */
 export class WorkflowToolRegistry {
@@ -41,6 +49,8 @@ export class WorkflowToolRegistry {
 
   /** The current name of an operation that a caller may know by an earlier one. */
   canonical(name: string): string { return this.renamed.get(name) ?? name; }
+  /** What to call instead of an operation that no longer exists, as the end of an error; empty for any other name. */
+  replaced(name: string): string { return REPLACED[name] ? ` ${name} is no longer an operation: ${REPLACED[name]}.` : ''; }
   main(name: string): (MainTool & { doc: string }) | undefined { return this.mainTools.get(name); }
   worker(name: string): WorkerTool | undefined { return this.workerTools.get(name); }
   mainNames(): string[] { return [...this.mainTools.keys()]; }
@@ -65,5 +75,5 @@ export class WorkflowToolRegistry {
 }
 
 export const BUILTIN_WORKFLOW_TOOLS = new WorkflowToolRegistry([
-  lifecycleTools, artifactTools, steeringTools, memberContextTools, boardTools, directTools, swarmTools, workQueueTools, landingTools, nestedWorkflowTools,
+  lifecycleTools, artifactTools, steeringTools, memberContextTools, todoTools, boardTools, directTools, swarmTools, workQueueTools, landingTools, nestedWorkflowTools,
 ]);

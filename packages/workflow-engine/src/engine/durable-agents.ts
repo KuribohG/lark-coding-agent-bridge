@@ -37,11 +37,11 @@ export function saveCheckpoint(state: WorkflowView, task: TaskView, value: unkno
 }
 
 /** The member's latest turn among the calls the current script run has made. */
-export function memberCursor(state: WorkflowView, agent: AgentView): string | undefined {
+export function memberCursor(state: WorkflowView, agent: AgentView, except?: string): string | undefined {
   const { calls, archivedCalls, runId } = state.script!;
   for (let index = calls.length - 1; index >= 0; index--) {
     const task = taskById(state, calls[index]!.taskId);
-    if (task?.agentId === agent.agentId) return task.taskId;
+    if (task?.agentId === agent.agentId && task.taskId !== except) return task.taskId;
   }
   // A member's turns run in order and the oldest are archived first, so its archived calls all precede the ones above.
   return archivedCalls ? archiveOf(state)?.lastTurn(runId, agent.agentId) : undefined;
@@ -132,6 +132,16 @@ export function sendMessage(state: WorkflowView, target: string, text: unknown, 
   if ((state.mailbox?.messages ?? []).filter(item => item.post === undefined).length >= MAILBOX_MAX_MESSAGES) throw new Error('Mailbox message limit reached');
   emit(state, { type: 'message_sent', message });
   return { messageId: message.id };
+}
+
+/**
+ * Puts words in front of one member at its next turn, without a post: what the engine has to tell it once (an ask of
+ * its own that someone else closed, an item taken from under it, a goal that changed). It wakes a swarm member. A
+ * member that has not had a turn, or a mailbox that is full, goes without: what it would have said is in the state.
+ */
+export function tellMember(state: WorkflowView, name: string, text: string, now: number, from = 'system'): boolean {
+  if (!state.agents?.some(agent => agent.key === name)) return false;
+  try { sendMessage(state, name, text.slice(0, 4000), now, from); return true; } catch { return false; }
 }
 
 const RELAY_TRUNCATION = '…[truncated]';

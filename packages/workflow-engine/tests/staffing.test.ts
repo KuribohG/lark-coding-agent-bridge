@@ -76,7 +76,8 @@ describe('staffing a running swarm from the main agent', () => {
         + 'await closeWorkQueue({key:"closed"}); return await s;' });
     await vi.waitFor(async () => { await runtime.tick(); expect(member('w0').stopped).toBe('failed'); });
     expect(member('w0').autoRevived).toBe(1);
-    expect(state().events.filter(event => event.kind === 'swarm_attention')).toMatchObject([{ summary: expect.stringContaining('成员 w0 失败并已停止（已自动重试一次）') }]);
+    // A swarm without a lead has nobody but the main agent to replace the member, so the to-do is the main agent's at once.
+    await vi.waitFor(async () => { await runtime.tick(); expect(state().events.filter(event => event.kind === 'todo')).toMatchObject([{ summary: expect.stringContaining('成员 w0 失败并已停止（已自动重试一次）') }]); });
     // w1 still holds an item, so the swarm is alive with nobody to take the rest.
     expect(state().workQueue!.items.filter(item => item.status === 'completed')).toHaveLength(0);
 
@@ -85,7 +86,7 @@ describe('staffing a running swarm from the main agent', () => {
     await expect(call('staff_swarm', { maxTurns: 4097 })).rejects.toThrow('between 1 and 4096');
     await expect(call('staff_swarm', { swarm: 'other', add: ['x'] })).rejects.toThrow('No running swarm');
     await expect(call('staff_swarm', { add: ['w1'] })).rejects.toThrow('already used');
-    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, move, revive, retire, cleanup, maxTurns or maxConcurrent');
+    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, move, revive, replace, retire, cleanup, maxTurns or maxConcurrent');
     await expect(call('staff_swarm', { retire: ['ghost'] })).rejects.toThrow('Unknown swarm member');
     // The number of workers that run at once follows the staff without a replay, and needs no state version.
     await expect(call('staff_swarm', { maxConcurrent: 513 })).rejects.toThrow('between 1 and 512');
@@ -95,7 +96,7 @@ describe('staffing a running swarm from the main agent', () => {
     expect(member('w0').stopped).toBeUndefined();
     expect(member('w2')).toMatchObject({ queue: 'default', role: 'fixer' });
     // The member runs again: the notice that it had stopped is settled without the main agent acknowledging it.
-    await vi.waitFor(async () => { await runtime.tick(); expect(state().events.find(event => event.kind === 'swarm_attention')).toMatchObject({ acknowledged: true, subject: expect.stringMatching(/:member:w0$/) }); });
+    await vi.waitFor(async () => { await runtime.tick(); expect(state().events.find(event => event.kind === 'todo')).toMatchObject({ acknowledged: true, subject: expect.stringMatching(/^todo:\d+$/) }); expect(state().todos!.open).toEqual([]); });
 
     await vi.waitFor(async () => { await runtime.tick(); expect(state().workQueue!.items.filter(item => item.status === 'completed')).toHaveLength(5); }, { timeout: 5000 });
     release();

@@ -45,7 +45,7 @@ function handle(command) {
   if (prompt.includes('SAVE_WORK_STATE')) {
     const { execFileSync } = require('node:child_process');
     const call = (method, args) => JSON.parse(execFileSync(process.execPath, [process.env.AGENT_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify(args), '--json'], { encoding: 'utf8' }));
-    const current = call('task_status', {});
+    const current = call('read_context', {});
     call('checkpoint', { operationId: 'saved-progress', expectedCheckpointVersion: current.checkpointVersion, state: { decision: 'persist native session', next: 'review' } });
   }
   emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'progress only' } });
@@ -99,7 +99,7 @@ describe('Codex-root workflow with Pi process workers', () => {
     await vi.waitFor(()=>expect(f.runtime.kernel.state(f.root.scopeId)?.mailbox?.receipts[0]?.status).toBe('waiting'),{timeout:10000});
     const saved=await f.call('read_checkpoint',{member:'designer'});
     expect(saved).toMatchObject({version:2,state:{decision:'persist native session',next:'review'},nativeSessionId:'pi-child'});
-    await f.call('post_board',{to:['designer'],text:'approved'});
+    await f.call('tell_worker',{target:'designer',text:'approved'});
     await vi.waitFor(()=>expect(f.runtime.kernel.state(f.root.scopeId)?.script?.status).toBe('result_ready'),{timeout:5000});
     const runs=(await readFile(f.record,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
     expect(runs).toHaveLength(2);

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { postToBoard } from '../board';
-import { mailboxOperation, taskAgent } from '../durable-agents';
+import { mailboxOperation, sendMessage, taskAgent } from '../durable-agents';
 import { emit } from '../kernel-store';
 import { mailboxOperationByKey, pushEvent, requiredText, requireState } from '../kernel-state';
 import { boundedInteger, scriptText } from '../script-contract';
 import { readsPosts, tellTarget } from '../swarm';
 import type { DirectMessage, TaskView, WorkflowView } from '../types';
+import { CONTROL_ARGS } from './control-args';
 import type { WorkflowToolPlugin } from './types';
 
 const MAX_MESSAGES = 2048;
@@ -32,47 +32,47 @@ function record(state: WorkflowView, message: DirectMessage): void {
 }
 
 /**
- * Leaves on the board, naming the member, a message that could not enter its turn: the member reads it at its next
- * turn, and a swarm member is woken for it. Undefined when no turn will come to read it.
+ * Leaves in the member's messages what could not enter its turn: the member reads it at its next turn, and a swarm
+ * member is woken for it. False when no turn will come to read it. `from` is the lead that speaks; the main agent
+ * otherwise.
  */
-function leave(state: WorkflowView, sender: Parameters<typeof postToBoard>[1], member: string, text: string, now: number): { seq: number } | undefined {
-  // The words were meant for one member: an @name in them names nobody else.
-  return readsPosts(state, member) ? postToBoard(state, sender, { text, to: [member] }, now, { literal: true }) : undefined;
+function leave(state: WorkflowView, from: string | undefined, member: string, text: string, now: number): boolean {
+  if (!readsPosts(state, member, from === undefined)) return false;
+  sendMessage(state, member, text, now, from);
+  return true;
 }
 
 /**
  * Words for one worker, from the main agent or from a lead to a member it leads. They enter the worker's session as
  * a user message while its turn runs; a persistent member that is not in a turn, or whose harness takes no input
- * mid-turn, gets them as a post that names it, so the sender need not know which of the two it is. A worker may
- * answer each message of the main agent once, which wakes the main agent; a lead is answered on the board.
+ * mid-turn, finds them in its messages at its next turn, so the sender need not know which of the two it is. A
+ * worker may answer each message of the main agent once, which wakes the main agent; a lead that wants an answer asks.
  */
 export const directTools: WorkflowToolPlugin = {
   id: 'direct',
   memberInstructions: 'The main agent may put a message into your turn while you work (a user message that begins with "[Message from the main agent"): adjust to it and go on with your task. '
     + 'reply_main({text}) hands the main agent an answer of at most 4000 characters and wakes it. Each message can be answered once, so use it only when you were asked something or the main agent has to decide; it is refused when no message awaits an answer. '
-    + 'A lead may put a message into your turn in the same way (it begins with "[Message from lead "): adjust to it and go on, and name the lead in a post when it needs an answer.',
-  leadInstructions: 'tell_worker({operationId,target,text}) puts up to 4000 characters into the running turn of a member you lead at once (the answer is accepted). '
-    + 'A member that is not in a turn, or cannot take a message in the middle of one, gets a post that names it instead (posted) and reads it at its next turn.',
+    + 'A lead may put a message into your turn in the same way (it begins with "[Message from lead "): adjust to it and go on.',
+  leadInstructions: 'tell_worker({operationId,target,text}) puts up to 4000 characters into the running turn of a member that works under you at once (status accepted). '
+    + 'A member that is not in a turn, or cannot take a message in the middle of one, finds them in its messages at its next turn, for which it is woken (status left). It brings no answer: ask when you need one.',
   tools: [
     {
       name: 'tell_worker',
       main: {
         kind: 'direct', doc: 'tell_worker(target,text)',
         run: async (ctx, state, args, change) => {
-          if (Object.keys(args).some(key => !['target', 'text', 'workflowId'].includes(key))) throw new Error('Unsupported tell_worker option');
+          if (Object.keys(args).some(key => !['target', 'text', ...CONTROL_ARGS].includes(key))) throw new Error('Unsupported tell_worker option');
           const text = scriptText(args.text, 'message', 4000);
           if (!text.trim()) throw new Error('Message text must not be empty');
           const task = target(state, args.target);
           const where = { taskId: task.taskId, worker: label(state, task) };
           const member = taskAgent(state, task)?.key;
-          // A one-off worker has no next turn to read a post in.
-          const left = () => {
-            const post = member === undefined ? undefined : change(current => leave(current, { author: 'main' }, member, text, ctx.now()));
-            return post && { status: 'posted', seq: post.seq, ...where, hint: 'No turn of the member could take the message, so it is a board post that names it: the member reads it at its next turn, and a swarm member is woken for it.' };
-          };
+          // A one-off worker has no next turn to read a message in.
+          const left = () => member !== undefined && change(current => leave(current, undefined, member, text, ctx.now()))
+            ? { status: 'left', ...where, hint: 'No turn of the member could take the message, so it waits in its messages: the member reads it at its next turn, and a swarm member is woken for it.' } : undefined;
           if (state.status !== 'active' || !RUNNING.includes(task.status)) {
             return left() ?? { status: 'inactive', ...where, taskStatus: task.status,
-              hint: 'No turn of this worker is running, and none will come to read a post: a one-off worker cannot be reached, a stopped member is revived with staff_swarm.' };
+              hint: 'No turn of this worker is running, and none will come to read a message: a one-off worker cannot be reached, a stopped member is revived with staff_swarm.' };
           }
           const id = randomUUID();
           const session = state.sessions.find(item => item.sessionRef === task.sessionRef);
@@ -114,15 +114,14 @@ export const directTools: WorkflowToolPlugin = {
           const id = randomUUID();
           const delivery = !start.taskId || !ctx.host.tell ? 'inactive' : await ctx.host.tell(start.workflowId, start.taskId, `[Message from lead ${start.lead} ${id.slice(0, 8)}]\n${text}\n\n`
             + `(${start.lead}, ${start.standing === 'swarm' ? 'the lead of your swarm' : 'the lead of your queue'}, sent this while you work. It is not a new task: adjust to it and go on with the task you have. `
-            + `To answer, name ${start.lead} in a post with post_board; do not post when no answer is needed.)`, id);
+            + `It needs no answer; when ${start.lead} has to know or decide something, ask it with ask({to: "${start.lead}", text}).)`, id);
           // The lead's turn may have ended while the member's transport answered; what was said is then already said.
           return bound(state => mailboxOperation(state, key, input, () => {
             if (delivery === 'accepted' || delivery === 'unknown') {
               record(state, { id, taskId: start.taskId!, from: 'lead', by: start.lead, text, createdAt: ctx.now(), delivery });
               return { status: delivery, messageId: id, member: start.member };
             }
-            const post = leave(state, { agentId: start.agentId }, start.member, text, ctx.now());
-            return post ? { status: 'posted', seq: post.seq, member: start.member }
+            return leave(state, start.agentId, start.member, text, ctx.now()) ? { status: 'left', member: start.member }
               : { status: 'inactive', member: start.member, hint: 'No turn of the member will come to read it: it has stopped or has not started. The swarm lead revives or replaces a stopped member with staff_swarm.' };
           }));
         },

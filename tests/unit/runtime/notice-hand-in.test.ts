@@ -29,7 +29,7 @@ describe('workflow notices for a main agent that is in a turn', () => {
 
   it('gathers reports of how things stand, and sends them along with a reply that does not wait', async () => {
     const h = harness();
-    h.raise('swarm_attention', 'dry');
+    h.raise('todo', 'dry');
     h.pass(NOTICE_GAP_MS);
     h.raise('review_due', 'review');
     await h.handIn.run('chat');
@@ -41,7 +41,7 @@ describe('workflow notices for a main agent that is in a turn', () => {
     expect(h.markNotified).toHaveBeenCalledWith('chat', ['dry', 'review'], true);
 
     h.pass(NOTICE_GAP_MS);
-    h.raise('swarm_attention', 'dry-again');
+    h.raise('todo', 'dry-again');
     h.raise('worker_reply', 'reply');
     await h.handIn.run('chat');
     expect(h.markNotified).toHaveBeenLastCalledWith('chat', ['dry-again', 'reply'], true);

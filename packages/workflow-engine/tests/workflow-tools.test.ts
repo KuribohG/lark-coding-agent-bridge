@@ -16,7 +16,7 @@ describe('workflow tool plugins', () => {
     const lead = workflowWorkerInstructions({ agentId: 'member', workflowTool: true } as WorkflowTask, true);
     // Workers learn read_artifact from the input references in their prompt. What only a member that plans work may
     // call is told to those members alone, after everything the others are told.
-    const planning = ['staff_swarm', 'swarm_finish', 'tell_worker', 'retry_work', 'settle_work', 'set_charter'];
+    const planning = ['staff_swarm', 'swarm_finish', 'tell_worker', 'retry_work', 'settle_work', 'set_status'];
     for (const name of BUILTIN_WORKFLOW_TOOLS.workerNames().filter(name => name !== 'read_artifact')) {
       expect(lead, name).toContain(name);
       if (!planning.includes(name)) expect(member, name).toContain(name);
@@ -32,13 +32,13 @@ describe('workflow tool plugins', () => {
     // A member is told what to do when a landing fails for a reason that is not its own.
     for (const text of ['Do not merge by hand a file that a command generates', 'If targetCommit fails by itself the landing branch is broken', 'do not repair the changes of other members']) expect(member, text).toContain(text);
     // The queue is told in the order a member meets it, and work found in a delivered item goes back to whoever delivered it.
-    const order = ['Taking an item:', 'Doing it:', 'Landing code:', 'When a landing is turned back', 'Adding work:', 'Finding work:', 'Withdrawing work:', 'Repeats and restarts:'].map(text => member.indexOf(text));
+    const order = ['Taking an item:', 'Doing it:', 'Landing code:', 'When a landing is turned back', 'Adding work:', 'Finding work:', 'Changing work you added:', 'Repeats and restarts:'].map(text => member.indexOf(text));
     expect(order.every((at, index) => at > (order[index - 1] ?? -1))).toBe(true);
     for (const text of ['origin is the key of the item whose delivered result the new item is about', 'put the key of the item in the commit message']) expect(member, text).toContain(text);
   });
 
   it('tells the starting turn how to write a script and leaves the less common script functions to the guide', () => {
-    for (const name of ['agent(', 'parallel', 'swarm(', 'enqueueWork', 'closeWorkQueue', 'post(', 'staff_swarm', 'set_charter(text)', 'workflow guide']) expect(WORKFLOW_TOOL_INSTRUCTIONS, name).toContain(name);
+    for (const name of ['agent(', 'parallel', 'swarm(', 'enqueueWork', 'closeWorkQueue', 'post(', 'staff_swarm', 'set_goal(text)', 'workflow guide']) expect(WORKFLOW_TOOL_INSTRUCTIONS, name).toContain(name);
     const advanced = ['discuss(topic', 'reviewedAgent(prompt', 'freezeWorkspace', 'configureLanding(', 'raceTasks(', 'waitFor({'];
     for (const name of advanced) {
       expect(WORKFLOW_TOOL_INSTRUCTIONS, name).not.toContain(name);
@@ -54,28 +54,30 @@ describe('workflow tool plugins', () => {
     }
     // Paid for once per workflow. What running one takes is told at the wakes, so it is not counted here.
     expect(WORKFLOW_TOOL_INSTRUCTIONS).not.toContain('staff_swarm 不重放调整');
-    expect(WORKFLOW_TOOL_INSTRUCTIONS.length).toBeLessThan(8400);
+    expect(WORKFLOW_TOOL_INSTRUCTIONS.length).toBeLessThan(8800);
   });
 
   it('tells a wake how to run the workflow, without the script API', () => {
-    for (const name of ['ack_events 后 complete', 'swarm_stalled', 'swarm_attention', 'landing_attention', 'staff_swarm 不重放调整', 'tell_worker(target,text)',
-      'set_charter(text)', 'resolve_post 把', 'priority 为 -100..100', 'workflow guide', '不要读取或展示环境中的调用凭据']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
+    for (const name of ['ack_events 后 complete', 'todo（等人处理的事交到了你这里）', 'defer_todo(id,note,minutes?)', 'pass_todo(id,to,note?)', 'landing_attention', 'staff_swarm 不重放调整', 'tell_worker(target,text)',
+      'set_goal(text)', 'set_status', 'resolve_post 把', 'priority 为 -100..100', 'workflow guide', '不要读取或展示环境中的调用凭据']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
     for (const name of ['agent(prompt', 'parallel', 'pipeline', 'swarm(task', 'enqueueWork(', 'closeWorkQueue', 'post(text', 'schema']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).not.toContain(name);
     // A long run wakes the main agent dozens of times, and every wake's instructions stay in its session.
-    expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4350);
+    expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4650);
     // Waiting is told as a dependency on an item or a gate, and a revision as a replacement, where the fields of an item are.
-    for (const name of ['settle_work(itemId 或 key,result)', 'update_work(itemId 或 key,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?)', 'gate:true 是条件项', '不用 hold', 'supersedes 是被本项取代的旧项']) {
+    for (const name of ['settle_work(itemId 或 key,result)', 'update_work(itemId 或 key,title?,input?,writes?,resources?,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?)', 'gate:true 是条件项', '不用 hold', 'supersedes 是被本项取代的旧项']) {
       expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
     }
-    // An ask is told where posting is, and the event it raises with the other events.
-    for (const name of ['post_board(text,to?,topic?,ask?,answers?)', 'ask_open', 'answers:帖号']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
+    // Asking, answering and noting are told in one place, and the event an ask raises with the other events.
+    for (const name of ['ask(to,text,withinMinutes?,topic?)', 'answer(ask,text)', 'note(text,topic?)', 'ask（成员请你答复', 'note(text,topic?) 只记录、不唤醒任何人']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
+    // Nothing tells of the operations and events the to-dos replaced.
+    for (const name of ['post_board', 'set_charter', 'swarm_stalled', 'swarm_attention', 'ask_open', '目标单']) { expect(WORKFLOW_WAKE_INSTRUCTIONS, name).not.toContain(name); expect(WORKFLOW_GUIDE, name).not.toContain(name); }
     // The guide leaves out nothing a wake is told, except the line that points to the guide. It lists the operations
     // with all their parameters, where a wake names the ones it cannot call or is told about in a line of their own.
     const lines = WORKFLOW_WAKE_INSTRUCTIONS.split('\n').slice(0, -1);
     expect(lines.filter(line => line.startsWith('操作：'))).toEqual([expect.stringMatching(/；run_script；.*；staff_swarm；.*；configure_landing。$/)]);
     for (const line of lines.filter(line => !line.startsWith('操作：'))) expect(WORKFLOW_GUIDE, line.slice(0, 40)).toContain(line.replace(/^replay_script 后结束 turn，子任务由 bridge 管理。/, ''));
     // Whom a post reaches and what the fields of a work item do is one text, told once to a wake and once in the guide.
-    for (const text of ['发帖（脚本 post 与 post_board 相同）', '工作项字段（脚本 enqueueWork 与 enqueue_work 相同）', 'origin 是该项所针对的已交付工作项的 key']) {
+    for (const text of ['留言板上说话（主 agent 和成员相同）', '工作项字段（脚本 enqueueWork 与 enqueue_work 相同）', 'origin 是该项所针对的已交付工作项的 key']) {
       expect(WORKFLOW_WAKE_INSTRUCTIONS.split(text), text).toHaveLength(2);
       expect(WORKFLOW_GUIDE.split(text), text).toHaveLength(2);
     }

@@ -1,14 +1,14 @@
 import { SWARM_MAX_TURNS } from '../limits';
-import { CHARTER_MAX_TEXT } from '../steering';
+import { GOAL_MAX_TEXT } from '../steering';
 import { BUILTIN_WORKFLOW_TOOLS } from './registry';
 import { BOARD_POSTING, WORK_ITEM_FIELDS, WORKFLOW_ADVANCED_SCRIPT_GUIDE, WORKFLOW_SCHEDULING_INSTRUCTIONS } from './script-guide';
 import type { WorkflowTask } from '../types';
 
 const tools = BUILTIN_WORKFLOW_TOOLS;
 
-const STEERING = `目标单是每个 worker 每轮都带的现行目标：set_charter(text) 整份替换（≤${CHARTER_MAX_TEXT} 字符）并通知 lead 重排。开头写用户要的目标和可检验的达成标准，只在用户改要求时改；其后是现状与差距、在试和已排除的路、优先级和口径，lead 复盘时更新。方向调整或产出偏离时改它，不只发公告。wake_me 定时唤醒你复盘（review_due 事件）：everyMinutes 周期，afterMinutes 一次，0 取消`;
+const STEERING = `目标是每个 worker 每轮都带的现行要求：set_goal(text) 整份替换（≤${GOAL_MAX_TEXT} 字符）并告知各负责人重排；写用户要的目标、可检验的达成标准和长期规则，方向调整或产出偏离时改它，不只发公告。进展不写在目标里：各负责人用 set_status 写自己那部分的现状，成员每轮都带，见 status 的 statuses。wake_me 定时唤醒你复盘（review_due 事件）：everyMinutes 周期，afterMinutes 一次，0 取消`;
 
-const STAFF_SWARM = `staff_swarm 不重放调整 swarm（多个在跑时用 swarm 指定）：add 新成员名单（≤256），沿用 like 成员（默认非 lead）的 harness、模型、角色、队列，harness/model/reasoningEffort/queue/role 可另指，brief 是给新成员的首轮说明；workspace 给新成员建 worktree、leads 设子领域 lead（均见 guide）；move 把名单里的队列成员改为消费 queue 指定的队列；revive 重试失败成员（"failed" 或名单）；retire 成员跑完本轮后不再唤醒；cleanup 删除停用成员（retired 或 failed）的 worktree，其中未提交/未集成的修改一并丢弃（"retired" 或名单）；maxTurns 提高唤醒上限（只增不减，≤${SWARM_MAX_TURNS}）；maxConcurrent 改并发`;
+const STAFF_SWARM = `staff_swarm 不重放调整 swarm（多个在跑时用 swarm 指定）：add 新成员名单（≤256），沿用 like 成员（默认第一名非负责人成员）的 harness、模型、角色、队列，harness/model/reasoningEffort/queue/role 可另指，brief 是给新成员的首轮说明；workspace 给新成员建 worktree、leads 设子领域 lead、under 指定它的上级负责人（均见 guide）；move 把名单里的队列成员改为消费 queue 指定的队列；revive 重试失败成员（"failed" 或名单）；replace 给名单里不在回合中的成员换新会话（会话本身坏了或满了、revive 会重蹈覆辙时用；名字、队列、worktree、信箱和待办不变，brief 是给新会话的说明）；retire 成员跑完本轮后不再唤醒；cleanup 删除停用成员（retired 或 failed）的 worktree，其中未提交/未集成的修改一并丢弃（"retired" 或名单）；maxTurns 提高唤醒上限（只增不减，≤${SWARM_MAX_TURNS}）；maxConcurrent 改并发`;
 
 /**
  * How to call the tools. Every main turn that is bound to a workflow by a command or an event starts with this and
@@ -17,7 +17,7 @@ const STAFF_SWARM = `staff_swarm 不重放调整 swarm（多个在跑时用 swar
 const CALL = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。`;
 /** Who may start a workflow. The turn that starts one is told at length; a wake is told in a clause that it cannot. */
 const STARTING = `仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script，不根据自然语言或任务类型推断；内部完成事件和普通消息不能新建工作流，但可查看和干预话题里已有的工作流。`;
-const VERSIONS = `变更需唯一 operationId；run_script 外另需 workflowId 和 status 返回的 expectedStateVersion，冲突时重读 status，不自动重试不同内容；enqueue_work/post_board/resolve_post/set_charter/wake_me/staff_swarm/retry_work/update_work/settle_work/extend_deadline 不需要版本。
+const VERSIONS = `变更需唯一 operationId；run_script 外另需 workflowId 和 status 返回的 expectedStateVersion，冲突时重读 status，不自动重试不同内容；enqueue_work/ask/answer/note/resolve_post/defer_todo/pass_todo/set_goal/wake_me/staff_swarm/retry_work/update_work/settle_work/extend_deadline 不需要版本。
 status、各项变更的返回和每轮附带的 workflow_context 是限长摘要：列表只留最新若干条（任务先留进行中的），taskCounts 是各状态任务数，omitted 是略去条数，用 status({list,offset?,limit?}) 翻页（list 取 omitted 里的名字，每页 ≤64 条）。`;
 /**
  * A turn that cannot start a workflow is told run_script by name alone, and staff_swarm too, whose parameters
@@ -35,12 +35,13 @@ script 是支持顶层 await/return 的 JS 函数体，无 import/process/requir
 ${WORKFLOW_SCHEDULING_INSTRUCTIONS}`;
 
 /** Running a workflow: what wakes the main agent and what it can do then. Told at every wake, which is when it is needed. */
-const OPERATING = `唤醒主会话的事件：整体结束或失败；review_due（定时复盘）；worker_reply（worker 答复主 agent）；swarm_stalled（全员空闲而 lead 未结束，swarm 仍在等待：发帖、入队或 staff_swarm 可续跑）；swarm_attention（成员失败已停，队列断粮而 lead 既未补活也未答复暂无工作，或剩下的活都在等条件项 settle：没有推进目标的活就不凑，见 guide）；landing_attention（落地分支被队列外改动）；ask_open（lead 请你答复，或成员间的请求超时未答）。回合中的新事件直接送进该回合。worker_reply、review_due 送达即结，断粮、成员停止、停滞、落地暂停、请求在状态消失后自结，其余用 ack_events。脚本结果是 workflow-result 产物：read_artifact、ack_events 后 complete，也可先发布 report。
-swarms[].queues 是各队列的供需：claimable 可领、blocked 被挡住、idle 空闲成员、flow 近 6 小时逐小时入队/完成数（末项为最近一小时）、dry 断粮次数与分钟、restingSince 已答复暂无工作。
+const OPERATING = `唤醒主会话的事件：整体结束或失败；review_due（定时复盘）；worker_reply（worker 的答复）；ask（成员请你答复，用 answer 答）；todo（等人处理的事交到了你这里）；landing_attention（落地分支被队列外改动）。回合中的新事件直接送进该回合。
+待办是 swarm 里等人处理的事（成员失败已停、队列断粮、全员空闲而 lead 未结束、被搁置或卡住的工作项、超时未答的请求）：先在负责它的 lead 每轮的简报里，逾期未处理才逐级上交到你，事件里写明现状和办法。起因消失即自结，不必 ack；没有推进目标的活就不凑，暂不处理用 defer_todo 说明原因，该别人处理用 pass_todo。status 的 todos 列出全部未结待办及持有人。worker_reply、review_due 送达即结，其余用 ack_events。脚本结果是 workflow-result 产物：read_artifact、ack_events 后 complete，也可先发布 report。
+swarms[].queues 是各队列的供需：claimable 可领、blocked 被挡住、idle 空闲成员、flow 近 6 小时逐小时入队/完成数（末项为最近一小时）、dry 断粮次数与分钟。
 pause 取消在途 worker，resume 从头重放并复用已完成的结果；中断的工作流要 replay_script 或用户 /workflow resume 才继续。
-configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。tell_worker 把一段话作为用户消息插进运行中的 worker 会话（target 为 taskId、成员名或脚本 key）；持久成员不在轮次中或不能中途收消息时改成点名它的留言板帖（返回 posted）。worker 可用 reply_main 答复一次；worker_messages 读往来记录，含 lead 发给成员的。
+configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。tell_worker 把一段话作为用户消息插进运行中的 worker 会话（target 为 taskId、成员名或脚本 key）；持久成员不在轮次中或不能中途收消息时留在它的消息里（返回 left），它被唤醒并在下一轮读到。worker 可用 reply_main 答复一次；worker_messages 读往来记录，含 lead 发给成员的。
 ${STAFF_SWARM}
-resolve_post 把已答复、办完或被取代的帖子标为已解决（note 怎么解决的、see 答复或取代它的帖号，至少给一个；reopen:true 撤销）：read_board 默认跳过（resolved:true 一并返回），search_board 仍能搜到。`;
+resolve_post 把办完或被取代的帖子标为已解决（note 怎么解决的、see 取代它的帖号，至少给一个；reopen:true 撤销）：read_board 默认跳过（resolved:true 一并返回），search_board 仍能搜到。`;
 
 const REVIEWING = `${STEERING}；带 lead 的 swarm 启动后设 30–60 分钟周期，复盘从原始需求出发，看实际产出离达成标准还差多少，而非看汇报。`;
 const GUARDS = `内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。`;
@@ -92,23 +93,23 @@ ${WORKFLOW_ADVANCED_SCRIPT_GUIDE}`;
  * without the script guide, which `workflow guide` prints when a replay needs it.
  */
 export const WORKFLOW_MESSAGE_INSTRUCTIONS = `本话题有一个 bridge 管理的工作流，本轮已获得它的调用凭据：用户询问进度或要求干预时直接操作，不需要用户再发 /workflow 命令；用户没有提到它时不要动它。
-调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回有上限的摘要，列表略去的条数见 omitted，用 status({list,offset?,limit?}) 翻页；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status；enqueue_work、post_board、resolve_post、set_charter、wake_me、staff_swarm、retry_work、update_work、settle_work、extend_deadline 不需要版本。
+调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回有上限的摘要，列表略去的条数见 omitted，用 status({list,offset?,limit?}) 翻页；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status；enqueue_work、ask、answer、note、resolve_post、defer_todo、pass_todo、set_goal、wake_me、staff_swarm、retry_work、update_work、settle_work、extend_deadline 不需要版本。
 操作：${tools.mainOperations(RUNNING)}。
-tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key），用于中途纠偏或提问；返回 accepted 表示已送达会话；持久成员不在轮次中或不能中途收消息时自动改成点名它的留言板帖，返回 posted，它下一轮读到；inactive 表示送不到（一次性 worker 已结束，或成员已停止）。worker 用 reply_main 答复时你会被唤醒，worker_messages 读取往来记录。
+tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key），用于中途纠偏或提问；返回 accepted 表示已送达会话；持久成员不在轮次中或不能中途收消息时留在它的消息里，返回 left，它被唤醒并在下一轮读到；inactive 表示送不到（一次性 worker 已结束，或成员已停止）。worker 用 reply_main 答复时你会被唤醒，worker_messages 读取往来记录。
 ${STAFF_SWARM}
 ${STEERING}。
 本轮不能 run_script 新建工作流。改脚本重放（replay_script，须同时更新 plan）前，用 read_artifact 读取 status 里 script.sourceRef、script.planRef 指向的现行脚本和方案；脚本 API 的完整说明不在上下文里时运行 node "$AGENT_WORKFLOW_CLI" workflow guide。暂停、取消、重放等会中断在途 worker 的操作，只在用户明确要求或同意后执行。不要读取或展示环境中的调用凭据。`;
 
 /**
- * What the engine itself tells a worker is in English, like the rules of a swarm, its system posts and the errors of
- * the operations; what it tells the main agent and the user is in Chinese. The request, the task and the charter are
- * the user's and the main agent's words, so a worker is given their terms and answers in their language.
+ * What the engine itself tells a worker is in English, like the rules of a swarm, its briefs and the errors of the
+ * operations; what it tells the main agent and the user is in Chinese. The request, the task and the goal are the
+ * user's and the main agent's words, so a worker is given their terms and answers in their language.
  */
 const SPAWNING = ' or spawn sub-agents';
 
 const MEMBER_PREAMBLE = `You are a persistent member of a workflow that the bridge manages. Stay within what the original request authorizes, handle only the input of this turn, and end the turn with your final answer, which releases its resources. A role description does not change what you are permitted to do. Do not send messages outside the workflow${SPAWNING}.
 You can use the CLI bound to this turn: node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json (or --input-file). Do not read the call credentials.
-The request, the task and what the main agent and the user write may be in Chinese, where 目标单 is the charter, 留言板 the board, 工作项 a work item, 认领 a claim, 落地分支 the landing branch and 公告 a post in topic "announce". Write your posts, results and answers in the language of the task.`;
+The request, the task and what the main agent and the user write may be in Chinese, where 目标 is the goal, 现状 a status note, 留言板 the board, 工作项 a work item, 待办 a to-do, 认领 a claim, 落地分支 the landing branch and 公告 a note in topic "announce". Write your notes, results and answers in the language of the task.`;
 
 const MEMBER_CLOSING = `Your next turn is scheduled for you, by the script or by the swarm you belong to. When you have to wait, save a checkpoint and say in your final answer what you are waiting for; do not poll or sleep in a CLI process. When you resume, check which side effects have already happened and go on from the saved state.`;
 

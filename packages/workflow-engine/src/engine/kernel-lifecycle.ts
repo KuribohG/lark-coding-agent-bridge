@@ -27,7 +27,7 @@ export class WorkflowLifecycle {
   undelivered(scopeId: string): WorkflowEvent[] {
     const state = this.ctx.store.state(scopeId);
     if (!state || !['active', 'paused'].includes(state.status)) return [];
-    return state.events.filter(event => !event.acknowledged && !event.notified).map(({ asks, ...event }) => ({ ...event, ...(asks ? { asks: [...asks] } : {}) }));
+    return state.events.filter(event => !event.acknowledged && !event.notified).map(event => ({ ...event }));
   }
 
   /**

@@ -21,7 +21,7 @@ export interface NoticeHandInDeps {
  * Notices that report how things stand rather than answer the main agent: they are gathered this long before they go
  * into its running turn, so that several arrive as one message. Anything else goes in at once.
  */
-const GATHERED = new Set(['swarm_attention', 'review_due']);
+const GATHERED = new Set(['todo', 'review_due']);
 export const NOTICE_GATHER_MS = 2 * 60_000;
 /** A running turn is looked at for notices to hand in no more often than this, whether or not it took the last ones. */
 export const NOTICE_GAP_MS = 20_000;

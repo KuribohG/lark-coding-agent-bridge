@@ -1,7 +1,7 @@
-import type { DomainEvent } from './events';
-import { BOARD_DEFAULT_TOPIC, BOARD_TOPIC_RECENT, SWARM_MAX_HANDOFFS, WORK_FLOW_SLOT_MS, WORK_FLOW_SLOTS } from './limits';
+import { RETIRED_EVENTS, type DomainEvent } from './events';
+import { BOARD_DEFAULT_TOPIC, BOARD_TOPIC_RECENT, SWARM_MAX_RESULTS, WORK_FLOW_SLOT_MS, WORK_FLOW_SLOTS } from './limits';
 import { CALL_KINDS, RECORDS } from './records';
-import type { BoardPost, Immutable, MailboxMessage, MailboxReceipt, OpenAsk, StoredTask, WorkFlowSlot, WorkflowData, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
+import type { BoardPost, Immutable, MailboxMessage, MailboxReceipt, OpenAsk, StoredTask, WorkFlowSlot, WorkflowData, WorkflowTodo, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
 
 /**
  * Applies one event to a workflow's state. This is the only code that changes workflow state, and it must stay a
@@ -28,12 +28,25 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'deadline_extended': state.deadlineAt = event.deadlineAt; return;
     case 'concurrency_changed': state.definition.maxConcurrentWorkers = event.maxConcurrentWorkers; return;
     case 'charter_set': state.charter = { version: (state.charter?.version ?? 0) + 1, text: event.text, by: event.by, at: event.at }; return;
+    case 'status_set': (state.statuses ??= {})[event.by] = { text: event.text, at: event.at, version: (state.statuses[event.by]?.version ?? 0) + 1 }; return;
+    case 'todos_updated': {
+      const todos = state.todos ??= { next: 1, open: [] };
+      for (const id of event.remove ?? []) {
+        const gone = todos.open.find(found => found.id === id);
+        // A dry spell that someone was told of counts in the queue's record once it is over.
+        if (gone?.kind === 'dry' && gone.told.length) drySpell(state, gone, event.at);
+      }
+      if (event.remove?.length) todos.open = todos.open.filter(found => !event.remove!.includes(found.id));
+      for (const entry of event.upsert ?? []) {
+        const at = todos.open.findIndex(found => found.id === entry.id);
+        if (at >= 0) todos.open[at] = entry; else todos.open.push(entry);
+        todos.next = Math.max(todos.next, entry.id + 1);
+      }
+      return;
+    }
     case 'main_wake_set': state.mainWake = event.wake; return;
     case 'artifact_added': state.artifacts.push(event.artifact); return;
-    case 'notice_raised':
-      state.events.push(event.notice);
-      if (event.notice.asks) told(state, event.notice.asks, 'main', event.notice.createdAt ?? 0);
-      return;
+    case 'notice_raised': state.events.push(event.notice); return;
     case 'notices_acknowledged':
       for (const notice of state.events) if (event.ids.includes(notice.id) && !notice.acknowledged) { notice.acknowledged = true; notice.acknowledgedAt = event.at; }
       return;
@@ -238,6 +251,17 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     }
     case 'direct_message_recorded': (state.direct ??= []).push(event.message); return;
+    case 'turn_mail_shown': {
+      // Input of the turn like the messages it began with: read_context lists them, a retry is handed them again, and
+      // the turn consumes them when it completes, so they wake the member for no turn of their own.
+      const found = task(state, event.taskId);
+      for (const message of mailbox(state).messages) {
+        if (!event.messageIds.includes(message.id)) continue;
+        message.shownInTurnId = found.taskId;
+        (found.inputMessageIds ??= []).push(message.id);
+      }
+      return;
+    }
     case 'board_posted': {
       const board = state.board ??= { posts: [] };
       board.posts.push(event.post);
@@ -246,7 +270,6 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       topic.recent.push(event.post.seq);
       if (topic.recent.length > BOARD_TOPIC_RECENT) topic.recent.shift();
       if (event.post.ask) (board.asks ??= []).push(openAsk(event.post, event.post.createdAt));
-      if (event.post.overdue && event.post.to[0]) told(state, event.post.overdue, event.post.to[0], event.post.createdAt);
       if (!event.deliveries.length) return;
       const box = mailbox(state);
       box.messages.push(...event.deliveries);
@@ -268,18 +291,6 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
         if (event.ask) asks.push(event.ask);
         if (asks.length) board.asks = asks.sort((a, b) => a.seq - b.seq); else delete board.asks;
       }
-      // The notice that a queue has run dry is answered by resolving it: the queue has no work for now, and rests
-      // until someone who plans it adds work to it (see `planned`) or the notice is reopened. A spell that lasts
-      // sends the notice again, and any of them is the answer.
-      for (const found of state.swarms ?? []) {
-        if (event.resolved) {
-          const name = Object.keys(found.starved ?? {}).find(queue => found.starved![queue]!.fedAt === undefined && found.starved![queue]!.posts?.includes(event.seq));
-          if (name !== undefined) (found.resting ??= {})[name] = { since: event.resolved.at, post: event.seq };
-        } else if (found.resting) {
-          for (const name of Object.keys(found.resting)) if (found.resting[name]!.post === event.seq) delete found.resting[name];
-          if (!Object.keys(found.resting).length) found.resting = undefined;
-        }
-      }
       return;
     }
     case 'receipt_opened': {
@@ -295,7 +306,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       found.runId = event.runId;
       if (event.archivedCalls) state.script!.archivedCalls = (state.script!.archivedCalls ?? 0) + event.archivedCalls;
       for (const member of found.members) member.retryPending = event.retryPending.includes(member.name) || undefined;
-      if (event.reopened) { found.status = 'running'; found.stop = undefined; found.reason = undefined; found.lastPost = undefined; found.nudges = 0; found.stalled = undefined; }
+      if (event.reopened) { found.status = 'running'; found.stop = undefined; found.reason = undefined; found.lastPost = undefined; }
       return;
     }
     case 'swarm_turn_scheduled': {
@@ -303,17 +314,13 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const member = found.members.find(item => item.name === event.member)!;
       member.taskId = event.taskId; member.retryPending = undefined; member.lastWake = event.wake;
       if (event.timer) { member.wakeAt = undefined; member.wakeNote = undefined; }
-      // The prompt of a new turn told the member of its move; a retried turn runs the prompt it had.
-      if (!event.retry) member.movedFrom = undefined;
-      // A lead, of the swarm or of a queue, plans the work: its turns are not the work resuming.
-      const plans = event.member === found.lead || Boolean(member.leads?.length);
-      // A lead looking in on its own timer leaves an idle swarm that was already reported as it is.
-      if (!(event.timer && plans)) found.stalled = undefined;
-      // Work resumed, so the next idle spell earns the lead a fresh set of reminders.
-      if (!plans) found.nudges = 0;
+      // The prompt of a new turn told the member of its move and of what waits on it; a retried turn runs the prompt it had.
+      // The first turn of a new session is a wake-up of the member like any other; only the turn a member starts with is not.
+      const again = Boolean(member.takeover);
+      if (!event.retry) { member.movedFrom = undefined; member.takeover = undefined; if (event.at !== undefined) member.briefedAt = event.at; }
       if (!event.retry) {
         found.turns.push({ key: event.key, member: event.member, taskId: event.taskId });
-        if (!event.opening) member.turns++;
+        if (!event.opening || again) member.turns++;
       }
       return;
     }
@@ -340,6 +347,36 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       if (event.auto) member.autoRevived = (member.autoRevived ?? 0) + 1;
       return;
     }
+    case 'swarm_member_replaced': {
+      const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
+      member.takeover = { ...(event.by ? { by: event.by } : {}), ...(member.stopped ? { was: member.stopped } : {}), ...(member.detail ? { detail: member.detail } : {}), ...(event.brief ? { brief: event.brief } : {}) };
+      member.sessions = (member.sessions ?? 1) + 1;
+      // Without a latest turn the member is neither retried nor taken for failed: it starts like one that was added.
+      member.stopped = undefined; member.detail = undefined; member.taskId = undefined; member.retryPending = undefined; member.lastWake = undefined; member.autoRevived = undefined;
+      const agent = state.agents!.find(item => item.key === event.member)!;
+      const given = agent.activeTurnId;
+      agent.activeTurnId = undefined; agent.lastTurnId = event.cursor; agent.wait = undefined;
+      // The new session has read none of the rulings the old one was handed.
+      agent.boardSeq = undefined;
+      const session = byId(state.sessions, item => item.sessionRef, agent.sessionRef)!;
+      // Nothing to resume: the host starts a new native session, which the next session_bound records.
+      session.nativeSessionId = undefined; session.observedModel = undefined; session.generation++;
+      if (!given) return;
+      // The turn the old session did not finish is given up. It is not part of what the member did, so it leaves the
+      // calls of the run, as a replay, which carries only finished turns, would leave it out.
+      const script = state.script!;
+      script.calls = script.calls.filter(call => call.taskId !== given);
+      // It consumes nothing either: what it had taken of the member's messages is for the new session.
+      const box = mailbox(state);
+      const held = new Set<string>();
+      for (const receipt of box.receipts) if (receipt.turnId === given) { held.add(receipt.id); receipt.status = 'consumed'; }
+      for (const message of box.messages) {
+        if (message.consumedByTurnId) continue;
+        if (message.receiptId && held.has(message.receiptId)) message.receiptId = undefined;
+        if (message.shownInTurnId === given) message.shownInTurnId = undefined;
+      }
+      return;
+    }
     case 'swarm_member_moved': {
       const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
       // A member that has had a turn was told the queue it consumed then, so its next turn tells it where it is now;
@@ -351,42 +388,13 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       if (event.role !== undefined) member.role = event.role;
       return;
     }
-    case 'swarm_queue_starved': {
-      const spells = (swarm(state, event.swarmId).starved ??= {});
-      let entry = spells[event.queue];
-      if (entry?.fedAt !== undefined) {
-        // Dry again before it had been fed for long: the spell goes on with what was told in it, counted from here.
-        if (event.resumed) { entry.from = event.at; delete entry.fedAt; } else entry = undefined;
-      }
-      entry ??= spells[event.queue] = { since: event.at };
-      if (event.told === 'lead') { entry.leadAt = event.at; if (event.post !== undefined) entry.posts = [...entry.posts ?? [], event.post].slice(-STARVED_NOTICES_KEPT); }
-      if (event.told === 'main') entry.mainAt = event.at;
-      return;
-    }
-    case 'swarm_queue_fed': {
+    case 'swarm_results_seen': {
       const found = swarm(state, event.swarmId);
-      const spell = found.starved?.[event.queue];
-      if (spell && spell.fedAt === undefined && event.at !== undefined) {
-        spellCounted(found, event.queue, event.at);
-        // Fed for now. The spell is over once that has lasted, and goes on if the queue runs dry again before.
-        if (!event.over) { spell.fedAt = event.at; return; }
-      }
-      spellOver(found, event.queue);
+      const left = (found.results ?? []).filter(entry => !event.items.includes(entry.item));
+      found.results = left.length ? left : undefined;
       return;
     }
-    case 'swarm_handoffs_delivered': {
-      const found = swarm(state, event.swarmId);
-      const left = (found.handoffs ?? []).filter(entry => !event.items.includes(entry.item));
-      found.handoffs = left.length ? left : undefined;
-      return;
-    }
-    case 'swarm_turns_extended': {
-      const found = swarm(state, event.swarmId);
-      found.maxTurns = event.maxTurns; found.nudges = 0; found.stalled = undefined;
-      return;
-    }
-    case 'swarm_nudged': swarm(state, event.swarmId).nudges++; return;
-    case 'swarm_stalled': swarm(state, event.swarmId).stalled = true; return;
+    case 'swarm_turns_extended': swarm(state, event.swarmId).maxTurns = event.maxTurns; return;
     case 'swarm_finish_requested': swarm(state, event.swarmId).finish = { result: event.result }; return;
     case 'swarm_ended': {
       const found = swarm(state, event.swarmId);
@@ -423,7 +431,6 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       queue(state).items.push(event.item);
       // A gate is a condition, not work that enters and leaves a queue: the flow counts what members have to do.
       if (!event.item.gate) flowed(state, event.item, event.item.createdAt, 'enqueued');
-      planned(state, event.item);
       return;
     case 'work_retried': {
       const found = item(state, event.itemId);
@@ -439,25 +446,27 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     case 'work_updated': {
       const found = item(state, event.itemId);
-      // What the engine notes on an item is not a change to it.
-      if (event.ready !== undefined) { if (found.hold) (found.held ??= { at: found.updatedAt }).ready = event.ready; return; }
-      if (event.stuckOn !== undefined) { found.stuckOn = event.stuckOn ?? undefined; return; }
       if (event.priority !== undefined) found.priority = event.priority || undefined;
       if (event.hold !== undefined) {
         found.hold = event.hold || undefined;
         found.held = event.hold ? event.held : undefined;
       }
       if (event.assignee !== undefined) found.assignee = event.assignee ?? undefined;
-      if (event.dependsOn !== undefined) {
-        found.dependsOn = event.dependsOn.length ? event.dependsOn : undefined;
-        // What it waits on has changed, so what was told of the old dependencies no longer holds.
-        found.stuckOn = undefined;
-        if (found.held) delete found.held.ready;
-      }
+      if (event.dependsOn !== undefined) found.dependsOn = event.dependsOn.length ? event.dependsOn : undefined;
       if (event.supersededBy !== undefined) found.supersededBy = event.supersededBy;
+      if (event.amend) {
+        if (event.amend.title !== undefined) found.title = event.amend.title;
+        if (Object.hasOwn(event.amend, 'input')) found.input = event.amend.input;
+        if (event.amend.writes !== undefined) found.writes = event.amend.writes.length ? event.amend.writes : undefined;
+        if (event.amend.resources !== undefined) found.resources = event.amend.resources;
+        found.revision = (found.revision ?? 0) + 1;
+      }
+      // Whoever plans the item has changed what it asks, whom it is for or what it waits on: the rounds it made before
+      // say nothing of the item as it is now.
+      if (event.amend || event.assignee || event.dependsOn !== undefined) found.idleClaims = undefined;
       if (event.settled) {
         found.status = 'completed'; found.result = event.settled.result; found.settledBy = event.settled.by;
-        found.error = undefined; found.hold = undefined; found.held = undefined; found.stuckOn = undefined;
+        found.error = undefined; found.hold = undefined; found.held = undefined;
         if (!found.gate) flowed(state, found, event.at, 'completed');
       }
       found.updatedAt = event.at;
@@ -492,7 +501,10 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       found.claimId = undefined; found.updatedAt = event.at; found.error = ended.reason;
       // An item that was replaced while a member held it does not return to the queue: its replacement is the work now.
       if (found.supersededBy) { found.status = 'cancelled'; found.error = `Superseded by "${found.supersededBy}"; the claim ended: ${ended.reason}`; return; }
-      found.status = event.retry && found.generation < found.maxAttempts ? 'pending' : 'failed';
+      if (event.counted) found.failures = (found.failures ?? 0) + 1;
+      // A claim that left neither progress nor a failure behind is one more round the item made without moving.
+      found.idleClaims = !event.counted && ended.progress === found.progress.version ? (found.idleClaims ?? 0) + 1 : undefined;
+      found.status = event.retry && (found.failures ?? 0) < found.maxAttempts ? 'pending' : 'failed';
       if (event.retry && found.status === 'failed') found.error = 'Attempt budget exhausted: ' + ended.reason;
       if (found.status === 'failed') settled(state, found, ended.agentId, event.at, 'failed');
       return;
@@ -517,7 +529,9 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'work_operation_recorded': queue(state).operations.push(event.operation); return;
     // A new event must get a case here: the `never` parameter makes that a compile error, and a journal written by
     // another build meets this branch at runtime instead of being silently skipped.
-    default: assertNever(event);
+    default:
+      if (RETIRED_EVENTS.has((event as { type: string }).type)) return;
+      assertNever(event);
   }
 }
 
@@ -574,48 +588,17 @@ function claim(state: WorkflowData, id: string) {
  * Counts an item entering or leaving its queue in the ten-minute slot of `at`. Only the latest slots are kept, so the
  * record stays the same size however long the workflow runs.
  */
-/** The notices of one starved spell that can still answer for the queue; a spell of two hours sends eight. */
-const STARVED_NOTICES_KEPT = 8;
-
 /**
- * An item from someone who plans its queue (the queue's lead, the swarm's lead, the script or the main agent) answers
- * the notice that the queue had run dry, and ends the rest of a queue that was left without work on purpose. An item
- * a member adds to the queue does neither: nobody who answers for the queue has decided that it has work again.
+ * Adds a dry spell that is over to its queue's record of them. The to-do's subject names the swarm and the queue
+ * (`dry:<swarm>:<queue>`); the spell lasted from when the queue ran dry to when it was last seen so.
  */
-function planned(state: WorkflowData, found: WorkflowWorkItem): void {
-  const name = found.queue ?? 'default';
-  for (const swarm of state.swarms ?? []) {
-    if (found.by !== undefined && found.by !== swarm.lead && !swarm.members.some(member => member.name === found.by && member.leads?.includes(name))) continue;
-    // Resolved after this, a notice is tidied away and says nothing about the queue.
-    if (swarm.starved?.[name]) delete swarm.starved[name]!.posts;
-    if (swarm.resting?.[name]) {
-      delete swarm.resting[name];
-      if (!Object.keys(swarm.resting).length) swarm.resting = undefined;
-      // The rest answered the spell, and it ends with the rest: a queue that runs dry after this has run dry anew,
-      // not for as long as it was left without work on purpose.
-      spellCounted(swarm, name, found.createdAt);
-      spellOver(swarm, name);
-    }
-  }
-}
-
-/**
- * Adds the starved spell of a queue, up to `at`, to the queue's record of them. A spell that went on after being fed
- * is one spell: it is counted once, and the time it was fed is left out. Fed, a spell has been counted already.
- */
-function spellCounted(swarm: NonNullable<WorkflowData['swarms']>[number], queue: string, at: number): void {
-  const spell = swarm.starved?.[queue];
-  if (!spell || spell.fedAt !== undefined) return;
-  const dry = (swarm.dry ??= {})[queue] ??= { spells: 0, ms: 0, longest: 0 };
-  if (spell.from === undefined) dry.spells++;
-  dry.ms += Math.max(0, at - (spell.from ?? spell.since));
-  dry.longest = Math.max(dry.longest, Math.max(0, at - spell.since));
-}
-
-function spellOver(swarm: NonNullable<WorkflowData['swarms']>[number], queue: string): void {
-  if (!swarm.starved) return;
-  delete swarm.starved[queue];
-  if (!Object.keys(swarm.starved).length) swarm.starved = undefined;
+function drySpell(state: WorkflowData, todo: WorkflowTodo, at: number): void {
+  const [, swarmId, ...rest] = todo.subject.split(':');
+  const found = state.swarms?.find(swarm => swarm.id === swarmId);
+  if (!found) return;
+  const lasted = Math.max(0, (todo.goneAt ?? at) - todo.since);
+  const dry = (found.dry ??= {})[rest.join(':')] ??= { spells: 0, ms: 0, longest: 0 };
+  dry.spells++; dry.ms += lasted; dry.longest = Math.max(dry.longest, lasted);
 }
 
 function flowed(state: WorkflowData, found: WorkflowWorkItem, at: number, what: Exclude<keyof WorkFlowSlot, 'slot'>): void {
@@ -633,7 +616,7 @@ function flowed(state: WorkflowData, found: WorkflowWorkItem, at: number, what: 
 /**
  * An item was completed, or failed for good, under the claim of `agentId`. Whatever ended the claim (the member's own
  * call, a lease that ran out, a turn that stopped), the item counts in its queue's flow and for the swarm member
- * that held it, and in a swarm with a lead the outcome is owed to the lead that planned the item (see `handoffs`).
+ * that held it, and in a swarm with a lead the outcome is owed to the lead that planned the item (see `results`).
  */
 function settled(state: WorkflowData, found: WorkflowWorkItem, agentId: string, at: number, how: 'completed' | 'failed'): void {
   flowed(state, found, at, how);
@@ -642,7 +625,7 @@ function settled(state: WorkflowData, found: WorkflowWorkItem, agentId: string, 
     const member = owner.members.find(candidate => candidate.name === name);
     if (!member) continue;
     if (how === 'completed') member.itemsDone = (member.itemsDone ?? 0) + 1; else member.itemsFailed = (member.itemsFailed ?? 0) + 1;
-    if (owner.lead && owner.status === 'running' && !owner.finish && (owner.handoffs?.length ?? 0) < SWARM_MAX_HANDOFFS) (owner.handoffs ??= []).push({ item: found.id, worker: member.name });
+    if (owner.lead && owner.status === 'running' && !owner.finish && (owner.results?.length ?? 0) < SWARM_MAX_RESULTS) (owner.results ??= []).push({ item: found.id, worker: member.name, at });
     return;
   }
 }
@@ -655,15 +638,6 @@ export function openAsk(post: Immutable<BoardPost>, at: number): OpenAsk {
   const text = post.text.replace(/\s+/g, ' ').trim();
   return { seq: post.seq, ...(post.from ? { from: post.from } : {}), ...(post.to[0] ? { to: post.to[0] } : {}), at, within: post.ask!.within,
     excerpt: text.length > ASK_EXCERPT_CHARS ? text.slice(0, ASK_EXCERPT_CHARS) + '…' : text };
-}
-
-/** Records that `who` (a member's agentId, or `main`) was told of the asks: that they are still unanswered, or that it is asked. */
-function told(state: WorkflowData, seqs: readonly number[], who: string, at: number): void {
-  for (const ask of state.board?.asks ?? []) {
-    if (!seqs.includes(ask.seq)) continue;
-    if (!ask.told?.includes(who)) (ask.told ??= []).push(who);
-    ask.toldAt = at;
-  }
 }
 
 function mailbox(state: WorkflowData) {
@@ -680,7 +654,7 @@ function releaseBindings(state: WorkflowData, waitId: string): void {
 
 /** Unreserved, unconsumed messages for a member, oldest first; a receive takes at most 16. */
 export function availableMessages(state: Pick<WorkflowView, 'mailbox'>, agentId: string, match: { topic?: string; correlationId?: string } = {}): ReadonlyArray<Immutable<MailboxMessage>> {
-  return (state.mailbox?.messages ?? []).filter(message => message.to === agentId && !message.receiptId && !message.consumedByTurnId
+  return (state.mailbox?.messages ?? []).filter(message => message.to === agentId && !message.receiptId && !message.consumedByTurnId && !message.shownInTurnId
     && (match.topic === undefined || message.topic === match.topic)
     && (match.correlationId === undefined || message.correlationId === match.correlationId)).slice(0, 16);
 }

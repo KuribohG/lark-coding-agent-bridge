@@ -91,7 +91,7 @@ export class WorkflowKernel {
     const tasks: Record<string, number> = { ...state.archived?.statuses };
     for (const task of state.tasks) tasks[task.status] = (tasks[task.status] ?? 0) + 1;
     return JSON.stringify({ workflowId: state.workflowId, name: state.script?.name, status: state.status, scriptStatus: state.script?.status,
-      stateVersion: state.stateVersion, goalPreview: state.goal.slice(0, 200), ...(state.charter ? { charterVersion: state.charter.version } : {}), deadlineAt: new Date(state.deadlineAt).toISOString(), tasks,
+      stateVersion: state.stateVersion, goalPreview: state.goal.slice(0, 200), ...(state.charter ? { goalVersion: state.charter.version } : {}), deadlineAt: new Date(state.deadlineAt).toISOString(), tasks,
       scriptLogs: state.script?.logs.slice(-3), unacknowledgedEvents: state.events.filter(event => !event.acknowledged).length });
   }
 

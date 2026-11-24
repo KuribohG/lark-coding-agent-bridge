@@ -161,7 +161,7 @@ describe('workflow kernel contracts', () => {
     await expect(h.kernel.call(caller, 'run_script', {})).rejects.toThrow('not permitted');
     await expect(h.kernel.call(caller, 'read_artifact', { ref: state.artifacts[0]!.ref })).rejects.toThrow('outside worker');
     expect(await h.kernel.call(caller, 'read_context', {})).toMatchObject({ objective: 'investigate a' });
-    h.kernel.cancel('topic-1'); await expect(h.kernel.call(caller, 'task_status', {})).rejects.toThrow('inactive');
+    h.kernel.cancel('topic-1'); await expect(h.kernel.call(caller, 'read_context', {})).rejects.toThrow('inactive');
   });
   it('invalidates a replaced root and keeps events away from the new root', async () => {
     const h = harness(); await h.start(); await h.agent('a'); await h.kernel.tick();

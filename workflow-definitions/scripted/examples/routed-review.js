@@ -6,7 +6,7 @@ for (const item of args.items) {
 }
 await closeWorkQueue({key:'implementation-closed',queue:'implementation'});
 await closeWorkQueue({key:'review-closed',queue:'review'});
-// One swarm, two kinds of members: each consumes its own queue and can still be named on the board.
+// One swarm, two kinds of members: each consumes its own queue and can still be asked by the others.
 return await swarm('Implement the queued changes and verify each one independently.', {key:'delivery', maxTurns:24, members:[
   ...args.developers.map(member => ({...member, queue:'implementation',
     role:'Implement the authorized change and test it. Save work progress and complete with evidence and artifact paths.'})),

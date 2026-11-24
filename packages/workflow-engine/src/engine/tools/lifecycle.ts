@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from '../digest';
-import { openAsks } from '../asks';
 import { swarmSummary } from '../swarm';
+import { workflowTodos } from '../swarm-pump';
 import { workerSelection } from '../execution';
 import { addArtifact, acknowledge, BUSY, findTask, readArtifact, requiredText, textArray } from '../kernel-state';
 import { MAX_AGENT_CALLS, MAX_CONCURRENT_WORKERS } from '../limits';
@@ -36,14 +36,15 @@ function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
     workflowId: state.workflowId, plugin: { id: state.definition.id, version: state.definition.version, digest: state.definitionDigest },
     stateVersion: state.stateVersion, status: state.status, goalRef: state.artifacts[0]?.ref,
     goalPreview: state.goal.slice(0, 500),
-    ...(state.charter ? { charter: state.charter } : {}), ...(state.mainWake ? { mainWake: state.mainWake } : {}),
+    ...(state.charter ? { goal: { version: state.charter.version, text: state.charter.text, at: state.charter.at } } : {}),
+    ...(state.statuses && Object.keys(state.statuses).length ? { statuses: state.statuses } : {}), ...(state.mainWake ? { mainWake: state.mainWake } : {}),
     deadlineAt: state.deadlineAt, root: state.root, taskCounts,
     ...(state.archived || state.archivedRecords ? { archived: { tasks: state.archived?.tasks ?? 0, ...state.archivedRecords } } : {}),
     sessions: state.sessions,
     agents: state.agents ?? [],
     workQueue: state.workQueue ? workStatus(state, {}, ctx.now()) : undefined,
     swarms: (state.swarms ?? []).map(swarm => swarmSummary(state, swarm, ctx.now())),
-    ...(state.board?.asks?.length ? { asks: openAsks(state, ctx.now()) } : {}),
+    ...(state.todos?.open.length ? workflowTodos(state, ctx.now()) : {}),
     waits: (state.waits ?? []).map(wait => ({ key: wait.key, status: wait.status, createdAt: wait.createdAt,
       kinds: wait.any.map(arm => arm.kind), selected: wait.result?.index })),
     parent: state.parent ? {workflowId:state.parent.workflowId,taskId:state.parent.taskId,depth:state.parent.depth,key:state.parent.key} : undefined,
@@ -74,7 +75,7 @@ function summaryLists(summary: Summary): SummaryList[] {
     const items = (holder as Summary | undefined)?.[field];
     if (Array.isArray(items)) lists.push({ path, holder: holder as Summary, field, items });
   };
-  for (const field of ['tasks', 'artifacts', 'sessions', 'agents', 'checkpoints', 'waits', 'children', 'events', 'asks']) add(field, summary, field);
+  for (const field of ['tasks', 'artifacts', 'sessions', 'agents', 'checkpoints', 'waits', 'children', 'events']) add(field, summary, field);
   for (const field of ['calls', 'workCalls', 'controlCalls', 'logs']) add(`script.${field}`, summary.script, field);
   add('mailbox.waits', summary.mailbox, 'waits');
   for (const swarm of summary.swarms as Summary[]) add(`swarms.${String(swarm.key)}.members`, swarm, 'members');

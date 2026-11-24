@@ -2,13 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { WorkflowStopped, stopReasonOf } from './ports';
 import { workflowDigest } from './digest';
 import { abandonHeldClaims, adoptWorkClaims, cancelWork, expireWorkClaims, freezeWorkClaims, releaseWorkClaims, workContext } from './work-queue';
-import { pumpAsks } from './asks';
-import { charterPrompt, pumpMainWake } from './steering';
-import { plansWork, pumpSwarms } from './swarm';
+import { goalPrompt, pumpMainWake } from './steering';
+import { plansWork } from './swarm';
+import { pumpSwarms } from './swarm-pump';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
 import { completeMemberTurn, memberContext, taskAgent } from './durable-agents';
-import { MAX_TASK_ATTEMPTS } from './limits';
+import { MAX_TASK_ATTEMPTS, TURN_MAIL_GAP_MS } from './limits';
+import { showTurnMail, turnMail } from './turn-mail';
 import { archiveFinished, archiveRecords } from './archive';
 import { checkJsonOutput } from './json-output';
 import { addArtifact, BUSY, findTask, MAX_TEXT, pushEvent, readArtifact, requireState, sameRoot, taskById } from './kernel-state';
@@ -52,6 +53,8 @@ export class WorkflowScheduler {
   private readonly activity = new Map<string, { attemptId: string; at: number; busy: boolean; busyUntil?: number }>();
   /** Attempts the watchdog aborted, with why; execute() records them as retryable stalls rather than cancellations. */
   private readonly stalled = new Map<string, { attemptId: string; error: string }>();
+  /** Running turns that were offered mail (turn-mail.ts): when, whether the host has yet to answer, and whether the turn takes no more. */
+  private readonly mailed = new Map<string, { workflowId: string; at: number; sending?: true; closed?: true }>();
   private pumping = false;
   private heartbeatAt = 0;
   private readonly waking = new Set<string>();
@@ -202,6 +205,34 @@ export class WorkflowScheduler {
   }
 
   /**
+   * Puts the asks and answers that wait for members in a turn into those turns. The host answers after this pass:
+   * what it accepted is recorded as shown, and the rest stays in the member's messages for its next turn.
+   */
+  private mail(state: WorkflowView): void {
+    const { ctx } = this;
+    const tell = ctx.host.tell?.bind(ctx.host);
+    if (!tell) return;
+    const now = ctx.now(), scope = state.root.scopeId, workflowId = state.workflowId;
+    for (const [taskId, sent] of this.mailed) {
+      if (sent.workflowId === workflowId && !sent.sending && taskById(state, taskId)?.status !== 'running') this.mailed.delete(taskId);
+    }
+    const waits = (taskId: string) => { const sent = this.mailed.get(taskId); return Boolean(sent && (sent.sending || sent.closed || now - sent.at < TURN_MAIL_GAP_MS)); };
+    for (const mail of turnMail(state, waits)) {
+      const sent: { workflowId: string; at: number; sending?: true; closed?: true } = { workflowId, at: now, sending: true };
+      this.mailed.set(mail.taskId, sent);
+      const failed = (error: unknown) => ctx.log.warn('turn-mail-failed', { workflowId, taskId: mail.taskId, error: String(error) });
+      void tell(workflowId, mail.taskId, mail.text, randomUUID()).catch(error => { failed(error); return 'unknown' as const; }).then(status => {
+        delete sent.sending;
+        // A harness that takes no input in a turn will not take the next either, and words whose receipt was lost may
+        // have arrived: such a turn is offered nothing more, and what it was not shown waits for the member's next.
+        if (status === 'unsupported' || status === 'unknown') sent.closed = true;
+        if (status !== 'accepted' || ctx.closed) return;
+        ctx.store.transact(() => { const live = ctx.store.state(scope, workflowId); if (live) showTurnMail(live, mail.taskId, mail.messageIds); }, 'scheduler');
+      }).catch(failed);
+    }
+  }
+
+  /**
    * One full scheduling pass over the unfinished workflows, all of which are in memory: root authorization,
    * time-based transitions (deadlines, claim leases, wait timers) and admission. The runtime runs it on a short
    * interval; admitReady() covers the time in between.
@@ -249,7 +280,7 @@ export class WorkflowScheduler {
           if (busy.length) store.transact(() => { for (const task of busy) this.cancelTask(task, state); }, 'scheduler');
           continue;
         }
-        if (state.status === 'active') this.admit(state);
+        if (state.status === 'active') { this.admit(state); this.mail(state); }
         this.wake(state);
       }
       const scopes = new Set(unfinished.map(item => item.scope));
@@ -282,7 +313,6 @@ export class WorkflowScheduler {
       store.transact(() => {
         settleEventWaits(state, ctx.now());
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state));
-        pumpAsks(state, ctx.now());
         pumpMainWake(state, ctx.now());
         // While the script runs, what has long settled leaves the state; once it stops, what remains stays for review.
         if (state.script?.status === 'running' && ctx.now() - (this.archivedAt.get(state.workflowId) ?? 0) >= ARCHIVE_EVERY_MS) {
@@ -341,6 +371,7 @@ export class WorkflowScheduler {
             this.running.delete(taskId);
             this.activity.delete(taskId);
             this.stalled.delete(taskId);
+            this.mailed.delete(taskId);
           }).catch(error => ctx.log.warn('worker-failed', { error: String(error) }));
           started.set(taskId, attemptId);
           active++; tree.running++;
@@ -373,12 +404,12 @@ export class WorkflowScheduler {
       const session = detached<WorkerSession>(live.sessions.find(item => item.sessionRef === turn.sessionRef)!);
       const role = live.definition.roles[session.role]!;
       const inputs = task.inputRefs.map(ref => readArtifact(live, ref));
-      const charter = charterPrompt(live, turn);
+      const steering = goalPrompt(live, turn, ctx.now());
       const hostTools = ctx.host.workerHostTools?.(session, workflow.root) ?? Boolean(ctx.host.hostTools);
       const prompt = [role.instructions,
-        task.workflowTool ? 'Do only the task you are given, within what the original request authorizes. You may delegate through the child workflow tool you were given; do not send messages outside the workflow. After you request a child workflow, end the turn to release its resources: the bridge resumes the same session when the result is ready.' : task.agentId ? 'Do only the task you are given, within what the original request authorizes. You may save a checkpoint and post on the board of the workflow; do not send messages outside the workflow or delegate to sub-agents. Your final answer returns the result to the script.' : 'Do only the task you are given, within what the original request authorizes. Do not send messages on your own or delegate to sub-agents. Your final answer returns the result to the script.',
+        task.workflowTool ? 'Do only the task you are given, within what the original request authorizes. You may delegate through the child workflow tool you were given; do not send messages outside the workflow. After you request a child workflow, end the turn to release its resources: the bridge resumes the same session when the result is ready.' : task.agentId ? 'Do only the task you are given, within what the original request authorizes. You may save a checkpoint and write on the board of the workflow; do not send messages outside the workflow or delegate to sub-agents. Your final answer returns the result to the script.' : 'Do only the task you are given, within what the original request authorizes. Do not send messages on your own or delegate to sub-agents. Your final answer returns the result to the script.',
         deadlinePrompt(workflow.deadlineAt, ctx.now()),
-        `Request:\n${workflow.goal}`, ...(charter ? [charter] : []), `Task:\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, hostTools)] : [])].join('\n\n');
+        `Request:\n${workflow.goal}`, ...steering, `Task:\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, hostTools)] : [])].join('\n\n');
       const recovery = memberContext(live, turn);
       let memberPrompt = recovery ? prompt + '\n\nPersistent member context (handle only the input of this turn; check which side effects have already happened and do not repeat them):\n'
         + JSON.stringify(recovery) + (live.workQueue ? '\n\nWork queue:\n' + JSON.stringify(workContext(live, turn)) : '') : prompt;
@@ -461,7 +492,11 @@ export class WorkflowScheduler {
       const stopped = () => result.stopReason ?? (signal?.aborted ? stopReasonOf(signal) : undefined);
       // A host shutdown ends the turn, not the member's work: the next host decides whether the claim waits for it.
       if (ctx.host.executionLedger || stopped() !== 'shutdown') {
-        releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId);
+        // Only a turn that broke down by itself counts against the item it held: one that was stopped, cancelled or
+        // ended while its member still held the item returns it as it is.
+        const broke = Boolean(this.stalledAttempt(taskId, attemptId)) || result.status === 'failed' && !stopped() && !signal?.aborted
+          && task.status !== 'cancelling' && !['cancelling', 'cancelled', 'binding_attention'].includes(state.status);
+        releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId, broke);
       }
       if ((task.agentId || task.workflowTool) && result.status === 'completed' && !state.sessions.find(session => session.sessionRef === task.sessionRef)?.nativeSessionId) {
         result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };

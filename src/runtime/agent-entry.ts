@@ -18,10 +18,10 @@ export const NOTICE_PROMPT_MAX = 8;
  * prompt for a main agent that is not idle. It carries the notices themselves, since the turn has no fresh status.
  */
 export function workflowNoticePrompt(notices: ReadonlyArray<{ id: string; kind: string; summary: string }>): string {
-  const lines = notices.slice(0, NOTICE_PROMPT_MAX).map(notice => `- [${notice.kind}] ${notice.summary.slice(0, 600)}（事件 ${notice.id}）`);
+  const lines = notices.slice(0, NOTICE_PROMPT_MAX).map(notice => `- [${notice.kind}] ${notice.summary.slice(0, 900)}（事件 ${notice.id}）`);
   return `<workflow_events source="bridge">工作流在本轮进行期间产生了 ${lines.length} 条通知。这不是用户输入，也不是新任务：把手头这一步做到可以停下的地方后处理它们，再继续原来的工作。\n`
     + `${lines.join('\n')}\n`
-    + 'worker_reply 的全文用 worker_messages 读取，现状用 status 核对。worker_reply、review_due 送达即结，断粮、成员停止、停滞、落地暂停、请求在状态消失后自结，其余处理后用 ack_events。</workflow_events>';
+    + 'worker_reply 的全文用 worker_messages 读取，现状用 status 核对。worker_reply、review_due 送达即结，待办（todo、ask）在起因消失后自结（暂不处理用 defer_todo，该别人处理用 pass_todo），落地暂停在分支恢复后自结，其余处理后用 ack_events。</workflow_events>';
 }
 
 /** Entry-specific capabilities are prepared before the shared agent runner. */

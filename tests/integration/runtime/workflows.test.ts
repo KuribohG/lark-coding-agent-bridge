@@ -43,7 +43,7 @@ describe('workflow IPC and worker execution', () => {
     expect(state.sessions[0]?.nativeSessionId).toBe('child-1');
     expect(state.artifacts.find(a => a.taskId)?.text).toBe('proposal');
     await runtime.kernel.tick(); expect(wakeMain).toHaveBeenCalledWith('real-topic');
-    await expect(callWorkflow('task_status', {}, agent.runOptions[0]!.env)).rejects.toThrow('revoked');
+    await expect(callWorkflow('read_context', {}, agent.runOptions[0]!.env)).rejects.toThrow('revoked');
   });
 
   it('does not take a run held for its background tasks as a stalled worker', async () => {

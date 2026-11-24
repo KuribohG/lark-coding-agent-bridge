@@ -161,7 +161,7 @@ describe('hosted workers in managed worktrees', () => {
 
     await h.stop();
     // A call made while no controller listens waits for the next one instead of failing.
-    const status = callWorkflow('task_status', {}, first.env);
+    const status = callWorkflow('read_context', {}, first.env);
     await new Promise(resolve => setTimeout(resolve, 300));
     await h.resume();
     await expect(status).resolves.toBeTruthy();
