@@ -49,7 +49,8 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
       this.steps.set(index, step);
       if (this.completed.has(index) && step.step_type !== 'tool') return events;
       this.sessionId = text(step.conversation_id) || this.sessionId;
-      if (step.state === 'DONE') {
+      const stepTerminal = step.state === 'DONE' || step.state === 'ERROR';
+      if (stepTerminal) {
         this.completed.add(index);
         if (step.usage) {
           const stepUsage = object(step.usage);
@@ -75,13 +76,13 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
           this.tools.add(index);
           events.push({ type: 'tool_use', id, name, input: info.parameters ?? {} });
         }
-        if (step.state === 'DONE' && this.tools.has(index) && !this.finishedTools.has(index)
-          && ('output' in info || 'error' in info)) {
+        if (stepTerminal && this.tools.has(index) && !this.finishedTools.has(index)
+          && ('output' in info || 'error' in info || step.state === 'ERROR')) {
           this.finishedTools.add(index);
           const error = object(info.error);
           events.push({ type: 'tool_result', id,
             output: text(info.output) || text(error.message) || (info.output ? JSON.stringify(info.output) : ''),
-            isError: Boolean(info.error) });
+            isError: Boolean(info.error) || step.state === 'ERROR' });
         }
       }
     } else if (raw.event === 'result') {
@@ -129,9 +130,17 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
   private flushCompletedTools(exceptIndex?: number): AgentEvent[] {
     const flushed: AgentEvent[] = [];
     for (const idx of this.tools) {
-      if (idx !== exceptIndex && this.completed.has(idx) && !this.finishedTools.has(idx)) {
+      if (idx !== exceptIndex && (exceptIndex === undefined || this.completed.has(idx)) && !this.finishedTools.has(idx)) {
         this.finishedTools.add(idx);
-        flushed.push({ type: 'tool_result', id: `agy:${this.sessionId ?? 'run'}:${idx}`, output: '', isError: false });
+        const step = this.steps.get(idx);
+        const info = object(step?.tool_info);
+        const error = object(info.error);
+        flushed.push({
+          type: 'tool_result',
+          id: `agy:${this.sessionId ?? 'run'}:${idx}`,
+          output: text(info.output) || text(error.message) || (info.output ? JSON.stringify(info.output) : ''),
+          isError: Boolean(info.error) || step?.state === 'ERROR',
+        });
       }
     }
     return flushed;

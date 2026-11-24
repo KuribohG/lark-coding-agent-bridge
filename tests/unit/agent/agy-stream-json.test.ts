@@ -87,6 +87,25 @@ describe('Antigravity stream protocol', () => {
     ]);
   });
 
+  it('marks ERROR tool steps as failed even without tool_info.error and flushes unfinished tools on result', () => {
+    const t = new AgyStreamTranslator(); t.translate(init);
+    expect(t.translate(step(3, { step_type: 'tool', state: 'ACTIVE', tool_name: 'read_file',
+      tool_info: { parameters: { Path: '/repo/missing.ts' } } }))).toEqual([
+      { type: 'tool_use', id: 'agy:conversation-1:3', name: 'read_file', input: { Path: '/repo/missing.ts' } },
+    ]);
+    expect(t.translate(step(3, { state: 'ERROR' }))).toEqual([
+      { type: 'tool_result', id: 'agy:conversation-1:3', output: '', isError: true },
+    ]);
+
+    t.translate(step(4, { step_type: 'tool', state: 'ACTIVE', tool_name: 'read_file',
+      tool_info: { parameters: { Path: '/repo/late.ts' } } }));
+    expect(t.translate(result('SUCCESS'))).toEqual([
+      { type: 'tool_result', id: 'agy:conversation-1:4', output: '', isError: false },
+      { type: 'final_text', content: 'final answer' },
+      { type: 'done', sessionId: 'conversation-1', terminationReason: 'normal' },
+    ]);
+  });
+
   it.each(['ERROR', 'INVALID', 'WAITING', 'RUNNING'])('never reports %s as a completed task', status => {
     const events = new AgyStreamTranslator().translate(result(status));
     expect(events).toEqual([expect.objectContaining({ type: 'error', terminationReason: 'failed' })]);
