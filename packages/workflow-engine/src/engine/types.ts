@@ -742,6 +742,7 @@ export interface WorkflowWorkerResult {
   text?: string;
   question?: string;
   error?: string;
+  failureKind?: string;
 }
 
 export interface WorkspaceTaskView {

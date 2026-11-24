@@ -37,7 +37,7 @@ const ARCHIVE_EVERY_MS = 30_000;
 /** Shortest time between two journal maintenance passes (compaction, retention, orphaned texts). */
 const MAINTENANCE_EVERY_MS = 30 * 60_000;
 /** Failures worth another attempt: transport and provider throttling, not the agent's own mistakes. */
-const TRANSIENT_FAILURE = /(?<!\d)(?:429|500|502|503|504)(?!\d)|rate[_ -]?limit|rpm[_ -]?limit|too many requests|overloaded|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|connection reset|temporarily unavailable|upstream (?:error|unavailable)|没有返回|no output/i;
+const TRANSIENT_FAILURE = /(?<!\d)(?:429|500|502|503|504)(?!\d)|rate[_ -]?limit|rpm[_ -]?limit|too many requests|overloaded|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|connection reset|temporarily unavailable|upstream (?:error|unavailable)|没有返回|no output(?! produced)/i;
 
 interface RunningTurn {
   workflowId: string;
@@ -541,7 +541,7 @@ export class WorkflowScheduler {
         status = 'failed';
         error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
       }
-      const failureKind = status === 'failed' ? classifyFailure(stalled !== undefined, error, stopReason) : undefined;
+      const failureKind = status === 'failed' ? classifyFailure(stalled !== undefined, error, stopReason, result.failureKind) : undefined;
       // A governed native turn cannot be submitted again without proof that its first submission never happened,
       // except read-only workflows whose transient failure retries allocate a new executionId.
       const retry = (!ctx.host.executionLedger || result.confirmedNotSubmitted === true || state.script?.readOnly === true)
@@ -677,16 +677,20 @@ function boundedAnswer(text: string, limit: number): { text: string; truncated: 
 }
 
 /** How much of this failure is the environment's fault rather than the agent's. */
-function classifyFailure(stalled: boolean, error: string | undefined, stopReason?: WorkflowStopReason): string | undefined {
+function classifyFailure(stalled: boolean, error: string | undefined, stopReason?: WorkflowStopReason, explicitFailureKind?: string): string | undefined {
   if (stalled) return 'stall';
   // A deadline kill means the budget is spent; another attempt would only spend it again.
   if (stopReason === 'deadline') return 'deadline';
+  if (explicitFailureKind === 'permission_denied') return 'permission_denied';
   const message = error ?? '';
-  if (!message) return undefined;
+  if (!message) return explicitFailureKind || undefined;
   if (/no native session|nativeSessionId/i.test(message)) return 'session';
   if (/context (?:window|length)|maximum context|token limit/i.test(message)) return 'context';
+  if (/(?:tool )?permission(?: check)? (?:denied|failed|refused)|denied permission|auto-denied|not permitted|not allowed|权限.*(?:拒绝|不足|未获)/i.test(message)) {
+    return 'permission_denied';
+  }
   if (TRANSIENT_FAILURE.test(message)) return 'transient';
-  return undefined;
+  return explicitFailureKind || undefined;
 }
 
 /** Exponential backoff with jitter, so a fleet that fails together does not retry in lockstep. */

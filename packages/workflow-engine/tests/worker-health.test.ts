@@ -215,4 +215,32 @@ describe('worker health', () => {
     expect(artifact.text.length).toBeGreaterThan(99_000);
     expect(state.script?.status).toBe('result_ready');
   });
+
+  it('does not retry a read-only permission denial even when error mentions "no output produced"', async () => {
+    const specs: WorkerRunSpec[] = [];
+    const denialMessage = 'Tool permission denied for run_command: jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.';
+    const runtime = await start('chat-permission-denial', {
+      async start(spec) {
+        specs.push(spec);
+        await spec.validateBeforeRun();
+        return {
+          runId: `run-${specs.length}`, result: Promise.resolve('failed'),
+          stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+          async *events() {
+            yield { type: 'session', nativeSessionId: 'native-perm-1' };
+            yield { type: 'error', message: denialMessage };
+            yield { type: 'done', normal: false };
+          },
+        };
+      },
+    }, { script: 'return await agent("run check", {key:"a", readOnly:true});' });
+    await until(runtime, () => runtime.kernel.state('chat-permission-denial')?.tasks[0]?.status === 'failed');
+    await new Promise(resolve => setTimeout(resolve, 40));
+    await runtime.tick();
+    expect(specs).toHaveLength(1);
+    const task = runtime.kernel.state('chat-permission-denial')!.tasks[0]!;
+    expect(task.attempts).toHaveLength(1);
+    expect(task.attempts[0]!.failureKind).toBe('permission_denied');
+    expect(task.error).toBe(denialMessage);
+  });
 });
