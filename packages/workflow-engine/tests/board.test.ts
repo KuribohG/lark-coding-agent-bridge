@@ -1628,6 +1628,8 @@ describe('swarm', () => {
     await h.until(() => expect(h.results).toMatchObject([{ swarm: 'mv', moved: ['d'] }]));
     for (const [key, queue] of [['p1', 'p'], ['p2', 'p'], ['q1', 'q']] as const) await add(key, queue);
     await h.until(() => { for (const key of ['p1', 'p2', 'q1']) expect(item(key).status).toBe('completed'); });
+    // The turns that did them end before more work arrives: one that is still asking for its next item would take it.
+    await h.calm();
     expect(h.errors).toEqual([]);
     expect([item('p1').doneBy, item('p2').doneBy, item('q1').doneBy]).toEqual(['d', 'd', 'b']);
     expect(h.prompts('d')[0]).toContain('You do the work of queue "p".');
