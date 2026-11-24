@@ -41,6 +41,7 @@ export async function readCodexModels(profile: ProfileConfig, profileDir: string
       label: typeof entry.display_name === 'string' ? entry.display_name : entry.slug,
       reasoningEfforts: levels,
       defaultReasoningEffort: parseEffort(entry.default_reasoning_level, 'codex'),
+      ...(typeof entry.context_window === 'number' && entry.context_window > 0 ? { contextWindow: entry.context_window } : {}),
     });
   }
   return { defaults, models: models.length ? [{ value: 'default', label: '跟随默认' }, ...models] : fallback.models };

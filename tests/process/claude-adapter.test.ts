@@ -721,6 +721,46 @@ describe('ClaudeAdapter process contract', () => {
       (await new ClaudeAdapter({ binary: 'unused' }).prepareRun({ runId: 'run-no-cwd', prompt: 'hi' })).start(),
     ).rejects.toThrow(/cwd is required/);
   });
+
+  it('appends or strips [1m] idempotently based on context1m and falls back to sonnet[1m] when model is omitted', async () => {
+    const fakeOn = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-1m-on' }] });
+    cleanup.push(fakeOn.dir);
+    const runOn = (await new ClaudeAdapter({ binary: fakeOn.path }).prepareRun({
+      runId: 'run-1m-on',
+      prompt: 'hi',
+      cwd: fakeOn.dir,
+      model: 'claude-opus-4-8',
+      context1m: true,
+    })).start();
+    await collect(runOn.events);
+    const recOn = await readRecord(fakeOn.recordPath);
+    expect(recOn.argv[recOn.argv.indexOf('--model') + 1]).toBe('claude-opus-4-8[1m]');
+
+    const fakeDefault = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-1m-def' }] });
+    cleanup.push(fakeDefault.dir);
+    const runDefault = (await new ClaudeAdapter({ binary: fakeDefault.path }).prepareRun({
+      runId: 'run-1m-def',
+      prompt: 'hi',
+      cwd: fakeDefault.dir,
+      context1m: true,
+    })).start();
+    await collect(runDefault.events);
+    const recDefault = await readRecord(fakeDefault.recordPath);
+    expect(recDefault.argv[recDefault.argv.indexOf('--model') + 1]).toBe('sonnet[1m]');
+
+    const fakeOff = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-1m-off' }] });
+    cleanup.push(fakeOff.dir);
+    const runOff = (await new ClaudeAdapter({ binary: fakeOff.path }).prepareRun({
+      runId: 'run-1m-off',
+      prompt: 'hi',
+      cwd: fakeOff.dir,
+      model: 'opus[1m]',
+      context1m: false,
+    })).start();
+    await collect(runOff.events);
+    const recOff = await readRecord(fakeOff.recordPath);
+    expect(recOff.argv[recOff.argv.indexOf('--model') + 1]).toBe('opus');
+  });
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {

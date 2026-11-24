@@ -22,6 +22,7 @@ export interface CodexConfig extends ExecutableLaunchConfig {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  context1m?: boolean;
   codexHome?: string;
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
@@ -59,6 +60,7 @@ export function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexC
     ...(typeof input.apiKey === 'string' && input.apiKey ? { apiKey: input.apiKey } : {}),
     ...(typeof input.baseUrl === 'string' && input.baseUrl ? { baseUrl: input.baseUrl } : {}),
     ...(typeof input.model === 'string' && input.model ? { model: input.model } : {}),
+    ...(typeof input.context1m === 'boolean' ? { context1m: input.context1m } : {}),
     ...(input.provider ? { provider: input.provider } : {}),
     ...(typeof input.codexHome === 'string' ? { codexHome: input.codexHome } : {}),
     inheritCodexHome,

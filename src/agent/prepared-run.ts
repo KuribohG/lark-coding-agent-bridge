@@ -7,6 +7,7 @@ export function snapshotRunOptions(options: AgentRunOptions): AgentRunOptions {
     ...options,
     ...(options.env ? { env: Object.freeze({ ...options.env }) } : {}),
     ...(options.images ? { images: Object.freeze([...options.images]) } : {}),
+    ...(options.additionalDirs ? { additionalDirs: Object.freeze([...options.additionalDirs]) } : {}),
     ...(options.modelProvider ? { modelProvider: structuredClone(options.modelProvider) } : {}),
     ...(options.host ? { host: Object.freeze({ ...options.host }) } : {}),
   });

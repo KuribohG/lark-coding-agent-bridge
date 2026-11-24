@@ -19,6 +19,7 @@ export interface ClaudeConfig extends Partial<ExecutableLaunchConfig> {
   authToken?: string;
   baseUrl?: string;
   model?: string;
+  context1m?: boolean;
 }
 
 export function normalizeClaude(input: ClaudeConfig): ClaudeConfig {
@@ -28,6 +29,7 @@ export function normalizeClaude(input: ClaudeConfig): ClaudeConfig {
     ...(typeof input.authToken === 'string' && input.authToken ? { authToken: input.authToken } : {}),
     ...(typeof input.baseUrl === 'string' && input.baseUrl ? { baseUrl: input.baseUrl } : {}),
     ...(typeof input.model === 'string' && input.model ? { model: input.model } : {}),
+    ...(typeof input.context1m === 'boolean' ? { context1m: input.context1m } : {}),
     ...(typeof input.configDir === 'string' && input.configDir ? { configDir: input.configDir } : {}),
     ...(typeof input.mcpConfig === 'string' && input.mcpConfig ? { mcpConfig: input.mcpConfig } : {}) };
 }

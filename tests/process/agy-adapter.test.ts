@@ -6,7 +6,7 @@ import { AgyAdapter } from '../../src/agent/agy/adapter';
 import type { AgentEvent } from '../../src/agent/types';
 
 const dirs: string[] = [];
-afterEach(async () => { await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }))); });
 const initial = { event: 'init', conversation_id: 'native-session', init: {} };
 const completed = { event: 'result', result: { status: 'SUCCESS', conversation_id: 'native-session', response: 'answer' } };
 
@@ -88,12 +88,93 @@ describe('Antigravity process contract', () => {
     await expect(new AgyAdapter({ binary: h.binary }).prepareRun(h.options)).rejects.toMatchObject({ code: 'agent-version-unsupported' });
   });
 
-  it('rejects unsupported security modes, forks and invalid stored conversation identifiers', async () => {
+  it('maps read-only, workspace-write, and danger-full-access sandboxes cleanly and rejects unsafe modes', async () => {
+    const readOnlyH = await fixture(`emit(${JSON.stringify(initial)}); emit(${JSON.stringify(completed)});`);
+    const readOnlyRun = (await new AgyAdapter({ binary: readOnlyH.binary }).prepareRun({
+      ...readOnlyH.options, sandbox: 'read-only',
+    })).start();
+    await collect(readOnlyRun.events);
+    await readOnlyRun.waitForExit(1000);
+    const readOnlyRecord = JSON.parse(await readFile(join(readOnlyH.dir, 'request.json'), 'utf8'));
+    expect(readOnlyRecord.argv).toContain('--mode');
+    expect(readOnlyRecord.argv[readOnlyRecord.argv.indexOf('--mode') + 1]).toBe('plan');
+    expect(readOnlyRecord.argv).not.toContain('--dangerously-skip-permissions');
+    expect(readOnlyRecord.argv).not.toContain('--sandbox');
+    const readOnlySettings = JSON.parse(readOnlyRecord.argv[readOnlyRecord.argv.indexOf('--settings') + 1]);
+    expect(readOnlySettings.allowNonWorkspaceAccess).toBe(false);
+
+    const wsH = await fixture(`emit(${JSON.stringify(initial)}); emit(${JSON.stringify(completed)});`);
+    const extraDir = join(wsH.dir, 'extra-dir');
+    const wsRun = (await new AgyAdapter({ binary: wsH.binary }).prepareRun({
+      ...wsH.options, sandbox: 'workspace-write', additionalDirs: [extraDir],
+    })).start();
+    await collect(wsRun.events);
+    await wsRun.waitForExit(1000);
+    const wsRecord = JSON.parse(await readFile(join(wsH.dir, 'request.json'), 'utf8'));
+    expect(wsRecord.argv).toContain('--sandbox');
+    expect(wsRecord.argv).toContain('--dangerously-skip-permissions');
+    expect(wsRecord.argv).toContain('--add-dir');
+    expect(wsRecord.argv[wsRecord.argv.indexOf('--add-dir') + 1]).toBe(extraDir);
+    const wsSettings = JSON.parse(wsRecord.argv[wsRecord.argv.indexOf('--settings') + 1]);
+    expect(wsSettings.allowNonWorkspaceAccess).toBe(false);
+
+    const fullH = await fixture(`emit(${JSON.stringify(initial)}); emit(${JSON.stringify(completed)});`);
+    const fullRun = (await new AgyAdapter({ binary: fullH.binary }).prepareRun({
+      ...fullH.options, sandbox: 'danger-full-access',
+    })).start();
+    await collect(fullRun.events);
+    await fullRun.waitForExit(1000);
+    const fullRecord = JSON.parse(await readFile(join(fullH.dir, 'request.json'), 'utf8'));
+    expect(fullRecord.argv).toContain('--dangerously-skip-permissions');
+    expect(fullRecord.argv).not.toContain('--sandbox');
+    const fullSettings = JSON.parse(fullRecord.argv[fullRecord.argv.indexOf('--settings') + 1]);
+    expect(fullSettings.allowNonWorkspaceAccess).toBe(true);
+
     const adapter = new AgyAdapter();
     const options = { runId: 'run', prompt: 'hello', cwd: '/repo' };
-    await expect(async () => (await adapter.prepareRun({ ...options, sandbox: 'read-only' })).start()).rejects.toThrow('cannot guarantee');
-    await expect(async () => (await adapter.prepareRun({ ...options, sandbox: 'workspace-write' })).start()).rejects.toThrow('cannot guarantee');
+    await expect(async () => (await adapter.prepareRun({ ...options, sandbox: 'invalid' as never })).start()).rejects.toThrow('unsafe sandbox mode');
+    await expect(async () => (await adapter.prepareRun({ ...options, additionalDirs: ['relative/dir'] })).start()).rejects.toThrow('additionalDirs');
     await expect(async () => (await adapter.prepareRun({ ...options, forkSession: true })).start()).rejects.toThrow('forks');
     await expect(async () => (await adapter.prepareRun({ ...options, sessionId: '--invalid' })).start()).rejects.toThrow('conversation ID');
+  });
+
+  it('handles 1M context differently between OAuth native 1M and api_key gateway [1m]', async () => {
+    const oauthH = await fixture(`emit(${JSON.stringify(initial)}); emit(${JSON.stringify(completed)});`);
+    const oauthRun = (await new AgyAdapter({ binary: oauthH.binary, authMode: 'oauth' }).prepareRun({
+      ...oauthH.options, model: 'gemini-pro-orchestrator-neon', context1m: true,
+    })).start();
+    await collect(oauthRun.events);
+    await oauthRun.waitForExit(1000);
+    const oauthRecord = JSON.parse(await readFile(join(oauthH.dir, 'request.json'), 'utf8'));
+    expect(oauthRecord.argv[oauthRecord.argv.indexOf('--model') + 1]).toBe('gemini-pro-orchestrator-neon');
+
+    const apiH = await fixture(`emit(${JSON.stringify(initial)}); emit(${JSON.stringify(completed)});`);
+    const apiRun = (await new AgyAdapter({
+      binary: apiH.binary,
+      authMode: 'api_key',
+      apiKey: 'gk-test',
+      baseUrl: 'https://gw.example/v1',
+    }).prepareRun({
+      ...apiH.options, model: 'gemini-4-pro', context1m: true,
+    })).start();
+    await collect(apiRun.events);
+    await apiRun.waitForExit(1000);
+    const apiRecord = JSON.parse(await readFile(join(apiH.dir, 'request.json'), 'utf8'));
+    expect(apiRecord.argv[apiRecord.argv.indexOf('--model') + 1]).toBe('gemini-4-pro[1m]');
+    const apiSettings = JSON.parse(apiRecord.argv[apiRecord.argv.indexOf('--settings') + 1]);
+    expect(apiSettings.customModelsConfig.customModels['gemini-4-pro[1m]'].maxTokens).toBe(1_048_576);
+
+    const offH = await fixture(`emit(${JSON.stringify(initial)}); emit(${JSON.stringify(completed)});`);
+    const offRun = (await new AgyAdapter({
+      binary: offH.binary,
+      authMode: 'api_key',
+      apiKey: 'gk-test',
+    }).prepareRun({
+      ...offH.options, model: 'gemini-4-pro[1m]', context1m: false,
+    })).start();
+    await collect(offRun.events);
+    await offRun.waitForExit(1000);
+    const offRecord = JSON.parse(await readFile(join(offH.dir, 'request.json'), 'utf8'));
+    expect(offRecord.argv[offRecord.argv.indexOf('--model') + 1]).toBe('gemini-4-pro');
   });
 });

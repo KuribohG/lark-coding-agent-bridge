@@ -212,4 +212,53 @@ describe('CodexAdapter app-server process contract', () => {
     expect(await events).toContainEqual(expect.objectContaining({ type: 'done', terminationReason: 'interrupted' }));
     expect(await run.waitForExit(1000)).toBe(true);
   });
+
+  it('passes 1M window config without [1m] suffix in oauth mode, and appends [1m] in api_key mode', async () => {
+    const oauthH = await harness('normal', { authMode: 'oauth', inheritCodexHome: false });
+    await collect((await oauthH.adapter.prepareRun({
+      runId: 'codex-oauth-1m',
+      cwd: oauthH.dir,
+      prompt: 'long ctx',
+      model: 'gpt-6.1-sol',
+      context1m: true,
+    })).start());
+    const oauthRecord = await oauthH.record();
+    expect(oauthRecord.argv).toEqual(expect.arrayContaining([
+      '-c', 'model_context_window=1000000',
+      '-c', 'model_auto_compact_token_limit=900000',
+    ]));
+    const oauthThread = (await oauthH.requests()).find(r => r.method === 'thread/start')?.params;
+    expect(oauthThread.model).toBe('gpt-6.1-sol');
+    expect(oauthThread.config).toMatchObject({
+      model_context_window: 1_000_000,
+      model_auto_compact_token_limit: 900_000,
+    });
+
+    const apiH = await harness('normal', { authMode: 'api_key', apiKey: 'sk-test' });
+    await collect((await apiH.adapter.prepareRun({
+      runId: 'codex-api-1m',
+      cwd: apiH.dir,
+      prompt: 'long ctx',
+      model: 'gpt-6.1-sol',
+      context1m: true,
+    })).start());
+    const apiRecord = await apiH.record();
+    expect(apiRecord.argv).toEqual(expect.arrayContaining([
+      '-c', 'model_context_window=1000000',
+      '-c', 'model_auto_compact_token_limit=900000',
+    ]));
+    const apiThread = (await apiH.requests()).find(r => r.method === 'thread/start')?.params;
+    expect(apiThread.model).toBe('gpt-6.1-sol[1m]');
+
+    const stripH = await harness('normal', { authMode: 'api_key', apiKey: 'sk-test' });
+    await collect((await stripH.adapter.prepareRun({
+      runId: 'codex-api-off',
+      cwd: stripH.dir,
+      prompt: 'normal ctx',
+      model: 'gpt-6.1-sol[1m]',
+      context1m: false,
+    })).start());
+    const stripThread = (await stripH.requests()).find(r => r.method === 'thread/start')?.params;
+    expect(stripThread.model).toBe('gpt-6.1-sol');
+  });
 });

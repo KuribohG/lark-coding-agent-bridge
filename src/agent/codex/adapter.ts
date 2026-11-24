@@ -16,7 +16,7 @@ import type {
   AgentRunOptions,
 } from '../types';
 import { parseEffort } from '../model-settings';
-import { validateModelId } from '../models';
+import { append1mSuffix, strip1mSuffix, validateModelId } from '../models';
 import { startAppServerRun } from './app-server';
 import { withExecutionContract } from '../execution';
 import { codexExecutionCapabilities } from './capabilities';
@@ -27,6 +27,8 @@ import type { ResolvedModelProvider } from '../../model-provider/types';
 export type CodexAuthMode = AgentAuthMode;
 
 export const CODEX_OAUTH_SCRUB_ENV = Object.freeze(['OPENAI_API_KEY', 'OPENAI_BASE_URL'] as const);
+const CODEX_1M_CONTEXT_WINDOW = 1_000_000;
+const CODEX_1M_AUTO_COMPACT_LIMIT = 900_000;
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -37,6 +39,8 @@ export interface CodexAdapterOptions {
   baseUrl?: string;
   /** Optional default model override when per-run `opts.model` is omitted. */
   model?: string;
+  /** Enable 1M context window (`model_context_window=1000000`, `model_auto_compact_token_limit=900000`, and `[1m]` in `api_key` mode). */
+  context1m?: boolean;
   unsetEnv?: readonly string[];
   startupProvider?: () => Promise<ResolvedModelProvider | undefined> | undefined;
   systemPrompt?: AgentSystemPrompt;
@@ -63,6 +67,7 @@ export class CodexAdapter implements AgentAdapter {
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string | undefined;
   private readonly model: string | undefined;
+  private readonly context1m: boolean | undefined;
   private readonly unsetEnv: readonly string[];
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly appServerMode: CodexAppServerMode;
@@ -89,6 +94,7 @@ export class CodexAdapter implements AgentAdapter {
     this.apiKey = opts.apiKey?.trim() || undefined;
     this.baseUrl = opts.baseUrl ? normalizeCodexGatewayUrl(opts.baseUrl) : undefined;
     this.model = opts.model?.trim() || undefined;
+    this.context1m = opts.context1m;
     this.unsetEnv = Object.freeze([...(opts.unsetEnv ?? [])]);
     this.startupProvider = opts.startupProvider;
     this.systemPrompt = opts.systemPrompt;
@@ -222,8 +228,13 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
-    const requestedModel = input.model ?? this.model;
-    const opts = snapshotRunOptions({ ...input, ...(requestedModel ? { model: requestedModel } : {}) });
+    const context1m = input.context1m ?? this.context1m;
+    const requestedModel = resolveCodexEffectiveModel(input.model ?? this.model, this.authMode, context1m);
+    const opts = snapshotRunOptions({
+      ...input,
+      ...(requestedModel ? { model: requestedModel } : {}),
+      ...(context1m !== undefined ? { context1m } : {}),
+    });
     if (!opts.cwd) throw new Error('cwd is required for CodexAdapter.prepareRun');
     const sandbox = opts.sandbox ?? this.sandbox;
     if (!['read-only', 'workspace-write', 'danger-full-access'].includes(sandbox)) {
@@ -305,11 +316,21 @@ export class CodexAdapter implements AgentAdapter {
         `${prefix}.env_key=${quoteToml(provider.apiKeyEnv)}`);
       if (provider.headersEnv) configOverrides.push(`${prefix}.env_http_headers=${quoteToml(provider.headersEnv)}`);
     }
+    if (context1m === true) {
+      configOverrides.push(
+        `model_context_window=${CODEX_1M_CONTEXT_WINDOW}`,
+        `model_auto_compact_token_limit=${CODEX_1M_AUTO_COMPACT_LIMIT}`,
+      );
+    }
     // Both transports use the same thread tool context. A daemon's inherited
     // process environment is neither a profile binding nor an attempt binding.
     const threadConfig = {
       shell_environment_policy: environment.tools,
       ...(opts.forkSession ? { features: { goals: false } } : {}),
+      ...(context1m === true ? {
+        model_context_window: CODEX_1M_CONTEXT_WINDOW,
+        model_auto_compact_token_limit: CODEX_1M_AUTO_COMPACT_LIMIT,
+      } : {}),
     };
     const modelSettings = { model: deferred ? routing.model : effectiveOpts.model, reasoningEffort: effectiveOpts.reasoningEffort };
     const daemon = this.appServerMode === 'daemon' ? { binary: this.binary, env: environment.process } : undefined;
@@ -388,4 +409,21 @@ function deadlineTimeout(deadlineAt: number | undefined): number | undefined {
 function quoteToml(value: string | Record<string, string>): string {
   if (typeof value === 'string') return JSON.stringify(value);
   return `{ ${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)} = ${JSON.stringify(item)}`).join(', ')} }`;
+}
+
+function resolveCodexEffectiveModel(
+  rawModel: string | undefined,
+  authMode: CodexAuthMode | undefined,
+  context1m: boolean | undefined,
+): string | undefined {
+  const trimmed = rawModel?.trim();
+  const raw = trimmed && trimmed !== 'default' ? trimmed : undefined;
+  if (!raw) return undefined;
+  if (authMode === 'api_key') {
+    if (context1m === true) return append1mSuffix(raw);
+    if (context1m === false) return strip1mSuffix(raw);
+    return raw;
+  }
+  // ChatGPT Plus/Pro OAuth uses model_context_window / model_auto_compact_token_limit, never `[1m]`.
+  return context1m !== undefined ? strip1mSuffix(raw) : raw;
 }

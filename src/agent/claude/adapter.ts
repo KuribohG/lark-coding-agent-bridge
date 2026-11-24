@@ -2,7 +2,7 @@ import { preparedRun, snapshotRunOptions } from '../prepared-run';
 import type { PreparedAgentRun } from '../types';
 import { terminateChild } from '../../platform/terminate';
 import { ULTRA_EFFORT, parseEffort } from '../model-settings';
-import { validateModelId } from '../models';
+import { append1mSuffix, strip1mSuffix, validateModelId } from '../models';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,6 +50,8 @@ export interface ClaudeAdapterOptions {
   baseUrl?: string;
   /** Optional default model override when per-run `opts.model` is omitted. */
   model?: string;
+  /** Enable 1M context window routing (appends `[1m]` suffix). */
+  context1m?: boolean;
   unsetEnv?: readonly string[];
   /** Extra `--mcp-config` file; see ClaudeConfig.mcpConfig. */
   mcpConfig?: string;
@@ -77,6 +79,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly authToken: string | undefined;
   private readonly baseUrl: string | undefined;
   private readonly model: string | undefined;
+  private readonly context1m: boolean | undefined;
   private readonly unsetEnv: readonly string[];
   private readonly mcpConfig: string | undefined;
   private readonly autoMemoryDirectory: string | undefined;
@@ -94,6 +97,7 @@ export class ClaudeAdapter implements AgentAdapter {
     this.authToken = opts.authToken?.trim() || undefined;
     this.baseUrl = opts.baseUrl?.trim() || undefined;
     this.model = opts.model?.trim() || undefined;
+    this.context1m = opts.context1m;
     this.unsetEnv = Object.freeze([...(opts.unsetEnv ?? [])]);
     this.mcpConfig = opts.mcpConfig;
     this.autoMemoryDirectory = opts.autoMemoryDirectory;
@@ -129,10 +133,12 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
-    const model = input.model ?? this.model;
+    const context1m = input.context1m ?? this.context1m;
+    const model = resolveClaudeEffectiveModel(input.model ?? this.model, context1m);
     const opts = snapshotRunOptions({
       ...input,
       ...(model !== undefined ? { model } : {}),
+      ...(context1m !== undefined ? { context1m } : {}),
       systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
     });
     if (!opts.cwd) throw new Error('cwd is required for claude preparation');
@@ -241,7 +247,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.forkSession) args.push('--fork-session');
     if (opts.ephemeralSession) args.push('--no-session-persistence');
-    const model = opts.model ?? this.model;
+    const model = resolveClaudeEffectiveModel(opts.model ?? this.model, opts.context1m ?? this.context1m);
     if (model) args.push('--model', validateModelId(model));
     if (this.mcpConfig) args.push('--mcp-config', this.mcpConfig);
     // ultra maps to the ultracode session setting, which also pins effort to xhigh; it has no --effort value.
@@ -651,4 +657,12 @@ function isWindowsCommandNotFoundLine(line: string): boolean {
     process.platform === 'win32' &&
     /is not recognized as an internal or external command|operable program or batch file/i.test(line)
   );
+}
+
+function resolveClaudeEffectiveModel(rawModel: string | undefined, context1m: boolean | undefined): string | undefined {
+  const trimmed = rawModel?.trim();
+  const raw = trimmed && trimmed !== 'default' ? trimmed : undefined;
+  if (context1m === true) return raw ? append1mSuffix(raw) : 'sonnet[1m]';
+  if (context1m === false) return raw ? strip1mSuffix(raw) : undefined;
+  return raw;
 }

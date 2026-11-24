@@ -60,6 +60,8 @@ export interface SubmitRunInput {
   /** Model provider for this run; independent of {@link model}. */
   provider?: string;
   reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
+  context1m?: boolean;
+  additionalDirs?: readonly string[];
   images?: readonly string[];
   stopGraceMs?: number;
   /** The caller presents and answers agent questions for this run. */
@@ -378,6 +380,8 @@ export class RunExecutor {
       model: modelProvider?.model ?? input.model,
       modelProvider,
       reasoningEffort: input.reasoningEffort,
+      ...(input.context1m !== undefined ? { context1m: input.context1m } : {}),
+      ...(input.additionalDirs ? { additionalDirs: input.additionalDirs } : {}),
       images: input.images,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,

@@ -114,7 +114,7 @@ describe('guide profile creation inputs', () => {
     expect(accessChoices('claude')).toEqual(['full', 'workspace', 'read-only']);
     expect(accessChoices('codex')).toEqual(['full', 'workspace', 'read-only']);
     expect(accessChoices('pi')).toEqual(['full', 'read-only']);
-    expect(accessChoices('agy')).toEqual(['full']);
+    expect(accessChoices('agy')).toEqual(['full', 'workspace', 'read-only']);
   });
 
   it('prints follow-up commands the way this CLI was invoked', () => {

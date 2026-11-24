@@ -117,6 +117,8 @@ export interface AppPreferences {
   modelProvider?: string;
   /** Default effort for this bot, overridden by chat preferences. */
   reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
+  /** Enable 1M context window routing when supported. */
+  context1m?: boolean;
   /**
    * Whether to send a separate Lark COT process message before the final
    * answer. Defaults to `brief` for lightweight progress and tool summaries;
@@ -178,7 +180,7 @@ export interface ChannelDisplayConfig {
   slack?: Partial<import('./channel-display').SlackDisplayConfig>;
 }
 
-export type RunPreferences = Pick<AppPreferences, 'model' | 'modelProvider' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'workflowTimeoutMinutes' | 'agentStopGraceMs'
+export type RunPreferences = Pick<AppPreferences, 'model' | 'modelProvider' | 'reasoningEffort' | 'context1m' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'workflowTimeoutMinutes' | 'agentStopGraceMs'
   | 'cacheKeepaliveIntervalMinutes' | 'cacheKeepaliveMaxPings' | 'cacheKeepaliveMinContextTokens'>;
 
 /** In-memory account and preference view; the public file format is ConfigDocument. */

@@ -51,6 +51,8 @@ export interface StartRunFlowInput extends RunFlowContextInput {
   signal?: AbortSignal;
   deadlineAt?: number;
   modelSettings?: import('../agent/model-settings').ModelSettings;
+  context1m?: boolean;
+  additionalDirs?: readonly string[];
   executor: RunExecutor;
   stopGraceMs?: number;
   userQuestions?: boolean;
@@ -221,6 +223,12 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         ...(input.profileConfig.preferences.modelProvider ? { provider: input.profileConfig.preferences.modelProvider } : {}),
         reasoningEffort: input.profileConfig.preferences.reasoningEffort,
       }),
+      ...(input.context1m !== undefined
+        ? { context1m: input.context1m }
+        : input.profileConfig.preferences.context1m !== undefined
+          ? { context1m: input.profileConfig.preferences.context1m }
+          : {}),
+      ...(input.additionalDirs ? { additionalDirs: input.additionalDirs } : {}),
       images:
         input.capability.imageInput === 'paths'
           ? policy.attachments

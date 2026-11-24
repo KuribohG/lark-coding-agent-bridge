@@ -180,6 +180,10 @@ export interface AgentRunOptions {
   /** Backend-specific routing for a provider-qualified model selection. */
   modelProvider?: ResolvedModelProvider;
   reasoningEffort?: import('./model-settings').ReasoningEffort;
+  /** Enable 1M context window routing for this run when supported. */
+  context1m?: boolean;
+  /** Additional workspace directories to grant read/write access when supported (e.g. AGY `--add-dir`). */
+  additionalDirs?: readonly string[];
   images?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;

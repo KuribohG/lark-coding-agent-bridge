@@ -7,7 +7,7 @@ import { SpawnFailed } from '../errors';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import { withExecutionContract } from '../execution';
 import { parseEffort } from '../model-settings';
-import { resolveModelArg, validateModelId } from '../models';
+import { append1mSuffix, resolveModelArg, strip1mSuffix, validateModelId } from '../models';
 import { startProcessRun } from '../process-run';
 import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import type { AgentAdapter, AgentBotIdentity, AgentExecutionCapabilities, AgentRun, AgentRunOptions } from '../types';
@@ -36,6 +36,10 @@ export interface AgyAdapterOptions {
   model?: string;
   /** Optional context window size when configuring a custom Gemini endpoint in `api_key` mode. */
   contextWindow?: number;
+  /** Enable 1M context window routing when supported. */
+  context1m?: boolean;
+  /** Additional workspace directories to pass via `--add-dir` in `workspace-write` mode. */
+  additionalDirs?: readonly string[];
   unsetEnv?: readonly string[];
   env?: NodeJS.ProcessEnv;
   systemPrompt?: AgentSystemPrompt;
@@ -66,10 +70,13 @@ export class AgyAdapter implements AgentAdapter {
     });
   }
   async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
-    const model = input.model ?? this.options.model;
+    const context1m = input.context1m ?? this.options.context1m;
+    const rawModel = resolveModelArg('agy', input.model ?? this.options.model);
+    const model = resolveAgyEffectiveModel(rawModel, this.options.authMode, context1m);
     const options = snapshotRunOptions({
       ...input,
       ...(model !== undefined ? { model } : {}),
+      ...(context1m !== undefined ? { context1m } : {}),
       systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.options.systemPrompt, this.botIdentity),
     });
     validateRun(options, this.options);
@@ -80,6 +87,8 @@ export class AgyAdapter implements AgentAdapter {
   }
   private runNative(options: AgentRunOptions): AgentRun {
     validateRun(options, this.options);
+    const sandbox = options.sandbox ?? 'danger-full-access';
+    const context1m = options.context1m ?? this.options.context1m;
     const provider = options.modelProvider ? agyProviderLaunch(options.modelProvider) : undefined;
     const authMode = this.options.authMode;
     const explicitApiKey = this.options.apiKey?.trim()
@@ -88,7 +97,8 @@ export class AgyAdapter implements AgentAdapter {
     const explicitBaseUrl = this.options.baseUrl?.trim()
       || readEnvCI(this.options.env, 'GOOGLE_GEMINI_BASE_URL')
       || readEnvCI(options.env, 'GOOGLE_GEMINI_BASE_URL');
-    const requestedModel = resolveModelArg('agy', options.model ?? this.options.model);
+    const rawRequested = resolveModelArg('agy', options.model ?? this.options.model);
+    const requestedModel = resolveAgyEffectiveModel(rawRequested, authMode, context1m);
     if (requestedModel) validateModelId(requestedModel);
 
     let customLaunch: {
@@ -97,7 +107,9 @@ export class AgyAdapter implements AgentAdapter {
       settings: Record<string, unknown>;
     } | undefined;
     if (!provider && authMode === 'api_key') {
-      const contextWindow = this.options.contextWindow ?? DEFAULT_AGY_CONTEXT_WINDOW;
+      const contextWindow = context1m === true
+        ? DEFAULT_AGY_CONTEXT_WINDOW
+        : (this.options.contextWindow ?? DEFAULT_AGY_CONTEXT_WINDOW);
       customLaunch = {
         ...(requestedModel ? { model: requestedModel } : {}),
         env: {
@@ -123,9 +135,23 @@ export class AgyAdapter implements AgentAdapter {
     }
 
     const activeLaunch = provider ?? customLaunch;
+    const settingsObj = {
+      ...activeLaunch?.settings,
+      artifactReviewPolicy: 'always-proceed',
+      allowNonWorkspaceAccess: sandbox === 'danger-full-access',
+    };
     const args = ['--input-format', 'stream-json', '--output-format', 'stream-json',
-      '--disable-slash-commands', '--print-timeout', '0', '--dangerously-skip-permissions',
-      '--settings', JSON.stringify({ artifactReviewPolicy: 'always-proceed', allowNonWorkspaceAccess: true, ...activeLaunch?.settings })];
+      '--disable-slash-commands', '--print-timeout', '0'];
+    if (sandbox === 'read-only') {
+      args.push('--mode', 'plan');
+    } else if (sandbox === 'workspace-write') {
+      args.push('--sandbox', '--dangerously-skip-permissions');
+      const dirs = [...new Set((options.additionalDirs ?? this.options.additionalDirs ?? []).map((d) => d.trim()).filter(Boolean))];
+      for (const dir of dirs) args.push('--add-dir', dir);
+    } else {
+      args.push('--dangerously-skip-permissions');
+    }
+    args.push('--settings', JSON.stringify(settingsObj));
     if (options.sessionId) args.push('--conversation', options.sessionId);
     const model = provider?.model ?? customLaunch?.model ?? requestedModel;
     if (model) args.push('--model', model);
@@ -185,11 +211,31 @@ function validateRun(options: AgentRunOptions, adapterOptions: AgyAdapterOptions
       throw new Error('Antigravity api_key authMode requires apiKey, modelProvider, or GEMINI_API_KEY in env');
     }
   }
-  if (options.sandbox && options.sandbox !== 'danger-full-access') {
-    throw new Error('Antigravity headless mode cannot guarantee a portable read-only or workspace sandbox; select full access explicitly');
+  const sandbox = options.sandbox ?? 'danger-full-access';
+  if (!['read-only', 'workspace-write', 'danger-full-access'].includes(sandbox)) {
+    throw new Error(`unsafe sandbox mode: ${sandbox}`);
+  }
+  const additionalDirs = options.additionalDirs ?? adapterOptions.additionalDirs;
+  if (additionalDirs?.some((dir) => !isAbsolute(dir))) {
+    throw new Error('Antigravity additionalDirs paths must be absolute');
   }
   if (options.sessionId && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/.test(options.sessionId)) throw new Error('Invalid Antigravity conversation ID');
   if (options.images?.some(path => !isAbsolute(path))) throw new Error('Antigravity image paths must be absolute');
+}
+
+function resolveAgyEffectiveModel(
+  rawModel: string | undefined,
+  authMode: AgyAuthMode | undefined,
+  context1m: boolean | undefined,
+): string | undefined {
+  if (!rawModel) return undefined;
+  if (authMode === 'api_key') {
+    if (context1m === true) return append1mSuffix(rawModel);
+    if (context1m === false) return strip1mSuffix(rawModel);
+    return rawModel;
+  }
+  // Google OAuth Gemini models are natively 1M; never append `[1m]` to their model ID.
+  return context1m !== undefined ? strip1mSuffix(rawModel) : rawModel;
 }
 
 function readEnvCI(env: Readonly<NodeJS.ProcessEnv> | undefined, name: string): string | undefined {

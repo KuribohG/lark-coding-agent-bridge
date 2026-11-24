@@ -188,7 +188,7 @@ const AGY_SPEC: AgentBackendSpec = Object.freeze({
   providerBindings: Object.freeze({ gemini: 'agy-gemini' }),
   modelCatalog: 'agy',
   reasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
-  supportedAccess: Object.freeze(['full'] as AgentAccessMode[]),
+  supportedAccess: Object.freeze(['read-only', 'workspace', 'full'] as AgentAccessMode[]),
   webDefaultAccess: 'full',
 });
 

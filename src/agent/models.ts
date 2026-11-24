@@ -19,6 +19,7 @@ export interface ModelOption {
   label: string;
   reasoningEfforts?: string[];
   defaultReasoningEffort?: string;
+  contextWindow?: number;
 }
 
 /**
@@ -104,4 +105,17 @@ export function resolveModelArg(
 export function modelLabel(agentKind: AgentKind, value: string | undefined): string {
   const normalized = normalizeModelSelection(agentKind, value);
   return supportedModels(agentKind).find((m) => m.value === normalized)?.label ?? normalized;
+}
+
+export function has1mSuffix(value: string | undefined): boolean {
+  return Boolean(value && /\[1m\]$/i.test(value.trim()));
+}
+
+export function strip1mSuffix(value: string): string {
+  return value.trim().replace(/\[1m\]$/i, '');
+}
+
+export function append1mSuffix(value: string): string {
+  const trimmed = value.trim();
+  return has1mSuffix(trimmed) ? trimmed : `${trimmed}[1m]`;
 }

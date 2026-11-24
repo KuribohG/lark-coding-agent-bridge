@@ -105,6 +105,8 @@ export interface ConversationInput extends ConversationIdentity {
   attachments?: AgentAttachment[];
   signal?: AbortSignal;
   deadlineAt?: number;
+  context1m?: boolean;
+  additionalDirs?: readonly string[];
   /** Where this run's questions are shown. Without it the agent is not offered the question tool. */
   questions?: ConversationQuestionSink;
 }
@@ -282,7 +284,13 @@ export class ConversationRuntime {
           systemPrompt: this.options.systemPrompt ?? '',
           sessionSource: { kind: 'message', summary: input.prompt.slice(0, 180) },
           observabilitySource: 'channel',
-          runOptions: { env: input.env, userQuestions: input.questions ? true : this.options.userQuestions, deadlineAt: input.deadlineAt },
+          runOptions: {
+            env: input.env,
+            userQuestions: input.questions ? true : this.options.userQuestions,
+            deadlineAt: input.deadlineAt,
+            ...(input.context1m !== undefined ? { context1m: input.context1m } : {}),
+            ...(input.additionalDirs ? { additionalDirs: input.additionalDirs } : {}),
+          },
         };
       },
       // A turn that claimed the conversation's lane already holds its queue.

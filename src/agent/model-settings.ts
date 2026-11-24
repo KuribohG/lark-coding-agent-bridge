@@ -3,6 +3,7 @@ import type { ModelOption } from './models';
 import { agentBackendSpec } from './backend-spec';
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+export const EFFORT_RANK_ORDER = ['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 /** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to workflow workers. */
 export const ULTRA_EFFORT = 'ultra';
@@ -44,6 +45,25 @@ export function extendedEfforts(agentKind: AgentKind): string[] {
   return spec.extendedReasoningEfforts
     ? [...spec.extendedReasoningEfforts]
     : availableEfforts(agentKind);
+}
+
+/** Pick the highest-ranked reasoning effort from a supported list (or the agentKind's default list). */
+export function highestEffort(efforts: readonly string[], agentKind?: AgentKind): string | undefined {
+  const source = efforts.length > 0 ? efforts : (agentKind ? availableEfforts(agentKind) : []);
+  const filtered = source
+    .map((v) => String(v || '').trim())
+    .filter((v) => v && v !== 'auto' && v !== 'default');
+  if (!filtered.length) return undefined;
+  let best: string | undefined;
+  let bestRank = -1;
+  for (const item of filtered) {
+    const rank = (EFFORT_RANK_ORDER as readonly string[]).indexOf(item);
+    if (rank > bestRank) {
+      bestRank = rank;
+      best = item;
+    }
+  }
+  return best ?? filtered[filtered.length - 1];
 }
 
 /** Shared selector options for every chat-facing reasoning-effort setting. */

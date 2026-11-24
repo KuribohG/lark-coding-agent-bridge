@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { availableEfforts, extendedEfforts, modelRunArguments, parseEffort, reasoningEffortOptions, REASONING_EFFORTS, resolveModelSettings } from '../../../src/agent/model-settings';
+import { availableEfforts, extendedEfforts, highestEffort, modelRunArguments, parseEffort, reasoningEffortOptions, REASONING_EFFORTS, resolveModelSettings } from '../../../src/agent/model-settings';
 import { readModelEnvironment } from '../../../src/agent/model-environment';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createTmpProfile } from '../../helpers/tmp-profile';
@@ -95,5 +95,14 @@ describe('model settings resolution', () => {
     await expect(readModelEnvironment(profile, tmp.profile)).resolves.toMatchObject({
       defaults: { model: 'claude-sonnet-5', reasoningEffort: 'high' },
     });
+  });
+
+  it('picks the highest ranked reasoning effort per harness and per model', () => {
+    expect(highestEffort(availableEfforts('agy'))).toBe('max');
+    expect(highestEffort(availableEfforts('claude'))).toBe('max');
+    expect(highestEffort(extendedEfforts('claude'))).toBe('ultra');
+    expect(highestEffort(availableEfforts('codex'))).toBe('ultra');
+    expect(highestEffort(availableEfforts('dsh'))).toBe('max');
+    expect(highestEffort(['low', 'medium', 'high', 'xhigh'], 'codex')).toBe('xhigh');
   });
 });
