@@ -86,7 +86,7 @@ describe('staffing a running swarm from the main agent', () => {
     await expect(call('staff_swarm', { maxTurns: 4097 })).rejects.toThrow('between 1 and 4096');
     await expect(call('staff_swarm', { swarm: 'other', add: ['x'] })).rejects.toThrow('No running swarm');
     await expect(call('staff_swarm', { add: ['w1'] })).rejects.toThrow('already used');
-    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, move, revive, retire, cleanup, maxTurns or maxConcurrent');
+    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, move, revive, replace, retire, cleanup, maxTurns or maxConcurrent');
     await expect(call('staff_swarm', { retire: ['ghost'] })).rejects.toThrow('Unknown swarm member');
     // The number of workers that run at once follows the staff without a replay, and needs no state version.
     await expect(call('staff_swarm', { maxConcurrent: 513 })).rejects.toThrow('between 1 and 512');

@@ -37,11 +37,11 @@ export function saveCheckpoint(state: WorkflowView, task: TaskView, value: unkno
 }
 
 /** The member's latest turn among the calls the current script run has made. */
-export function memberCursor(state: WorkflowView, agent: AgentView): string | undefined {
+export function memberCursor(state: WorkflowView, agent: AgentView, except?: string): string | undefined {
   const { calls, archivedCalls, runId } = state.script!;
   for (let index = calls.length - 1; index >= 0; index--) {
     const task = taskById(state, calls[index]!.taskId);
-    if (task?.agentId === agent.agentId) return task.taskId;
+    if (task?.agentId === agent.agentId && task.taskId !== except) return task.taskId;
   }
   // A member's turns run in order and the oldest are archived first, so its archived calls all precede the ones above.
   return archivedCalls ? archiveOf(state)?.lastTurn(runId, agent.agentId) : undefined;

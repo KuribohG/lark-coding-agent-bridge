@@ -238,6 +238,14 @@ export interface SwarmMember {
   retryPending?: boolean;
   stopped?: 'failed' | 'retired';
   detail?: string;
+  /**
+   * The member goes on in a new session that has not had a turn yet (staff_swarm's replace): who replaced the old
+   * one when that was a lead, how the old one had ended, and what the new one is to know. The next turn opens the new
+   * session with the task, the rules and what the old one left behind.
+   */
+  takeover?: { by?: string; was?: 'failed' | 'retired'; detail?: string; brief?: string };
+  /** Sessions the member has had, when more than one. */
+  sessions?: number;
   /** Times the engine put the member back to work after a failed turn, without anyone asking. */
   autoRevived?: number;
   /** A wake-up the member asked for with wake_me: when it is due and what it is for. Cleared by the turn it starts. */

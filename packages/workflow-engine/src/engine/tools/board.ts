@@ -86,7 +86,7 @@ export const swarmTools: WorkflowToolPlugin = {
   id: 'swarm',
   leadInstructions: [
     'The next two operations are for the lead of a swarm; from any other member they are refused.',
-    'staff_swarm({operationId,add?,like?,workspace?,queue?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?}) changes who works in your swarm. add is an array of new member names (1–40 letters, digits, _ . or -). '
+    'staff_swarm({operationId,add?,like?,workspace?,queue?,role?,brief?,move?,revive?,replace?,retire?,cleanup?,maxTurns?}) changes who works in your swarm. add is an array of new member names (1–40 letters, digits, _ . or -). '
       + 'A new member takes the harness, model, role and queue of the member like names (by default the first member that is not a lead); a lead cannot choose another harness or model, so ask the main agent to add the member when one is needed. '
       + 'Its first turn shows it the task, its role and brief. queue makes it consume that work queue, and it then starts when the queue has work it can claim. '
       + 'workspace (true, or {base?,repo?,isolation?}) gives each added member a Git worktree of its own: without repo the cwd of the workflow is the repository and its HEAD the base, and isolation: "clone" makes each a repository of its own that does not share .git. '
@@ -94,14 +94,14 @@ export const swarmTools: WorkflowToolPlugin = {
       + 'move (an array of names, with queue) makes members that consume one queue consume queue instead, for when one queue has more work than members and another has members without work: '
       + 'a member finishes the item it holds and takes its next from the new queue, where it is woken when there is work to claim, and its next turn tells it of the move; role, when given, replaces the role of the members moved. '
       + 'unconsumed in the answer names a queue that lost its last member while it still holds unfinished items. '
-      + 'revive ("failed", or an array of names) lets failed members retry their last turn in the session they had. retire (an array of names) lets a member finish the turn it is in and then never wakes it again. '
+      + 'revive ("failed", or an array of names) lets failed members retry their last turn in the session they had. replace (an array of names) gives members that are not in a turn a new session under the same name, for when the session is what is wrong (it fails whatever it is asked, or it is full) and revive would run into the same: the member keeps its queue, role, worktree, messages, asks, to-dos and kept items, and the new session is told what the old one left and your brief. retire (an array of names) lets a member finish the turn it is in and then never wakes it again. '
       + 'cleanup ("retired", or an array of stopped members) deletes their idle worktrees together with whatever was not committed or integrated; the worktree of a failed member can be cleaned at once. '
       + 'maxTurns raises the number of wake-ups every member has. Giving a part of the work a lead of its own (leads, under) is for the main agent alone.',
     'swarm_finish({operationId,result}) ends the swarm with the final result (at most 16000 characters): the turns still running finish, the swarm returns, and nobody is woken again.',
   ].join('\n'),
   tools: [
     { name: 'staff_swarm',
-      main: { doc: 'staff_swarm(swarm?,add?,like?,workspace?,harness?,model?,reasoningEffort?,queue?,leads?,under?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?,maxConcurrent?)',
+      main: { doc: 'staff_swarm(swarm?,add?,like?,workspace?,harness?,model?,reasoningEffort?,queue?,leads?,under?,role?,brief?,move?,revive?,replace?,retire?,cleanup?,maxTurns?,maxConcurrent?)',
         ...versioned((_ctx, state, args, resolved) => {
           const staffed = resolved as { execution?: WorkerExecution; workspaces?: Record<string, string>; cleanedUp?: Array<{ name: string; workspace: string }> } | undefined;
           return staffSwarm(state, staffing(args), undefined, staffed?.execution, staffed?.workspaces, staffed?.cleanedUp, _ctx.now());

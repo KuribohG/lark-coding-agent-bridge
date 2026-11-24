@@ -415,6 +415,7 @@ describe('swarm', () => {
     const results: unknown[] = [];
     const seen: Record<string, number> = {};
     const taken: Record<string, string[]> = {};
+    const born: Record<string, number> = {};
     const holding = new Set<string>();
     const runtime: WorkflowRuntime = new WorkflowRuntime({
       path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
@@ -422,7 +423,10 @@ describe('swarm', () => {
         async start(spec) {
           specs.push(spec);
           await spec.validateBeforeRun();
-          const name = spec.resume?.id ?? /You are member "([^"]+)"/.exec(spec.prompt)![1]!;
+          const name = (spec.resume?.id ?? /You are member "([^"]+)"/.exec(spec.prompt)![1]!).replace(/#\d+$/, '');
+          // A session started anew under a name that had one gets a native ID of its own: name#2, name#3.
+          const born1 = spec.resume ? 0 : born[name] = (born[name] ?? 0) + 1;
+          const native = spec.resume?.id ?? (born1 > 1 ? `${name}#${born1}` : name);
           const turn = seen[name] = (seen[name] ?? 0) + 1;
           order.push(name + turn);
           (taken[name] ??= []).push(name + turn);
@@ -434,7 +438,7 @@ describe('swarm', () => {
             stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
             ...(action.heard ? { send: async (text: string) => { action.heard!.push(text); return action.receipt ?? 'accepted' as const; } } : {}),
             async *events() {
-              yield { type: 'session', nativeSessionId: name };
+              yield { type: 'session', nativeSessionId: native };
               try {
                 for (let n = 0; action.work; n++) {
                   const grant = await callWorkflow('claim_work', { operationId: 'claim' + n }, spec.env) as { claimId: string; generation: number } | null;
@@ -495,7 +499,7 @@ describe('swarm', () => {
         .map(task => members.find(member => member.taskId === task.taskId)?.name ?? task.taskId).filter(name => !holding.has(name))).toEqual([]);
     });
     /** The prompts of a member's turns, in order. */
-    const prompts = (name: string) => specs.filter(spec => (spec.resume?.id ?? /You are member "([^"]+)"/.exec(spec.prompt)?.[1]) === name).map(spec => spec.prompt);
+    const prompts = (name: string) => specs.filter(spec => (spec.resume?.id ?? /You are member "([^"]+)"/.exec(spec.prompt)?.[1])?.replace(/#\d+$/, '') === name).map(spec => spec.prompt);
     const turns = (name: string) => taken[name] ?? [];
     const todos = (kind?: string) => (state().todos?.open ?? []).filter(todo => !kind || todo.kind === kind);
     const notices = (kind: string) => state().events.filter(event => event.kind === kind);
@@ -744,13 +748,150 @@ describe('swarm', () => {
     // The turn that dealt with it was told what happened and what it can do; once docs was given up nothing waits any more.
     const told = h.prompts('lead').find(prompt => prompt.includes('failed and has stopped'))!;
     expect(told).toContain('Member "docs" of queue "default" failed and has stopped: model refused. An item it had claimed is back in its queue.');
-    expect(told).toContain('staff_swarm({revive: ["docs"]}) lets it retry its last turn in the session it had, add brings a replacement, and retire gives it up');
+    expect(told).toContain('staff_swarm({revive: ["docs"]}) lets it retry its last turn in the session it had, replace gives it a new session under its name when the session is what fails, add brings another member, and retire gives it up');
     expect(state.todos?.open ?? []).toEqual([]);
     expect(h.notices('todo')).toEqual([]);
     // The item that was for docs went to the rest of its queue once docs could not take it.
     expect(state.workQueue!.items.find(item => item.key === 'b')).toMatchObject({ status: 'completed', result: 'parser' });
     expect(h.specs.find(spec => /You are member "lexer"/.test(spec.prompt))).toMatchObject({
       prompt: expect.stringContaining('Same empty-input bug as the parser'), execution: { modelSettings: { model: 'm2' } } });
+  });
+
+  it('gives a member whose session fails a new session under its name, which starts from what the old one left and from what waits on the name', async () => {
+    const h = await play('return await swarm("Fix two modules", {key:"fix", maxTurns: 6, lead:{name:"lead"}, members:[{name:"parser"},{name:"docs"}]});', {
+      lead: (turn, state) => {
+        const docs = state.swarms![0]!.members.find(member => member.name === 'docs')!;
+        // Before docs has had a turn there is no session to replace, and a lead in its turn cannot replace its own.
+        if (turn === 1) return { calls: [['staff_swarm', { replace: ['docs'] }], ['staff_swarm', { replace: ['lead'] }],
+          ['enqueue_work', { key: 'a', title: 'Fix the parser', input: 1, assignee: 'parser' }], ['enqueue_work', { key: 'b', title: 'Fix the docs', input: 2, assignee: 'docs' }]] };
+        if (docs.stopped) return { calls: [['staff_swarm', { replace: ['docs'], brief: 'The session refused every request. Headings are ATX.' }]] };
+        const asked = state.board?.asks?.find(ask => ask.to === state.agents!.find(agent => agent.key === 'lead')!.agentId);
+        return asked ? { calls: [['answer', { ask: asked.seq, text: 'Both fixed' }], ['swarm_finish', { result: 'parser and docs fixed' }]] } : {};
+      },
+      // Once its first ask is answered, which the new session does, parser makes a second one of it.
+      parser: (turn, state) => turn === 1 ? { work: true, ask: { to: 'docs', text: 'Which heading style?' } }
+        : state.swarms![0]!.members.find(member => member.name === 'docs')!.sessions === 2 && !state.board?.asks?.length && !state.board!.posts.some(post => post.text === 'And the footer?')
+          ? { ask: { to: 'docs', text: 'And the footer?' } } : {},
+      // The ask wakes docs for a turn that fails, and fails again when it is retried in the same session.
+      docs: [{ work: true, calls: [['checkpoint', { expectedCheckpointVersion: 0, state: { done: ['docs/'] } }]] }, { fail: true }, { fail: true }, { answer: 'ATX' }, { answer: 'None' }],
+    });
+    await h.until(() => { expect(h.turns('docs')).toHaveLength(5); expect(h.turns('parser')).toHaveLength(3); });
+    await h.calm();
+    // The lead has been told all there is to tell it; the main agent's ask wakes it to close the swarm.
+    await h.asMain('ask', { to: 'lead', text: 'Is it done?' });
+    const { state, result } = await h.settled();
+    expect(result, state.script?.error).toMatchObject({ stop: 'finished', result: 'parser and docs fixed', members: [
+      { name: 'lead', lead: true }, { name: 'parser' }, { name: 'docs', status: 'idle', turns: 3, sessions: 2 }] });
+    expect(h.errors).toEqual([expect.stringContaining('Member docs has not had a turn yet, so it has no session to replace'),
+      expect.stringContaining('Member lead is in a turn; its session is replaced once the turn has ended')]);
+    expect(h.results).toContainEqual(expect.objectContaining({ swarm: 'fix', replaced: ['docs'] }));
+    expect(h.turns('docs')).toEqual(['docs1', 'docs2', 'docs3', 'docs4', 'docs5']);
+    const told = h.prompts('lead').find(prompt => prompt.includes('failed and has stopped'))!;
+    expect(told).toContain('replace gives it a new session under its name when the session is what fails');
+
+    // The retry resumed the session that failed; the turn after the replacement resumes nothing, and the one after that the new session.
+    const runs = h.specs.filter(spec => (spec.resume?.id ?? 'docs').startsWith('docs') && (spec.resume || spec.prompt.includes('You are member "docs"')));
+    expect(runs.map(spec => spec.resume?.id)).toEqual([undefined, 'docs', 'docs', undefined, 'docs#2']);
+    expect(state.sessions.find(session => session.actorKey === 'docs')).toMatchObject({ generation: 2, nativeSessionId: 'docs#2' });
+
+    // The new session is told who it is as on a first turn, and what the session before it left behind.
+    const first = runs[3]!.prompt;
+    for (const text of ['You are member "docs" of swarm "fix".', 'You do the work of queue "default"',
+      'This is the first turn of a new session: lead replaced the session that was "docs" before you, which had failed (model refused). Nothing that session had in mind is in front of you. What it left:',
+      '- The note it ended its last finished turn with: docs turn 1', '- The checkpoint it saved, in the member context below.',
+      '- From lead, for you:\nThe session refused every request. Headings are ATX.',
+      'What is addressed to "docs" is yours as before: its messages, the asks made of it, its to-dos and the items kept for it.',
+      'Start by finding out where the work stands, then go on with it.']) expect(first, text).toContain(text);
+    expect(first).not.toContain('This is your first turn.');
+    // What waited on the name waits on the new session: the ask as a to-do, its message, which the failed turn had
+    // taken and not consumed, and the checkpoint.
+    const ask = state.board!.posts.find(post => post.text === 'Which heading style?')!.seq;
+    expect(first).toContain('1 to-do waits on you; deal with it before other work:');
+    expect(first).toContain(`Ask ${ask} from parser: "Which heading style?"`);
+    expect(first).toContain('"text":"Which heading style?"');
+    expect(first).toContain('"state":{"done":["docs/"]}');
+    // The turn after it is an ordinary one of the member, which is told nothing of the replacement again.
+    expect(h.prompts('docs')[4]).toContain('wake-up 3 of at most 6');
+    expect(h.prompts('docs')[4]).not.toContain('new session');
+    // The failed turn was given up: it is no call of the run, and nothing it was handed stays with it.
+    const given = state.tasks.filter(task => task.agentId === state.agents!.find(agent => agent.key === 'docs')!.agentId && task.status === 'failed');
+    expect(given).toHaveLength(1);
+    expect(state.script!.calls.some(call => call.taskId === given[0]!.taskId)).toBe(false);
+    expect(state.mailbox!.messages.filter(message => message.consumedByTurnId === given[0]!.taskId)).toEqual([]);
+    expect(state.todos?.open ?? []).toEqual([]);
+  });
+
+  it('lets the main agent replace the session of a member between its turns, whether it failed, is idle or was retired, and replays without running a turn again', async () => {
+    const qa = gate();
+    const h = await play('return await swarm("Ship the parser", {key:"ship", maxTurns: 3, members:[{name:"dev", role:"Implement"},{name:"qa", role:"Verify"}]});', {
+      dev: [{}, { fail: true }, { fail: true }, { answer: 'Parser done' }, {}],
+      qa: [{ hold: qa.hold }],
+    });
+    const staff = (args: Record<string, unknown>) => h.asMain('staff_swarm', args);
+    const member = () => h.state().swarms![0]!.members.find(item => item.name === 'dev')!;
+    await h.calm();
+    expect(h.turns('dev')).toEqual(['dev1']);
+    // What cannot be replaced, and what replace cannot be combined with.
+    await expect(staff({ replace: ['qa'] })).rejects.toThrow('Member qa is in a turn; its session is replaced once the turn has ended');
+    await expect(staff({ replace: ['nobody'] })).rejects.toThrow('Unknown swarm member: nobody');
+    await expect(staff({ replace: [] })).rejects.toThrow('replace is an array of member names');
+    await expect(staff({ replace: ['dev', 'dev'] })).rejects.toThrow('Member names must be unique');
+    await expect(staff({ replace: ['dev'], add: ['dev2'], brief: 'For whom?' })).rejects.toThrow('make the two changes one after the other');
+    expect(member()).not.toHaveProperty('takeover');
+
+    // The main agent's ask wakes dev for a turn that fails twice; dev stops, and the main agent is told what it can do.
+    await h.asMain('ask', { to: 'dev', text: 'Is the parser done?' });
+    await h.until(() => expect(member().stopped).toBe('failed'));
+    expect(h.turns('dev')).toEqual(['dev1', 'dev2', 'dev3']);
+    expect(await staff({ replace: ['dev'] })).toMatchObject({ swarm: 'ship', replaced: ['dev'] });
+    await h.until(() => expect(h.turns('dev')).toHaveLength(4));
+    await h.calm();
+    const failed = h.prompts('dev')[3]!;
+    expect(failed).toContain('This is the first turn of a new session: the main agent replaced the session that was "dev" before you, which had failed (model refused).');
+    expect(failed).toContain('- The note it ended its last finished turn with: dev turn 1');
+    expect(failed).not.toContain('for you:');
+    expect(failed).not.toContain('The checkpoint it saved');
+    expect(failed).toContain('from the main agent: "Is the parser done?"');
+    expect(failed).toContain('"text":"Is the parser done?"');
+    expect(h.state().board?.asks ?? []).toEqual([]);
+    expect(member()).toMatchObject({ turns: 2, sessions: 2 });
+    expect(member()).not.toHaveProperty('takeover');
+
+    // A member that is idle is replaced the same way, say when its session is full; it starts at once, as a member
+    // of a swarm without a lead does, with the note of the turn that just ended.
+    expect(await staff({ replace: ['dev'], brief: 'Your context was full.' })).toMatchObject({ swarm: 'ship', replaced: ['dev'] });
+    await h.until(() => expect(h.turns('dev')).toHaveLength(5));
+    await h.calm();
+    const idle = h.prompts('dev')[4]!;
+    expect(idle).toContain('This is the first turn of a new session: the main agent replaced the session that was "dev" before you. Nothing that session had in mind');
+    expect(idle).toContain('- The note it ended its last finished turn with: dev turn 4');
+    expect(idle).toContain('- From the main agent, for you:\nYour context was full.');
+    expect(h.specs.filter(spec => spec.prompt.includes('You are member "dev"')).map(spec => spec.resume)).toEqual([undefined, undefined, undefined]);
+    expect(h.state().sessions.find(session => session.actorKey === 'dev')).toMatchObject({ generation: 3, nativeSessionId: 'dev#3' });
+
+    // Its wake-ups are used up, the first turns of the new sessions among them: another session would never start.
+    expect(member()).toMatchObject({ turns: 3, sessions: 3 });
+    await expect(staff({ replace: ['dev'] })).rejects.toThrow('Member dev has no wake-ups left (maxTurns is 3), so a new session would never start; raise maxTurns in the same call');
+    // A member that was retired comes back under its name, once it has turns to take.
+    await staff({ retire: ['dev'] });
+    expect(await staff({ replace: ['dev'], maxTurns: 4 })).toMatchObject({ replaced: ['dev'], maxTurns: 4 });
+    await h.until(() => expect(h.turns('dev')).toHaveLength(6));
+    expect(h.prompts('dev')[5]).toContain('replaced the session that was "dev" before you, which had been retired.');
+    await h.calm();
+
+    qa.release();
+    const { state, result } = await h.settled();
+    expect(result, state.script?.error).toMatchObject({ stop: 'quiet', members: [{ name: 'dev', turns: 4, sessions: 4, status: 'max_turns' }, { name: 'qa', turns: 0 }] });
+    expect(h.errors).toEqual([]);
+    // A replay rejoins the swarm from its records: the turn that was given up is not retried, and nobody runs again.
+    const turns = h.specs.length;
+    const again = h.runtime.bindMain(h.root.scopeId, 'continue');
+    await callWorkflow('replay_script', { operationId: randomUUID(), workflowId: state.workflowId, expectedStateVersion: state.stateVersion }, again.env);
+    again.release();
+    const replayed = await h.settled();
+    expect(replayed.state.script, replayed.state.script?.error).toMatchObject({ status: 'result_ready', revision: 1 });
+    expect(replayed.result).toEqual(result);
+    expect(h.specs).toHaveLength(turns);
   });
 
   it('does not take a to-do over a lead that has been in one turn since before it came up, until twice its time has passed', async () => {

@@ -8,7 +8,7 @@ const tools = BUILTIN_WORKFLOW_TOOLS;
 
 const STEERING = `目标是每个 worker 每轮都带的现行要求：set_goal(text) 整份替换（≤${GOAL_MAX_TEXT} 字符）并告知各负责人重排；写用户要的目标、可检验的达成标准和长期规则，方向调整或产出偏离时改它，不只发公告。进展不写在目标里：各负责人用 set_status 写自己那部分的现状，成员每轮都带，见 status 的 statuses。wake_me 定时唤醒你复盘（review_due 事件）：everyMinutes 周期，afterMinutes 一次，0 取消`;
 
-const STAFF_SWARM = `staff_swarm 不重放调整 swarm（多个在跑时用 swarm 指定）：add 新成员名单（≤256），沿用 like 成员（默认第一名非负责人成员）的 harness、模型、角色、队列，harness/model/reasoningEffort/queue/role 可另指，brief 是给新成员的首轮说明；workspace 给新成员建 worktree、leads 设子领域 lead、under 指定它的上级负责人（均见 guide）；move 把名单里的队列成员改为消费 queue 指定的队列；revive 重试失败成员（"failed" 或名单）；retire 成员跑完本轮后不再唤醒；cleanup 删除停用成员（retired 或 failed）的 worktree，其中未提交/未集成的修改一并丢弃（"retired" 或名单）；maxTurns 提高唤醒上限（只增不减，≤${SWARM_MAX_TURNS}）；maxConcurrent 改并发`;
+const STAFF_SWARM = `staff_swarm 不重放调整 swarm（多个在跑时用 swarm 指定）：add 新成员名单（≤256），沿用 like 成员（默认第一名非负责人成员）的 harness、模型、角色、队列，harness/model/reasoningEffort/queue/role 可另指，brief 是给新成员的首轮说明；workspace 给新成员建 worktree、leads 设子领域 lead、under 指定它的上级负责人（均见 guide）；move 把名单里的队列成员改为消费 queue 指定的队列；revive 重试失败成员（"failed" 或名单）；replace 给名单里不在回合中的成员换新会话（会话本身坏了或满了、revive 会重蹈覆辙时用；名字、队列、worktree、信箱和待办不变，brief 是给新会话的说明）；retire 成员跑完本轮后不再唤醒；cleanup 删除停用成员（retired 或 failed）的 worktree，其中未提交/未集成的修改一并丢弃（"retired" 或名单）；maxTurns 提高唤醒上限（只增不减，≤${SWARM_MAX_TURNS}）；maxConcurrent 改并发`;
 
 /**
  * How to call the tools. Every main turn that is bound to a workflow by a command or an event starts with this and

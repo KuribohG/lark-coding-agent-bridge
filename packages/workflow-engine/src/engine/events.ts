@@ -111,6 +111,12 @@ export type DomainEvent =
   | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
   | { type: 'swarm_member_workspace_cleaned'; swarmId: string; member: string }
   | { type: 'swarm_member_revived'; swarmId: string; member: string; auto?: boolean }
+  /**
+   * The member goes on under its name in a new session. A turn it had not finished is given up, and what that turn
+   * held of its messages is unread again. `cursor` is the member's last turn in the script's record, after which the
+   * new session's turns follow.
+   */
+  | { type: 'swarm_member_replaced'; swarmId: string; member: string; by?: string; brief?: string; cursor?: string }
   /** The member consumes `queue` from now on instead of the queue it had; `role`, when given, replaces its role. */
   | { type: 'swarm_member_moved'; swarmId: string; member: string; queue: string; role?: string }
   /** These items' outcomes were in the brief of their lead's turn, or have no lead left to go to. */

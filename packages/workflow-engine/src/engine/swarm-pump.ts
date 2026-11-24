@@ -1,9 +1,9 @@
 import { askSituations, openAsksOf } from './asks';
 import { boardNews } from './board';
 import { workflowDigest } from './digest';
-import { availableMessages, receiveMessages, scheduleMemberTurn } from './durable-agents';
+import { availableMessages, checkpoint, receiveMessages, scheduleMemberTurn } from './durable-agents';
 import type { DomainEvent } from './events';
-import { callCount, taskById } from './kernel-state';
+import { callCount, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import { openingPrompt, turnBrief, type BriefFacts } from './swarm-brief';
 import { answersFor, chainAbove, coordinates, leadsAbove, MEMBER_BUSY, plannedBy, plansQueue, queueLead, quoted, takesTurns, turnCount, type ItemView, type MemberView, type SwarmView } from './swarm';
@@ -150,6 +150,15 @@ export function pumpSwarms(state: WorkflowView, nativeIdKind: (agentKind: string
   return changed;
 }
 
+/** What the session a member had left for the one that takes over: the note its last finished turn ended with, and whether it saved a checkpoint. */
+function leftBehind(state: WorkflowView, agent: NonNullable<WorkflowView['agents']>[number]): NonNullable<BriefFacts['left']> {
+  const saved = checkpoint(state, agent);
+  let note: string | undefined;
+  // The result may have left the state with the turn it belongs to; the new session then starts without it.
+  try { note = saved?.resultRef ? readArtifact(state, saved.resultRef).text.trim() || undefined : undefined; } catch { note = undefined; }
+  return { ...(note ? { note } : {}), checkpoint: saved?.state !== null && saved?.state !== undefined };
+}
+
 /**
  * A turn that ended without a result during this run is a failure; turns cut short by a pause are retried instead. A
  * failed turn runs once more in the member's session, as staff_swarm's revive would have it, before the member stops:
@@ -259,9 +268,9 @@ function stopped({ swarm }: Survey): Array<Situation & { swarm: string }> {
     const what = member.name === swarm.lead ? ' (the lead)' : member.leads?.length ? ` (lead of ${quoted(member.leads)})` : member.queue ? ` of queue "${member.queue}"` : '';
     return { swarm: swarm.id, subject: `member:${swarm.id}:${member.name}`, kind: 'member' as const, chain: lead && lead !== member ? [lead.name, 'main'] : ['main'],
       en: `Member "${member.name}"${what} failed and has stopped: ${brief(member.detail, 300)}. An item it had claimed is back in its queue.`,
-      act: `staff_swarm({revive: ["${member.name}"]}) lets it retry its last turn in the session it had, add brings a replacement, and retire gives it up when the work does not need it.`,
+      act: `staff_swarm({revive: ["${member.name}"]}) lets it retry its last turn in the session it had, replace gives it a new session under its name when the session is what fails, add brings another member, and retire gives it up when the work does not need it.`,
       zh: `swarm "${swarm.key}" 的成员 ${member.name}${member.name === swarm.lead ? '（lead）' : ''} 失败并已停止（已自动重试一次）：${brief(member.detail, 200)}。`
-        + 'staff_swarm 的 revive 让它在原会话重试，add 补人，retire 表示不再需要它。' };
+        + 'staff_swarm 的 revive 让它在原会话重试，replace 给它换新会话（原会话本身有问题时），add 补人，retire 表示不再需要它。' };
   });
 }
 
@@ -460,8 +469,10 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
     const wakeable = (member: MemberView) => !member.stopped && !busy(member) && !swarm.finish
       && (member.retryPending || (member.taskId ? turnsLeft(member) && (due(member) || unread(member) || told(member) || hasWork(member) || results(member))
         // A lead starts by planning, and a member of a swarm without one that consumes no queue with the task itself;
-        // a member that consumes a queue starts with its first claimable item.
-        : coordinates(swarm, member) || !member.queue || hasWork(member) || told(member)));
+        // a member that consumes a queue starts with its first claimable item. A new session of a member that had
+        // turns starts the same way, and for what waits on the member besides: its messages, a wake-up, results.
+        : (!member.takeover || turnsLeft(member)) && (coordinates(swarm, member) || !member.queue || hasWork(member) || told(member)
+          || Boolean(member.takeover) && (due(member) || unread(member) || results(member)))));
     if (!swarm.members.some(busy) && !swarm.members.some(wakeable)) {
       if (lead?.stopped === 'failed') { end('failed', 'The lead failed: ' + (lead.detail ?? '')); return changed; }
       if (swarm.finish) { end('finished'); return changed; }
@@ -501,7 +512,7 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
       const queued = member.queue ? work.get(member.queue) : undefined;
       const own = queued?.kept.get(member.name)?.length ?? 0;
       const all = owed.get(member.name) ?? [];
-      return { now, timed, todos: todosOf(state, member.name, holds, now), deferred: deferredOf(state, member.name, now), asked: agent ? openAsksOf(state, agent.agentId, now) : [], answered: answersShown(state, member.taskId),
+      return { now, timed, todos: todosOf(state, member.name, holds, now), deferred: deferredOf(state, member.name, now), asked: agent ? openAsksOf(state, agent.agentId, now) : [], answered: answersShown(state, member.taskId), ...(member.takeover && agent ? { left: leftBehind(state, agent) } : {}),
         claimable: queued ? Math.max(0, queued.slots) + own : 0, own, results: all.slice(0, RESULTS_PER_TURN), moreResults: Math.max(0, all.length - RESULTS_PER_TURN),
         queues: standing(member), ...boardNews(state, agent?.boardSeq ?? 0, coordinates(swarm, member)) };
     };
@@ -517,7 +528,8 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
         break;
       }
       const opening = !member.taskId;
-      const timed = !retry && !opening && due(member);
+      // The first turn of a new session takes the wake-up the old one set, so that it is not woken a second time for it.
+      const timed = !retry && (!opening || Boolean(member.takeover)) && due(member);
       const key = retry ? prior!.scriptKey! : `@swarm/${swarm.id}/${turnCount(swarm)}`;
       const queued = member.queue ? work.get(member.queue)! : undefined;
       const own = queued?.kept.get(member.name)?.length ?? 0;
@@ -531,7 +543,8 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
       const forWork = Boolean(queued && (own || queued.slots > 0));
       let task;
       try {
-        if (!retry && !opening && mail) receiveMessages(state, member.name, key + '/inbox');
+        // Before its first turn a member has no messages; a new session of a member that had turns takes what the old one left unread.
+        if (!retry && (!opening || member.takeover) && mail) receiveMessages(state, member.name, key + '/inbox');
         ({ task } = scheduleMemberTurn(state, call, member.execution, nativeIdKind(member.execution.agentKind)));
       } catch (error) {
         // One member whose records do not let it take a turn stops like a member whose turn failed; the others go on.

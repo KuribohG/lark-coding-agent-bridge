@@ -21,6 +21,8 @@ const RULING_CHARS = 600;
 /** The room the outcomes of items share in a brief: one is quoted at length, a dozen get a line or two each. */
 const RESULTS_ROOM = 3600;
 const RESULT_CHARS = 1500;
+/** Characters of the note a replaced session left that the session after it is shown. */
+const TAKEOVER_NOTE_CHARS = 1500;
 
 const PLAN_ONLY = 'You plan and judge; you do not do the work: no code, builds, tests or measurements of your own, except to check a result before you rely on it';
 
@@ -161,6 +163,8 @@ export interface BriefFacts {
   asked: ReadonlyArray<{ seq: number; to: string; minutes: number; text: string }>;
   /** The answers to asks of its own that entered its last turn while it ran (turn-mail.ts). */
   answered: ReadonlyArray<{ ask: number; post: number; from: string }>;
+  /** For the first turn of a new session of the member: the note the session before it ended its last finished turn with, and whether it saved a checkpoint. */
+  left?: { note?: string; checkpoint: boolean };
   /** A worker: the items of its queue it can claim now, and how many of those are kept for it. */
   claimable: number;
   own: number;
@@ -239,7 +243,7 @@ function standing(swarm: SwarmView, member: MemberView, facts: BriefFacts, openi
   const whole = member.name === swarm.lead;
   const review = lead && !opening && (facts.timed || (member.turns + 1) % REVIEW_EVERY_TURNS === 0);
   return [
-    ...(facts.timed ? [`The wake-up you set with wake_me is due${member.wakeNote ? ': ' + member.wakeNote : ''}.`] : []),
+    ...(facts.timed ? [`The wake-up ${member.takeover ? 'the session before you' : 'you'} set with wake_me is due${member.wakeNote ? ': ' + member.wakeNote : ''}.`] : []),
     // A member that was moved was told its queue, and perhaps its role, in a turn that spoke of another queue.
     ...(member.queue && member.movedFrom && member.movedFrom !== member.queue ? [`You have been moved from queue "${member.movedFrom}" to queue "${member.queue}"`
       + (answersFor(swarm, member.queue) ? `, which @${answersFor(swarm, member.queue)!.name} leads` : '') + `: where your first turn speaks of "${member.movedFrom}", the items of "${member.queue}" now say what is wanted.`
@@ -265,7 +269,27 @@ function standing(swarm: SwarmView, member: MemberView, facts: BriefFacts, openi
   ];
 }
 
-/** The prompt of a member's first turn: who it is, the task, the others, the rules of its part and how things stand. */
+/**
+ * What the first turn of a new session is told of the one the member had before. The session is new and the member
+ * is not: what the old one knew is gone but for what it wrote down, and what is addressed to the name is still there.
+ */
+function takeoverLines(member: MemberView, facts: BriefFacts): string[] {
+  const taken = member.takeover!;
+  const by = taken.by ?? 'the main agent';
+  const how = taken.was === 'failed' ? `, which had failed${taken.detail ? ` (${taken.detail.slice(0, 300)})` : ''}` : taken.was === 'retired' ? ', which had been retired' : '';
+  const note = facts.left?.note;
+  return [`This is the first turn of a new session: ${by} replaced the session that was "${member.name}" before you${how}. Nothing that session had in mind is in front of you. What it left:`,
+    note ? `- The note it ended its last finished turn with: ${note.length > TAKEOVER_NOTE_CHARS ? note.slice(0, TAKEOVER_NOTE_CHARS) + '…[truncated]' : note}` : '- No note: it finished no turn.',
+    ...(facts.left?.checkpoint ? ['- The checkpoint it saved, in the member context below.'] : []),
+    ...(member.workspace ? ['- Its worktree, which is yours now, as it left it, perhaps with changes it did not commit: look at git status and git log before you change anything.'] : []),
+    ...(taken.brief ? [`- From ${by}, for you:\n${taken.brief}`] : []),
+    `What is addressed to "${member.name}" is yours as before: its messages, the asks made of it, its to-dos and the items kept for it.`];
+}
+
+/**
+ * The prompt of a member's first turn: who it is, the task, the others, the rules of its part and how things stand.
+ * The first turn of a new session of a member that had turns is told the same, and what the session before it left.
+ */
 export function openingPrompt(state: WorkflowView, swarm: SwarmView, member: MemberView, facts: BriefFacts): string {
   const lead = coordinates(swarm, member);
   return [`You are member "${member.name}" of swarm "${swarm.key}".` + (member.role ? '\nYour role: ' + member.role : ''),
@@ -273,9 +297,10 @@ export function openingPrompt(state: WorkflowView, swarm: SwarmView, member: Mem
     ...(member.brief ? ['You were added while the swarm was running, with this brief:\n' + member.brief] : []),
     'Members:\n' + roster(swarm),
     rules(state, swarm, member),
-    'This is your first turn.',
+    ...(member.takeover ? takeoverLines(member, facts) : ['This is your first turn.']),
     ...standing(swarm, member, facts, true),
-    lead ? (member.name === swarm.lead ? 'Start now: write your status, then hand out the first work.' : 'Start now: read what your part must deliver, write your status, then hand out the first work of your queues.')
+    member.takeover ? (lead ? 'Start now: find out how your part stands (your status, when you wrote one, is above), then go on planning.' : 'Start by finding out where the work stands, then go on with it.')
+      : lead ? (member.name === swarm.lead ? 'Start now: write your status, then hand out the first work.' : 'Start now: read what your part must deliver, write your status, then hand out the first work of your queues.')
       : 'Start on the work now.',
   ].join('\n');
 }

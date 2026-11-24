@@ -315,10 +315,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       member.taskId = event.taskId; member.retryPending = undefined; member.lastWake = event.wake;
       if (event.timer) { member.wakeAt = undefined; member.wakeNote = undefined; }
       // The prompt of a new turn told the member of its move and of what waits on it; a retried turn runs the prompt it had.
-      if (!event.retry) { member.movedFrom = undefined; if (event.at !== undefined) member.briefedAt = event.at; }
+      // The first turn of a new session is a wake-up of the member like any other; only the turn a member starts with is not.
+      const again = Boolean(member.takeover);
+      if (!event.retry) { member.movedFrom = undefined; member.takeover = undefined; if (event.at !== undefined) member.briefedAt = event.at; }
       if (!event.retry) {
         found.turns.push({ key: event.key, member: event.member, taskId: event.taskId });
-        if (!event.opening) member.turns++;
+        if (!event.opening || again) member.turns++;
       }
       return;
     }
@@ -343,6 +345,36 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
       member.stopped = undefined; member.detail = undefined; member.lastWake = undefined;
       if (event.auto) member.autoRevived = (member.autoRevived ?? 0) + 1;
+      return;
+    }
+    case 'swarm_member_replaced': {
+      const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
+      member.takeover = { ...(event.by ? { by: event.by } : {}), ...(member.stopped ? { was: member.stopped } : {}), ...(member.detail ? { detail: member.detail } : {}), ...(event.brief ? { brief: event.brief } : {}) };
+      member.sessions = (member.sessions ?? 1) + 1;
+      // Without a latest turn the member is neither retried nor taken for failed: it starts like one that was added.
+      member.stopped = undefined; member.detail = undefined; member.taskId = undefined; member.retryPending = undefined; member.lastWake = undefined; member.autoRevived = undefined;
+      const agent = state.agents!.find(item => item.key === event.member)!;
+      const given = agent.activeTurnId;
+      agent.activeTurnId = undefined; agent.lastTurnId = event.cursor; agent.wait = undefined;
+      // The new session has read none of the rulings the old one was handed.
+      agent.boardSeq = undefined;
+      const session = byId(state.sessions, item => item.sessionRef, agent.sessionRef)!;
+      // Nothing to resume: the host starts a new native session, which the next session_bound records.
+      session.nativeSessionId = undefined; session.observedModel = undefined; session.generation++;
+      if (!given) return;
+      // The turn the old session did not finish is given up. It is not part of what the member did, so it leaves the
+      // calls of the run, as a replay, which carries only finished turns, would leave it out.
+      const script = state.script!;
+      script.calls = script.calls.filter(call => call.taskId !== given);
+      // It consumes nothing either: what it had taken of the member's messages is for the new session.
+      const box = mailbox(state);
+      const held = new Set<string>();
+      for (const receipt of box.receipts) if (receipt.turnId === given) { held.add(receipt.id); receipt.status = 'consumed'; }
+      for (const message of box.messages) {
+        if (message.consumedByTurnId) continue;
+        if (message.receiptId && held.has(message.receiptId)) message.receiptId = undefined;
+        if (message.shownInTurnId === given) message.shownInTurnId = undefined;
+      }
       return;
     }
     case 'swarm_member_moved': {

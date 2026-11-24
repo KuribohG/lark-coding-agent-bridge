@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { postToBoard, readBoard } from './board';
 import { workflowDigest } from './digest';
+import { memberCursor } from './durable-agents';
 import { boardTotal, callCount, readArtifact, taskById } from './kernel-state';
 import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';
@@ -395,7 +396,7 @@ export async function staffCleanups(ctx: KernelContext, state: WorkflowView, inp
  * is likewise the main agent's decision: `leads` makes the one member it adds the lead of those queues.
  */
 export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution, workspaces?: Record<string, string>, cleanedUp?: Array<{ name: string; workspace: string }>, now = Date.now()): unknown {
-  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'workspace', 'queue', 'leads', 'under', 'role', 'brief', 'move', 'revive', 'retire', 'cleanup', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, workspace, harness, model, reasoningEffort, queue, leads, under, role, brief, move, revive, retire, cleanup, maxTurns and maxConcurrent');
+  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'workspace', 'queue', 'leads', 'under', 'role', 'brief', 'move', 'revive', 'replace', 'retire', 'cleanup', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, workspace, harness, model, reasoningEffort, queue, leads, under, role, brief, move, revive, replace, retire, cleanup, maxTurns and maxConcurrent');
   const workspaceWanted = input.workspace !== undefined && input.workspace !== false;
   if (workspaceWanted && state.script?.readOnly) throw new Error('Workspace operations are disabled in read-only workflows');
   if (workspaceWanted && input.add === undefined) throw new Error('workspace binds the members that add names');
@@ -406,8 +407,8 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
   if (chosen && lead !== undefined) throw new Error('Only the main agent can choose the harness or model of new members; a lead adds members like an existing one');
   if (chosen && !execution) throw new Error('The harness and model of the new members were not resolved');
   const swarm = lead === undefined ? runningSwarm(state, input.swarm) : leadSwarm(state, lead);
-  if (input.add === undefined && input.move === undefined && input.revive === undefined && input.retire === undefined && input.cleanup === undefined && input.maxTurns === undefined && input.maxConcurrent === undefined) throw new Error('staff_swarm needs add, move, revive, retire, cleanup, maxTurns or maxConcurrent');
-  const result: { swarm: string; added?: string[]; leads?: string[]; moved?: string[]; unconsumed?: string[]; revived?: string[]; retired?: string[]; cleaned?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection; workspaces?: Array<{ name: string; workspace: string }> } = { swarm: swarm.key };
+  if (input.add === undefined && input.move === undefined && input.revive === undefined && input.replace === undefined && input.retire === undefined && input.cleanup === undefined && input.maxTurns === undefined && input.maxConcurrent === undefined) throw new Error('staff_swarm needs add, move, revive, replace, retire, cleanup, maxTurns or maxConcurrent');
+  const result: { swarm: string; added?: string[]; leads?: string[]; moved?: string[]; unconsumed?: string[]; revived?: string[]; replaced?: string[]; retired?: string[]; cleaned?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection; workspaces?: Array<{ name: string; workspace: string }> } = { swarm: swarm.key };
   if (input.maxConcurrent !== undefined) {
     // How many workers run at once is the budget the main agent started the workflow with, so only it changes it.
     if (lead !== undefined) throw new Error('Only the main agent can change maxConcurrent');
@@ -445,6 +446,33 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
       emit(state, { type: 'swarm_member_revived', swarmId: swarm.id, member: name });
     }
     result.revived = names;
+  }
+  if (input.replace !== undefined) {
+    // The member goes on under its name in a new session, for when the session is what is wrong (it fails on every
+    // request, or it is full): what is addressed to the name stays with it, which a new member would not inherit.
+    if (!Array.isArray(input.replace) || !input.replace.length) throw new Error('replace is an array of member names');
+    if (input.add !== undefined) throw new Error('brief would go to the members that add names and to the sessions that replace starts; make the two changes one after the other');
+    const names = input.replace.map(name => scriptText(name, 'member name', 100));
+    if (new Set(names).size !== names.length) throw new Error('Member names must be unique');
+    const brief = input.brief === undefined ? undefined : scriptText(input.brief, 'member brief', 4000);
+    for (const name of names) {
+      const member = swarm.members.find(item => item.name === name);
+      if (!member) throw new Error('Unknown swarm member: ' + name);
+      if (member.cleaned) throw new Error(`Member ${name}'s worktree was cleaned; add a replacement instead`);
+      const agent = state.agents?.find(item => item.key === name);
+      if (!agent) throw new Error(`Member ${name} has not had a turn yet, so it has no session to replace`);
+      const turn = taskById(state, agent.activeTurnId);
+      if (turn && BUSY.has(turn.status)) throw new Error(`Member ${name} is in a turn; its session is replaced once the turn has ended`);
+      // The process of that turn may still be writing to the member's worktree.
+      if (turn?.status === 'unknown') throw new Error(`Whether the last turn of member ${name} has ended is not known; its session is replaced once that is settled`);
+      if (turn?.status === 'waiting_input') throw new Error(`Member ${name} waits for the answer to a question it asked; answer it, or cancel the turn, before its session is replaced`);
+      if (!coordinates(swarm, member) && member.turns >= swarm.maxTurns) throw new Error(`Member ${name} has no wake-ups left (maxTurns is ${swarm.maxTurns}), so a new session would never start; raise maxTurns in the same call`);
+      // The turn it leaves unfinished is not part of what the member did: its history ends with the turn before it,
+      // which is also where a replay, which carries only finished turns, would have it end.
+      const cursor = memberCursor(state, agent, agent.activeTurnId);
+      emit(state, { type: 'swarm_member_replaced', swarmId: swarm.id, member: name, ...(lead !== undefined ? { by: lead } : {}), ...(brief !== undefined ? { brief } : {}), ...(cursor ? { cursor } : {}) });
+    }
+    result.replaced = names;
   }
   if (input.retire !== undefined) {
     if (!Array.isArray(input.retire) || !input.retire.length) throw new Error('retire is an array of member names');
@@ -634,7 +662,7 @@ function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView
   const status = member.stopped ?? (task && BUSY.has(task.status) ? 'running' : swarm.status === 'running' ? 'waiting' : !coordinates(swarm, member) && member.turns >= swarm.maxTurns ? 'max_turns' : 'idle');
   const usual = likeMember(swarm, undefined).execution;
   const model = member.execution.modelSettings.model;
-  return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.leads?.length ? { leads: member.leads } : {}), ...(member.queue ? { queue: member.queue } : {}), ...(member.added ? { added: true } : {}), ...(member.cleaned ? { cleaned: true } : {}),
+  return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.leads?.length ? { leads: member.leads } : {}), ...(member.queue ? { queue: member.queue } : {}), ...(member.added ? { added: true } : {}), ...(member.sessions ? { sessions: member.sessions } : {}), ...(member.cleaned ? { cleaned: true } : {}),
     // Only the members bound unlike the rest carry their binding, which keeps a large swarm's summary short.
     ...(member.execution.agentKind !== usual.agentKind ? { harness: member.execution.agentKind } : {}),
     ...(model && (model !== usual.modelSettings.model || member.execution.agentKind !== usual.agentKind) ? { model } : {}), turns: member.turns, status,
