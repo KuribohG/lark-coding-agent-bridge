@@ -215,8 +215,12 @@ export class AppServerProtocol {
   private onTokenUsage(p: ObjectValue): void {
     const tokenUsage = object(p.tokenUsage);
     const usage = object(tokenUsage.last);
-    this.state.push([{ type: 'usage', inputTokens: Number(usage.inputTokens) || 0, outputTokens: Number(usage.outputTokens) || 0,
+    const inputTokens = Number(usage.inputTokens) || 0;
+    const outputTokens = Number(usage.outputTokens) || 0;
+    const contextTokens = inputTokens + outputTokens;
+    this.state.push([{ type: 'usage', inputTokens, outputTokens,
       cachedInputTokens: Number(usage.cachedInputTokens) || 0, reasoningOutputTokens: Number(usage.reasoningOutputTokens) || 0,
+      ...(contextTokens > 0 ? { contextTokens } : {}),
       contextWindowTokens: Number(tokenUsage.modelContextWindow) || undefined }]);
   }
 

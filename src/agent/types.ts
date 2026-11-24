@@ -143,6 +143,8 @@ export type AgentEvent =
       /** Prompt tokens written to the provider cache by this run. */
       cacheWriteInputTokens?: number;
       reasoningOutputTokens?: number;
+      /** Single-call / current-turn context occupancy tokens (separate from cumulative turn totals). */
+      contextTokens?: number;
       contextWindowTokens?: number;
       costUsd?: number;
     }

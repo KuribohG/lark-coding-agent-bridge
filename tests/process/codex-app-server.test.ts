@@ -272,6 +272,7 @@ describe('Codex native in-flight input', () => {
       outputTokens: 120,
       cachedInputTokens: 800000,
       reasoningOutputTokens: 20,
+      contextTokens: 900120,
       contextWindowTokens: 1000000,
     });
   });

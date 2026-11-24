@@ -17,6 +17,10 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
   private finishedTools = new Set<number>();
   private steps = new Map<number, ObjectValue>();
   private usage = new Map<number, ObjectValue>();
+  private latestUsageStep = -1;
+  private latestUsage?: ObjectValue;
+  private latestMainUsageStep = -1;
+  private latestMainUsage?: ObjectValue;
   private notices: AgentEvent[] = [];
 
   stderr(line: string): void {
@@ -47,7 +51,18 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
       this.sessionId = text(step.conversation_id) || this.sessionId;
       if (step.state === 'DONE') {
         this.completed.add(index);
-        if (step.usage) this.usage.set(index, object(step.usage));
+        if (step.usage) {
+          const stepUsage = object(step.usage);
+          this.usage.set(index, stepUsage);
+          if (index >= this.latestUsageStep) {
+            this.latestUsageStep = index;
+            this.latestUsage = stepUsage;
+          }
+          if (step.step_type !== 'checkpoint' && index >= this.latestMainUsageStep) {
+            this.latestMainUsageStep = index;
+            this.latestMainUsage = stepUsage;
+          }
+        }
       }
       const delta = text(update.text_delta);
       if (step.step_type === 'agent_response' && delta) events.push({ type: 'text', delta });
@@ -75,9 +90,18 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
       this.sessionId = text(result.conversation_id) || this.sessionId;
       events.push(...this.flushCompletedTools());
       const usage = this.usage.size ? this.sumUsage() : object(result.usage);
-      if (Object.keys(usage).length) events.push({ type: 'usage',
-        inputTokens: number(usage.input_tokens), outputTokens: number(usage.output_tokens),
-        cachedInputTokens: number(usage.cache_read_tokens), reasoningOutputTokens: number(usage.thinking_tokens) });
+      const latest = this.latestMainUsage ?? this.latestUsage ?? object(result.usage);
+      const contextTokens = (number(latest.input_tokens) ?? 0)
+        + (number(latest.cache_read_tokens) ?? 0)
+        + (number(latest.output_tokens) ?? 0);
+      if (Object.keys(usage).length || contextTokens > 0) events.push({
+        type: 'usage',
+        inputTokens: number(usage.input_tokens),
+        outputTokens: number(usage.output_tokens),
+        cachedInputTokens: number(usage.cache_read_tokens),
+        reasoningOutputTokens: number(usage.thinking_tokens),
+        ...(contextTokens > 0 ? { contextTokens } : {}),
+      });
       if (result.status === 'SUCCESS') {
         if (typeof result.response !== 'string') return [...events, this.error('agy SUCCESS result is missing response')];
         events.push({ type: 'final_text', content: result.response }, this.done('normal'));

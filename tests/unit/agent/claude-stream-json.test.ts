@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ClaudeAdapter } from '../../../src/agent/claude/adapter.js';
-import { translateEvent } from '../../../src/agent/claude/stream-json.js';
+import { ClaudeRunTranslator, translateEvent } from '../../../src/agent/claude/stream-json.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
 
 describe('Claude stream-json translator', () => {
@@ -80,6 +80,50 @@ describe('Claude stream-json translator', () => {
       { type: 'done', sessionId: 'sess-2', terminationReason: 'normal' },
     ]);
     expect([...translateEvent({ type: 'result', session_id: 'sess-2' })][0]).not.toHaveProperty('threadId');
+  });
+
+  it('tracks latest assistant message.usage as contextTokens and modelUsage contextWindow in ClaudeRunTranslator', () => {
+    const translator = new ClaudeRunTranslator();
+    [...translator.translate({
+      type: 'assistant',
+      message: {
+        id: 'msg-1',
+        usage: { input_tokens: 1000, cache_read_input_tokens: 40000, cache_creation_input_tokens: 500, output_tokens: 200 },
+        content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }],
+      },
+    })];
+    [...translator.translate({
+      type: 'assistant',
+      message: {
+        id: 'msg-2',
+        usage: { input_tokens: 1500, cache_read_input_tokens: 41500, cache_creation_input_tokens: 300, output_tokens: 400 },
+        content: [{ type: 'text', text: 'Done.' }],
+      },
+    })];
+    expect([
+      ...translator.translate({
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sess-3',
+        result: 'Done.',
+        usage: { input_tokens: 2500, cache_read_input_tokens: 81500, cache_creation_input_tokens: 800, output_tokens: 600 },
+        modelUsage: { 'claude-opus-4': { contextWindow: 1_000_000 } },
+        total_cost_usd: 0.25,
+      }),
+    ]).toEqual([
+      { type: 'final_text', content: 'Done.' },
+      {
+        type: 'usage',
+        inputTokens: 2500,
+        outputTokens: 600,
+        cachedInputTokens: 81500,
+        cacheWriteInputTokens: 800,
+        costUsd: 0.25,
+        contextTokens: 43700,
+        contextWindowTokens: 1_000_000,
+      },
+      { type: 'done', sessionId: 'sess-3', terminationReason: 'normal' },
+    ]);
   });
 
   it('ignores unknown, empty, and incomplete raw events', () => {

@@ -13,20 +13,23 @@ interface ContentBlock {
   is_error?: boolean;
 }
 
+interface ClaudeUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
 interface ClaudeRawEvent {
   type?: string;
   subtype?: string;
   session_id?: string;
   cwd?: string;
   model?: string;
-  message?: { id?: string; content?: ContentBlock[] | string };
+  message?: { id?: string; content?: ContentBlock[] | string; usage?: ClaudeUsage };
   parent_tool_use_id?: string | null;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-  };
+  usage?: ClaudeUsage;
+  modelUsage?: Record<string, { contextWindow?: number }>;
   total_cost_usd?: number;
   is_error?: boolean;
   result?: string;
@@ -63,6 +66,7 @@ export class ClaudeRunTranslator {
   private pendingText: string[] = [];
   private interimText: string[] = [];
   private messageId?: string;
+  private lastMessageUsage?: ClaudeUsage;
 
   constructor(private readonly answerIncludesInterimText = false) {}
 
@@ -84,6 +88,7 @@ export class ClaudeRunTranslator {
       return;
     }
     if (event.type === 'assistant') {
+      if (event.message?.usage) this.lastMessageUsage = event.message.usage;
       const id = event.message?.id;
       if (id && this.messageId && id !== this.messageId) yield* this.flushProgress();
       this.messageId = id ?? this.messageId;
@@ -111,7 +116,7 @@ export class ClaudeRunTranslator {
         if (content) yield { type: 'final_text', content };
       } else yield* this.flushProgress();
     }
-    yield* translateEvent(event);
+    yield* translateEvent(event, { lastMessageUsage: this.lastMessageUsage });
   }
 
   /**
@@ -132,7 +137,7 @@ export class ClaudeRunTranslator {
     this.pendingText = [];
     this.interimText = [];
     if (content.trim()) yield { type: 'final_text', content };
-    yield* translateEvent(event);
+    yield* translateEvent(event, { lastMessageUsage: this.lastMessageUsage });
   }
 }
 
@@ -145,7 +150,10 @@ export function isTaskNotificationResult(raw: unknown): boolean {
   return evt.type === 'result' && evt.origin?.kind === 'task-notification';
 }
 
-export function* translateEvent(raw: unknown): Generator<AgentEvent> {
+export function* translateEvent(
+  raw: unknown,
+  options: { lastMessageUsage?: ClaudeUsage } = {},
+): Generator<AgentEvent> {
   if (!raw || typeof raw !== 'object') return;
   const evt = raw as ClaudeRawEvent;
 
@@ -201,6 +209,23 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
       return;
     }
     if (evt.usage) {
+      const msgUsage = options.lastMessageUsage ?? evt.message?.usage;
+      const contextTokens = msgUsage
+        ? (msgUsage.input_tokens ?? 0)
+          + (msgUsage.cache_read_input_tokens ?? 0)
+          + (msgUsage.cache_creation_input_tokens ?? 0)
+          + (msgUsage.output_tokens ?? 0)
+        : 0;
+      let contextWindowTokens: number | undefined;
+      if (evt.modelUsage && typeof evt.modelUsage === 'object') {
+        for (const entry of Object.values(evt.modelUsage)) {
+          const win = entry?.contextWindow;
+          if (typeof win === 'number' && Number.isFinite(win) && win > 0) {
+            contextWindowTokens = win;
+            break;
+          }
+        }
+      }
       yield {
         type: 'usage',
         inputTokens: evt.usage.input_tokens,
@@ -208,6 +233,8 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
         cachedInputTokens: evt.usage.cache_read_input_tokens,
         cacheWriteInputTokens: evt.usage.cache_creation_input_tokens,
         costUsd: evt.total_cost_usd,
+        ...(contextTokens > 0 ? { contextTokens } : {}),
+        ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
       };
     }
     yield { type: 'done', sessionId: evt.session_id, terminationReason: 'normal' };

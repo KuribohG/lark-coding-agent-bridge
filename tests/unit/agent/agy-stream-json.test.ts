@@ -18,11 +18,28 @@ describe('Antigravity stream protocol', () => {
     expect(t.translate(done)).toEqual([]);
     t.translate(step(2, { step_type: 'checkpoint', state: 'DONE', usage: { input_tokens: 2, output_tokens: 1 } }));
     expect(t.translate(result('SUCCESS', { usage: { input_tokens: 1000, output_tokens: 100 } }))).toEqual([
-      { type: 'usage', inputTokens: 12, outputTokens: 4, cachedInputTokens: undefined, reasoningOutputTokens: undefined },
+      { type: 'usage', inputTokens: 12, outputTokens: 4, cachedInputTokens: undefined, reasoningOutputTokens: undefined, contextTokens: 13 },
       { type: 'final_text', content: 'final answer' },
       { type: 'done', sessionId: 'conversation-1', terminationReason: 'normal' },
     ]);
     expect(t.translate(result())).toEqual([]);
+  });
+
+  it('reports latest single-call contextTokens separately from cumulative multi-step usage', () => {
+    const t = new AgyStreamTranslator(); t.translate(init);
+    t.translate(step(1, { step_type: 'tool', state: 'DONE', tool_name: 'read_file',
+      tool_info: { parameters: { Path: '/repo/a.ts' }, output: 'ok' },
+      usage: { input_tokens: 5000, cache_read_tokens: 100000, output_tokens: 1000 } }));
+    t.translate(step(2, { step_type: 'tool', state: 'DONE', tool_name: 'read_file',
+      tool_info: { parameters: { Path: '/repo/b.ts' }, output: 'ok' },
+      usage: { input_tokens: 5000, cache_read_tokens: 100000, output_tokens: 1000 } }));
+    t.translate(step(3, { step_type: 'agent_response', state: 'DONE', text_delta: 'done',
+      usage: { input_tokens: 5000, cache_read_tokens: 100000, output_tokens: 1000 } }));
+    expect(t.translate(result('SUCCESS'))).toEqual([
+      { type: 'usage', inputTokens: 15000, outputTokens: 3000, cachedInputTokens: 300000, reasoningOutputTokens: undefined, contextTokens: 106000 },
+      { type: 'final_text', content: 'final answer' },
+      { type: 'done', sessionId: 'conversation-1', terminationReason: 'normal' },
+    ]);
   });
 
   it('synthesizes tool starts for completion-only updates and retains permission failures', () => {
