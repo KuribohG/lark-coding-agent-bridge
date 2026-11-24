@@ -3,7 +3,7 @@ import type { ModelOption } from './models';
 import { agentBackendSpec } from './backend-spec';
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
-export const EFFORT_RANK_ORDER = ['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+const EFFORT_RANK_ORDER = ['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 /** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to workflow workers. */
 export const ULTRA_EFFORT = 'ultra';
