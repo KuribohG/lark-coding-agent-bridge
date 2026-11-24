@@ -1539,7 +1539,9 @@ describe('swarm', () => {
     expect(h.notices('todo')).toMatchObject([{ acknowledged: false }]);
 
     // An item that stays to be claimed feeds the queue. Once that has lasted, the spell is over and the notice to the
-    // main agent is settled: nothing is left for it to acknowledge.
+    // main agent is settled: nothing is left for it to acknowledge. The turn that did "d" ends first: it would take
+    // "e" if it were still asking for its next item.
+    await h.calm();
     await add('e');
     const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
     const status = async () => await callWorkflow('status', { workflowId: h.state().workflowId }, main.env) as { todos: unknown[]; swarms: Array<{ queues: Record<string, Record<string, unknown>> }> };
@@ -1722,6 +1724,8 @@ describe('swarm', () => {
     // Queue "b" first: one item completed, then one given up. Then fifty items of queue "a".
     await add('b2', 'b');
     await h.until(() => expect(item('b2')!.status).toBe('completed'));
+    // The turn that completed it ends before the next item arrives, which is for the turn that gives up.
+    await h.calm();
     await add('b1', 'b');
     await h.until(() => expect(item('b1')!.status).toBe('failed'));
     for (let n = 0; n < 50; n++) await add('a' + n, 'a');
