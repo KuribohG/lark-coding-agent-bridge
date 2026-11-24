@@ -1,7 +1,7 @@
 import { statSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DashboardApi } from '../src/dashboard/api';
@@ -313,8 +313,9 @@ describe('dashboard API', () => {
   });
 
   it('names a source after the directory of its file unless given a name', () => {
-    expect(dashboardSource('codex=/state/x/workflows.sqlite')).toEqual({ name: 'codex', path: '/state/x/workflows.sqlite' });
-    expect(dashboardSource('/state/profiles/bot2/workflows.sqlite')).toEqual({ name: 'bot2', path: '/state/profiles/bot2/workflows.sqlite' });
+    // The path comes back absolute for the platform: on Windows it gains a drive and backslashes.
+    expect(dashboardSource('codex=/state/x/workflows.sqlite')).toEqual({ name: 'codex', path: resolve('/state/x/workflows.sqlite') });
+    expect(dashboardSource('/state/profiles/bot2/workflows.sqlite')).toEqual({ name: 'bot2', path: resolve('/state/profiles/bot2/workflows.sqlite') });
     expect(() => new DashboardApi([{ name: 'a', path: '/1' }, { name: 'a', path: '/2' }])).toThrow(/distinct/);
   });
 });
