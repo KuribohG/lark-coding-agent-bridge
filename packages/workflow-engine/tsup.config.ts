@@ -10,4 +10,6 @@ export default defineConfig({
   clean: true,
   splitting: false,
   dts: { entry: { index: 'src/index.ts' } },
+  // The dashboard page (src/dashboard/page.html) is bundled as a string.
+  esbuildOptions(options) { options.loader = { ...options.loader, '.html': 'text' }; },
 });

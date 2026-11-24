@@ -39,6 +39,7 @@ import { runDown, runUp, type UpOptions } from './commands/up';
 import { runUi, runUiStop } from './commands/ui';
 import { runGuide } from './commands/guide';
 import { runWeb } from './commands/web';
+import { runDashboard } from './commands/dashboard';
 import { runSlack } from './commands/slack';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
 import { checkMonitors, configureMonitors, statusMonitors } from './commands/monitors';
@@ -138,6 +139,17 @@ program.command('slack')
   .option('--bot-token-secret <id>', 'keystore ID for the bot token', 'slack-bot-token')
   .option('--app-token-secret <id>', 'keystore ID for the app-level token', 'slack-app-token')
   .action(runSlack);
+
+program.command('dashboard')
+  .description('Serve the read-only web dashboard of this bridge home\'s workflows (members, work queues, board, turns)')
+  .option('--profiles <names...>', 'profiles whose workflows to show; default: every profile that has a workflow store')
+  .option('--db <name=path...>', 'further workflow stores to show')
+  .option('--host <address>', 'address to listen on; default 127.0.0.1')
+  .option('--port <port>', 'port to listen on; default: a free one')
+  .option('--label <text>', 'shown in the page beside its name')
+  .option('--state-file <path>', 'where to record the address and token; default <home>/workflow-dashboard.json')
+  .option('--no-token', 'serve the API without a token, for a listener only an authenticating proxy can reach')
+  .action(runDashboard);
 
 program.command('workflow <operation>')
   .description('Call the current bridge-owned workflow using this run’s scoped binding')

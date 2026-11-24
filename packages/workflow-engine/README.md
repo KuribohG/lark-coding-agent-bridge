@@ -11,8 +11,9 @@ The package is developed in the bridge repository and is not yet published on it
 | `src/engine` | Kernel (SQLite state), script VM, runtime, worker IPC, worktrees |
 | `src/engine/tools` | Agent-callable workflow operations as tool plugins, each with the instructions that describe it |
 | `src/chat` | `/workflow` command text and status rendering |
+| `src/dashboard` | Read-only web dashboard: view projections, a reader that follows a store another process owns, JSON API, server and page ([guide](../../docs/workflow-dashboard.md)) |
 | `src/index.ts` | Public API |
-| `src/cli.ts` | Worker CLI (`agent-workflow workflow <operation>`) |
+| `src/cli.ts` | Worker CLI (`agent-workflow workflow <operation>`), and `agent-workflow dashboard --db [name=]<store>` |
 
 Each operation the main agent or a worker can call through the workflow CLI is a `WorkflowTool` in one of the plugins under `src/engine/tools` (lifecycle, artifacts, member context, mailbox, work queue, nested workflows). A tool declares which caller may use it and, for main operations, how the kernel guards it (read-only, start, or versioned mutation allowed while interrupted or after the deadline). `KernelOperations` keeps authorization, idempotency and the shared state checks, then dispatches through `WorkflowToolRegistry`. Agents learn tools only from the generated instructions, so a plugin carries its own signatures and member/nested paragraphs, and `tests/workflow-tools.test.ts` checks that every registered tool is documented. The registry is internal; hosts cannot add tools yet.
 
@@ -46,6 +47,10 @@ WORKFLOW_ENGINE_VERIFY=0 WORKFLOW_LOAD='{"store":{"workers":1000,"turns":5,"work
 ```
 
 `WORKFLOW_LOAD` takes `store` and `runtime` option objects, or arrays of them. The runtime load cannot exceed the engine's current limits: 16 concurrent workers and 128 tasks per workflow, four root scripts at a time.
+
+## Dashboard
+
+`startDashboard({ sources: [{ name, path }] })` serves a read-only page over the given store files; `agent-workflow dashboard --db [name=]<workflows.sqlite>` does the same from the command line. The stores are opened read-only and followed through their journal (`WorkflowStore.follow`), so the host that owns them is not involved and need not be running. `DashboardApi` is the same API without a transport, for a host that mounts it under routes of its own. The view functions in `src/dashboard/views.ts` take a `WorkflowState`, so a host can also call them on `runtime.kernel.state()`. See the [guide](../../docs/workflow-dashboard.md).
 
 ## Dependencies
 

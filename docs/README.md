@@ -31,6 +31,7 @@ Examples contain placeholders, never usable credentials. Copy to a private file 
 ## Optional features and reference
 
 - [Workflows](workflows.md): scripted branches, parallel tasks, replay, and independent harness/model selection; architecture review is an example.
+- [Workflow dashboard](workflow-dashboard.md): a read-only web page over every workflow of a bridge home — members, work queues, board, turns — and how it relates to the chat channels.
 - [Embedding the workflow engine](../packages/workflow-engine/README.md): the `@kuribohg/agent-workflows` package (also re-exported as `lark-channel-bridge/workflows`), host ports and layering.
 - [Assistant](user-guide/assistant.md), [monitoring](user-guide/monitoring.md), [operations](user-guide/operations.md) — 中文.
 - [Self-contained deployment](self-contained.md), [Inbox configuration](inbox-assistant.md), [GitLab CI](gitlab-ci-watch.md), [storage monitoring](storage-monitoring.md).

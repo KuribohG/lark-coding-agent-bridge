@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflows</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  color-scheme: light;
+  --plane: #f9f9f7; --surface: #fcfcfb; --raised: #ffffff; --wash: rgba(11,11,11,.045); --wash-2: rgba(11,11,11,.08);
+  --ink: #0b0b0b; --ink-2: #52514e; --ink-3: #898781; --hair: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10);
+  --accent: #2a78d6; --accent-wash: rgba(42,120,214,.10); --track: #cde2fb;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b; --idle: #b9b8b1; --void: #dddcd5;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --raised: #222221; --wash: rgba(255,255,255,.06); --wash-2: rgba(255,255,255,.11);
+    --ink: #f0efec; --ink-2: #c3c2b7; --ink-3: #898781; --hair: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10);
+    --accent: #3987e5; --accent-wash: rgba(57,135,229,.16); --track: #104281; --idle: #5b5a56; --void: #3a3a37;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --raised: #222221; --wash: rgba(255,255,255,.06); --wash-2: rgba(255,255,255,.11);
+  --ink: #f0efec; --ink-2: #c3c2b7; --ink-3: #898781; --hair: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10);
+  --accent: #3987e5; --accent-wash: rgba(57,135,229,.16); --track: #104281; --idle: #5b5a56; --void: #3a3a37;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--plane); color: var(--ink); font: 13px/1.5 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; display: grid; grid-template: 44px 1fr / 300px 1fr; overflow: hidden; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 1px solid var(--ring); border-radius: 6px; padding: 3px 10px; }
+button:hover { background: var(--wash); }
+button.plain { border: 0; padding: 2px 6px; }
+input[type=search], input[type=text], select { background: var(--raised); border: 1px solid var(--ring); border-radius: 6px; padding: 4px 8px; min-width: 0; }
+input:focus-visible, select:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+a { color: var(--accent); text-decoration: none; cursor: pointer; }
+a:hover { text-decoration: underline; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.dim { color: var(--ink-2); } .faint { color: var(--ink-3); }
+.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.nowrap { white-space: nowrap; }
+.clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+header.top { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 14px; background: var(--surface); border-bottom: 1px solid var(--hair); }
+header.top h1 { font-size: 14px; margin: 0; font-weight: 650; }
+header.top .label { color: var(--ink-3); }
+header.top .gap { flex: 1; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); max-width: 46vw; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); flex: none; display: inline-block; }
+.dot.run { background: var(--accent); } .dot.good { background: var(--good); } .dot.warn { background: var(--warning); }
+.dot.serious { background: var(--serious); } .dot.bad { background: var(--critical); } .dot.mute { background: var(--idle); }
+.dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } }
+
+aside.side { background: var(--surface); border-right: 1px solid var(--hair); overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+.side .tools { padding: 8px 10px; display: flex; gap: 6px; border-bottom: 1px solid var(--hair); }
+.side .tools input { flex: 1; }
+.side .list { overflow: auto; flex: 1; padding: 4px 0 20px; }
+.side .group { padding: 10px 14px 4px; color: var(--ink-3); font-size: 11px; letter-spacing: .04em; }
+.wf { display: block; padding: 7px 14px 8px; border-left: 3px solid transparent; cursor: pointer; color: inherit; }
+.wf:hover { background: var(--wash); text-decoration: none; }
+.wf.on { background: var(--accent-wash); border-left-color: var(--accent); }
+.wf.child { padding-left: 30px; }
+.wf .l1 { display: flex; align-items: center; gap: 7px; }
+.wf .name { font-weight: 600; flex: 1; min-width: 0; }
+.wf .l2, .wf .l3 { color: var(--ink-2); font-size: 12px; }
+.wf .l3 { color: var(--ink-3); }
+
+main { overflow: hidden; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.head { padding: 12px 20px 0; background: var(--surface); border-bottom: 1px solid var(--hair); }
+.head .title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.head h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.head .meta { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
+.head .goal { margin: 8px 0 0; color: var(--ink-2); max-width: 1100px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 1px 8px 1px 7px; border-radius: 999px; background: var(--wash); white-space: nowrap; font-size: 12px; }
+.chip.btn { cursor: pointer; border: 1px solid transparent; }
+.chip.btn:hover { background: var(--wash-2); }
+.chip.btn.on { border-color: var(--accent); background: var(--accent-wash); }
+.tag { display: inline-block; padding: 0 6px; border-radius: 4px; background: var(--wash); font-size: 11px; color: var(--ink-2); white-space: nowrap; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0 0; max-width: 1100px; }
+.tile { background: var(--raised); border: 1px solid var(--ring); border-radius: 8px; padding: 8px 12px 9px; min-width: 0; }
+.tile .k { color: var(--ink-2); font-size: 12px; }
+.tile .v { font-size: 22px; font-weight: 650; line-height: 1.25; }
+.tile .v small { font-size: 13px; font-weight: 400; color: var(--ink-3); }
+.tile .s { color: var(--ink-3); font-size: 12px; }
+.tabs { display: flex; gap: 2px; margin-top: 10px; overflow-x: auto; }
+.tabs a { padding: 7px 12px; color: var(--ink-2); border-bottom: 2px solid transparent; white-space: nowrap; }
+.tabs a:hover { color: var(--ink); text-decoration: none; }
+.tabs a.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs .count { color: var(--ink-3); font-weight: 400; margin-left: 4px; }
+#content { flex: 1; overflow: auto; padding: 14px 20px 60px; min-height: 0; }
+.empty { color: var(--ink-3); padding: 28px 0; text-align: center; }
+.error { color: var(--ink); background: var(--raised); border: 1px solid var(--ring); border-left: 3px solid var(--critical); border-radius: 6px; padding: 8px 12px; margin: 0 0 12px; white-space: pre-wrap; }
+
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+.bar .spacer { flex: 1; }
+.bar label { color: var(--ink-2); display: inline-flex; gap: 5px; align-items: center; }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; margin: 0 0 14px; overflow: hidden; }
+.card > h3 { margin: 0; padding: 8px 12px; font-size: 13px; font-weight: 650; border-bottom: 1px solid var(--hair); display: flex; gap: 8px; align-items: baseline; }
+.card > h3 .more { font-weight: 400; color: var(--ink-3); font-size: 12px; }
+.card > .body { padding: 10px 12px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 14px; align-items: start; }
+.cols > .card { margin: 0; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+th { color: var(--ink-2); font-weight: 500; font-size: 12px; white-space: nowrap; position: sticky; top: 0; background: var(--surface); z-index: 1; }
+th.sort { cursor: pointer; } th.sort:hover { color: var(--ink); }
+tr:last-child > td { border-bottom: 0; }
+tr.row { cursor: pointer; } tr.row:hover > td { background: var(--wash); }
+tr.sel > td { background: var(--accent-wash); }
+td.wide { max-width: 420px; } td.mid { max-width: 240px; }
+.tablewrap { overflow: auto; }
+.seg { display: flex; gap: 2px; height: 8px; min-width: 90px; }
+.seg i { display: block; height: 100%; min-width: 3px; border-radius: 2px; }
+.seg i:first-child { border-radius: 4px 2px 2px 4px; } .seg i:last-child { border-radius: 2px 4px 4px 2px; } .seg i:only-child { border-radius: 4px; }
+.seg .pending { background: var(--idle); } .seg .claimed { background: var(--accent); } .seg .completed { background: var(--good); }
+.seg .failed { background: var(--critical); } .seg .cancelled { background: var(--void); } .seg .none { background: var(--wash-2); flex: 1; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); font-size: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.meter { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; margin-top: 5px; }
+.meter i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.meter.over i { background: var(--critical); }
+pre, .pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.55 var(--mono); }
+.prose { white-space: pre-wrap; word-break: break-word; }
+.fold { max-height: 9.2em; overflow: hidden; position: relative; }
+.fold.tall { max-height: 21em; }
+.fold::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.4em; background: linear-gradient(transparent, var(--surface)); pointer-events: none; }
+.post { padding: 10px 12px; border-bottom: 1px solid var(--hair); }
+.post:last-child { border-bottom: 0; }
+.post.done { opacity: .72; }
+.post .hd { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin-bottom: 3px; }
+.post .hd b { font-weight: 650; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; }
+.kv dt { color: var(--ink-2); } .kv dd { margin: 0; min-width: 0; word-break: break-word; }
+
+#drawer { position: fixed; top: 44px; right: 0; bottom: 0; width: min(900px, 62vw); background: var(--surface); border-left: 1px solid var(--hair); box-shadow: -8px 0 24px rgba(0,0,0,.12); display: none; flex-direction: column; z-index: 5; }
+#drawer.open { display: flex; }
+#drawer .dh { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--hair); }
+#drawer .dh h3 { margin: 0; font-size: 14px; flex: 1; min-width: 0; }
+#drawer .db { overflow: auto; padding: 12px 14px 60px; flex: 1; }
+#drawer section { margin: 0 0 16px; }
+#drawer section > h4 { margin: 0 0 6px; font-size: 12px; color: var(--ink-2); font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+#drawer .box { border: 1px solid var(--ring); border-radius: 6px; padding: 8px 10px; background: var(--raised); }
+@media (max-width: 900px) { body { grid-template-columns: 0 1fr; } aside.side { display: none; } #drawer { width: 100vw; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Workflows</h1><span class="label" id="label"></span>
+  <select id="source" title="工作流存储" hidden></select>
+  <span class="gap"></span>
+  <span class="live" id="live"><span class="dot"></span><span class="clip" id="liveText">连接中…</span></span>
+  <button id="pause" title="暂停或恢复自动刷新">暂停</button>
+  <button id="theme" title="切换浅色/深色">主题</button>
+</header>
+<aside class="side">
+  <div class="tools"><input type="search" id="wfFilter" placeholder="筛选工作流（名称、需求、ID）"></div>
+  <div class="list" id="list"></div>
+</aside>
+<main>
+  <div class="head" id="head" hidden></div>
+  <div id="content"><div class="empty">选择左侧的工作流查看详情。</div></div>
+</main>
+<div id="drawer"><div class="dh"><button class="plain" id="drawerBack" title="返回上一项">←</button><h3 class="clip" id="drawerTitle"></h3><button class="plain" id="drawerClose" title="关闭（Esc）">✕</button></div><div class="db" id="drawerBody"></div></div>
+<script>
+(() => {
+'use strict';
+const LABEL = __DASHBOARD_LABEL__;
+const POLL_MS = 2500;
+const $ = id => document.getElementById(id);
+
+// ---------- small helpers ----------
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key === 'class') el.className = value;
+    else if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
+    else if (key === 'data') Object.assign(el.dataset, value);
+    else if (key === 'style') el.style.cssText = value;
+    else if (key in el && key !== 'list') el[key] = value;
+    else el.setAttribute(key, value === true ? '' : value);
+  }
+  for (const kid of kids.flat(Infinity)) if (kid !== undefined && kid !== null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+const pad = n => String(n).padStart(2, '0');
+function clock(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function dur(ms) {
+  if (!(ms >= 0)) ms = 0;
+  if (ms < 1000) return '不到 1 秒';
+  if (ms < 60e3) return Math.round(ms / 1000) + ' 秒';
+  if (ms < 3600e3) return Math.round(ms / 60e3) + ' 分钟';
+  if (ms < 86400e3) return (ms / 3600e3).toFixed(1) + ' 小时';
+  return (ms / 86400e3).toFixed(1) + ' 天';
+}
+/** A span that keeps counting between refreshes: `ago` is time since a moment, `for` how long something has lasted, `until` time left. */
+function tick(kind, ts, prefix = '', suffix = '') {
+  if (!ts) return '';
+  const el = h('span', { class: 'nowrap', title: clock(ts), data: { tick: kind, ts: String(ts), prefix, suffix } });
+  paintTick(el);
+  return el;
+}
+function paintTick(el) {
+  const ts = Number(el.dataset.ts), now = Date.now(), kind = el.dataset.tick;
+  const text = kind === 'ago' ? (now - ts < 5000 ? '刚刚' : dur(now - ts) + '前') : kind === 'until' ? (ts > now ? dur(ts - now) : '已过 ' + dur(now - ts)) : dur(now - ts);
+  const next = el.dataset.prefix + text + el.dataset.suffix;
+  if (el.textContent !== next) el.textContent = next;
+}
+setInterval(() => { for (const el of document.querySelectorAll('[data-tick]')) paintTick(el); }, 1000);
+const short = (id, n = 8) => String(id || '').slice(0, n);
+/** A key for display: the UUIDs engine-made keys carry are cut to their first part. The full key stays in the title. */
+const brief = key => String(key || '').replace(/([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '$1…');
+const chip = (tone, label, extra = {}) => h('span', { class: 'chip', ...extra }, h('span', { class: 'dot ' + tone + (extra.pulse ? ' pulse' : '') }), label);
+function copyable(text, shown) {
+  return h('a', { class: 'mono', title: '点击复制：' + text, onclick: event => { event.stopPropagation(); navigator.clipboard?.writeText(text); const el = event.currentTarget, old = el.textContent; el.textContent = '已复制'; setTimeout(() => { el.textContent = old; }, 900); } }, shown ?? text);
+}
+
+// ---------- vocabulary ----------
+const STAGE = { done: ['good', '已完成'], cancelled: ['mute', '已取消'], binding: ['bad', '执行绑定已变化'], paused: ['warn', '已暂停'], interrupted: ['warn', '已中断'],
+  script_failed: ['bad', '脚本失败'], summarizing: ['run', '脚本完成，主 agent 汇总中'], queued: ['run', '等待启动'], running: ['run', '运行中'] };
+const PHASE = { running: ['run', '执行中'], starting: ['run', '启动中'], slot: ['warn', '等执行槽位'], queued: ['warn', '排队'], input: ['serious', '等待输入'], child: ['run', '等子工作流'],
+  cancelling: ['warn', '取消中'], idle: ['mute', '空闲待命'], waiting: ['mute', '等消息'], ready: ['run', '消息已到'], failed: ['bad', '已失败'], retired: ['mute', '已退出'],
+  done: ['good', '本轮完成'], cancelled: ['mute', '已取消'], interrupted: ['warn', '已中断'], unknown: ['bad', '结果未知'], unstarted: ['mute', '未启动'] };
+const PHASE_ORDER = ['failed', 'unknown', 'input', 'interrupted', 'running', 'starting', 'slot', 'queued', 'child', 'cancelling', 'ready', 'idle', 'waiting', 'done', 'unstarted', 'cancelled', 'retired'];
+const TURN = { queued: ['warn', '排队'], starting: ['run', '启动中'], running: ['run', '执行中'], result_ready: ['good', '已完成'], waiting_input: ['serious', '等待输入'],
+  waiting_workflow: ['run', '等子工作流'], failed: ['bad', '失败'], cancelling: ['warn', '取消中'], cancelled: ['mute', '已取消'], interrupted: ['warn', '已中断'], unknown: ['bad', '结果未知'] };
+const ITEM = { pending: ['mute', '待领取'], claimed: ['run', '进行中'], completed: ['good', '已完成'], failed: ['bad', '失败'], cancelled: ['mute', '已取消'] };
+// Bar order: the failed part is always the last one, apart from the completed part, and every bar stands beside its figures.
+const ITEM_KEYS = ['completed', 'claimed', 'pending', 'cancelled', 'failed'];
+const ROLE = { lead: '总负责人', 'queue-lead': '队列负责人', worker: '执行者', member: '成员', agent: '脚本成员' };
+const TODO = { dry: '队列断粮', idle: '成员空闲', member: '成员停止', unstaffed: '队列无人', aside: '工作项被搁置', dead: '工作项成死项', gate: '条件未满足', spin: '空领空还', ask: '请求未答复' };
+const CLAIM = { active: '持有中', completed: '已完成', failed: '失败', released: '已交还', expired: '租约过期', cancelled: '已取消' };
+const TABS = [['overview', '总览'], ['members', '成员'], ['work', '工作项'], ['board', '留言板'], ['turns', '轮次'], ['plan', '方案'], ['journal', '事件日志']];
+const pair = (table, key) => table[key] || ['mute', key];
+
+// ---------- state & routing ----------
+const S = { sources: null, source: null, wf: null, tab: 'overview', q: {}, list: null, summary: null, open: new Set(), sort: {}, older: { key: '', posts: [], next: undefined },
+  journal: { key: '', entries: [] }, paused: false, dirty: true, drawerDirty: true };
+function parseHash() {
+  const raw = location.hash.replace(/^#\/?/, '');
+  const [path, query = ''] = raw.split('?');
+  const [source, wf, tab] = path.split('/').map(decodeURIComponent);
+  return { source: source || null, wf: wf || null, tab: TABS.some(([key]) => key === tab) ? tab : 'overview', q: Object.fromEntries(new URLSearchParams(query)) };
+}
+function makeHash(next) {
+  const route = { source: S.source, wf: S.wf, tab: S.tab, q: S.q, ...next };
+  const query = new URLSearchParams(Object.entries(route.q || {}).filter(([, value]) => value !== undefined && value !== '')).toString();
+  return '#/' + [route.source, route.wf, route.wf && route.tab].filter(Boolean).map(encodeURIComponent).join('/') + (query ? '?' + query : '');
+}
+function go(next, replace) {
+  const hash = makeHash(next);
+  if (hash === location.hash) return;
+  if (replace) { history.replaceState(null, '', hash); onRoute(); } else location.hash = hash;
+}
+/** Changes filters of the current tab; the drawer, if any, stays. */
+const setQ = (changes, replace = true) => go({ q: { ...S.q, ...changes } }, replace);
+const openDrawer = (kind, key) => go({ q: { ...S.q, d: kind + ':' + key } });
+function onRoute() {
+  const route = parseHash();
+  const moved = route.source !== S.source || route.wf !== S.wf;
+  if (moved || route.tab !== S.tab) { $('content').scrollTop = 0; S.older = { key: '', posts: [], next: undefined }; S.journal = { key: '', entries: [] }; }
+  if (moved) S.summary = null;
+  Object.assign(S, route);
+  S.dirty = S.drawerDirty = true;
+  paintSidebar();
+  refresh();
+}
+window.addEventListener('hashchange', onRoute);
+
+// ---------- transport ----------
+let TOKEN = '';
+try { TOKEN = sessionStorage.getItem('wf-dashboard-token') || ''; } catch { /* storage may be unavailable in an embedded page */ }
+{
+  // The address the server prints carries the token in its fragment, which is not sent anywhere; `?token=` also works.
+  const match = /[#&]token=([^&]+)/.exec(location.hash);
+  const given = match ? decodeURIComponent(match[1]) : new URLSearchParams(location.search).get('token');
+  if (given) { TOKEN = given; try { sessionStorage.setItem('wf-dashboard-token', TOKEN); } catch { /* storage may be unavailable in an embedded page */ } }
+  if (match) history.replaceState(null, '', location.pathname + location.search + '#/');
+}
+/** An embedding page may bring its own way to reach the API by defining window.__wfTransport(path, etag). */
+const transport = window.__wfTransport || (async (path, etag) => {
+  const response = await fetch('api' + path, { cache: 'no-store', headers: { ...(TOKEN ? { 'x-workflow-dashboard-token': TOKEN } : {}), ...(etag ? { 'If-None-Match': etag } : {}) } });
+  return { status: response.status, etag: response.headers.get('etag') || undefined, body: response.status === 304 ? undefined : await response.json().catch(() => ({ error: 'HTTP ' + response.status })) };
+});
+const cache = new Map();
+async function get(path) {
+  const known = cache.get(path);
+  const answer = await transport(path, known && known.etag);
+  if (answer.status === 304 && known) { cache.delete(path); cache.set(path, known); return { body: known.body, changed: false }; }
+  if (answer.status === 200) {
+    cache.delete(path);
+    cache.set(path, { etag: answer.etag, body: answer.body });
+    if (cache.size > 60) cache.delete(cache.keys().next().value);
+    return { body: answer.body, changed: true };
+  }
+  throw Object.assign(new Error((answer.body && answer.body.error) || 'HTTP ' + answer.status), { status: answer.status });
+}
+const api = (view, params = {}) => {
+  const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined && value !== '')).toString();
+  return `/s/${encodeURIComponent(S.source)}/w/${encodeURIComponent(S.wf)}/${view}` + (query ? '?' + query : '');
+};
+
+// ---------- refresh loop ----------
+let busy = false, again = false;
+function live(tone, text) {
+  $('live').firstChild.className = 'dot ' + tone + (tone === 'good' && !S.paused ? ' pulse' : '');
+  $('liveText').textContent = text; $('liveText').title = text;
+}
+async function refresh() {
+  if (busy) { again = true; return; }
+  busy = true;
+  try {
+    if (!S.sources) {
+      S.sources = (await get('/sources')).body.sources;
+      const select = $('source');
+      select.replaceChildren(...S.sources.map(source => h('option', { value: source.name }, source.name)));
+      select.hidden = S.sources.length < 2;
+      if (!S.source || !S.sources.some(source => source.name === S.source)) {
+        const first = S.sources.find(source => source.position) || S.sources[0];
+        if (first) return void go({ source: first.name, wf: null, q: {} }, true);
+      }
+    }
+    if (!S.source) { live('warn', '没有配置工作流存储'); return; }
+    $('source').value = S.source;
+    const at = makeHash();
+    const list = await get(`/s/${encodeURIComponent(S.source)}/workflows`);
+    if (makeHash() !== at) return;
+    if (list.changed || S.list !== list.body) { S.list = list.body; paintSidebar(); }
+    if (!S.wf) {
+      const first = S.list.workflows.find(row => !row.parentId);
+      if (first) return void go({ wf: first.id, tab: 'overview', q: {} }, true);
+      $('head').hidden = true; $('content').replaceChildren(h('div', { class: 'empty' }, '这个存储里还没有工作流。'));
+    } else {
+      const summary = S.list.workflows.find(row => row.id === S.wf);
+      const view = await loadView();
+      if (makeHash() !== at) return;
+      const header = view.summary || summary || S.summary;
+      if (header && JSON.stringify(header) !== JSON.stringify(S.summary)) { S.summary = header; paintHead(); }
+      if ((view.changed || S.dirty) && !selecting($('content'))) { S.dirty = false; paintView(view); } else if (view.changed) S.dirty = true;
+      if (S.q.d) {
+        const detail = await loadDrawer();
+        if (makeHash() !== at) return;
+        if ((detail.changed || S.drawerDirty) && !selecting($('drawer'))) { S.drawerDirty = false; paintDrawer(detail); } else if (detail.changed) S.drawerDirty = true;
+      } else $('drawer').classList.remove('open');
+    }
+    live(S.paused ? 'warn' : 'good', S.paused ? '已暂停自动刷新' : '实时 · 日志位置 ' + (S.list ? S.list.position : ''));
+  } catch (error) {
+    live('bad', '读取失败：' + error.message);
+    if (S.wf && S.dirty) { $('content').replaceChildren(h('div', { class: 'error' }, error.message)); }
+  } finally {
+    busy = false;
+    if (again) { again = false; refresh(); }
+  }
+}
+setInterval(() => { if (!document.hidden && !S.paused) refresh(); }, POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !S.paused) refresh(); });
+function selecting(root) {
+  const selection = getSelection();
+  return Boolean(selection && !selection.isCollapsed && selection.anchorNode && root.contains(selection.anchorNode));
+}
+
+// ---------- sidebar ----------
+function paintSidebar() {
+  const list = $('list');
+  if (!S.list) return;
+  const words = $('wfFilter').value.toLowerCase().split(/\s+/).filter(Boolean);
+  const rows = S.list.workflows.filter(row => words.every(word => [row.name, row.goal, row.id, row.phase, row.scope].some(text => String(text || '').toLowerCase().includes(word))));
+  const ids = new Set(rows.map(row => row.id));
+  const children = new Map();
+  for (const row of rows) if (row.parentId && ids.has(row.parentId)) children.set(row.parentId, [...(children.get(row.parentId) || []), row]);
+  const tops = rows.filter(row => !(row.parentId && ids.has(row.parentId)));
+  const open = tops.filter(row => row.status !== 'completed' && row.status !== 'cancelled');
+  const done = tops.filter(row => row.status === 'completed' || row.status === 'cancelled');
+  const entry = (row, child) => {
+    if (row.unreadable) return h('a', { class: 'wf' + (child ? ' child' : '') + (row.id === S.wf ? ' on' : ''), href: makeHash({ wf: row.id, tab: 'overview', q: {} }), title: row.unreadable },
+      h('div', { class: 'l1' }, h('span', { class: 'dot bad' }), h('span', { class: 'name clip mono' }, short(row.id)), h('span', { class: 'tag' }, '无法读取')),
+      h('div', { class: 'l3 clip' }, row.status + ' · ', tick('ago', row.updatedAt)));
+    const [tone, label] = pair(STAGE, row.stage);
+    const work = row.work ? `${row.work.completed}/${row.work.total} 项` : `${row.turns.done}/${row.turns.total} 轮`;
+    return h('a', { class: 'wf' + (child ? ' child' : '') + (row.id === S.wf ? ' on' : ''), href: makeHash({ wf: row.id, tab: row.id === S.wf ? S.tab : 'overview', q: {} }) },
+      h('div', { class: 'l1' }, h('span', { class: 'dot ' + tone + (row.stage === 'running' ? ' pulse' : ''), title: label }), h('span', { class: 'name clip', title: row.name }, row.name), h('span', { class: 'faint nowrap' }, label)),
+      h('div', { class: 'l2 clip', title: row.phase || row.goal }, row.phase || row.goal || '—'),
+      h('div', { class: 'l3 clip' }, [row.members.total ? `${row.members.running}/${row.members.total} 成员在跑` : null, work, row.todos ? `${row.todos} 待办` : null].filter(Boolean).join(' · '), ' · ', tick('ago', row.updatedAt || row.createdAt)));
+  };
+  const nodes = [];
+  const group = (title, items) => { if (items.length) { nodes.push(h('div', { class: 'group' }, title)); for (const row of items) { nodes.push(entry(row, false)); for (const kid of children.get(row.id) || []) nodes.push(entry(kid, true)); } } };
+  group(`未结束（${open.length}）`, open);
+  group(`已结束（显示 ${done.length} / 共 ${S.list.finished}）`, done);
+  if (!nodes.length) nodes.push(h('div', { class: 'empty' }, words.length ? '没有匹配的工作流。' : '还没有工作流。'));
+  const top = list.scrollTop;
+  list.replaceChildren(...nodes);
+  list.scrollTop = top;
+}
+$('wfFilter').addEventListener('input', paintSidebar);
+
+// ---------- header ----------
+function segbar(counts, keys = ITEM_KEYS) {
+  const total = keys.reduce((sum, key) => sum + (counts[key] || 0), 0);
+  const bar = h('div', { class: 'seg', role: 'img', 'aria-label': keys.map(key => `${ITEM[key][1]} ${counts[key] || 0}`).join('，') });
+  if (!total) bar.append(h('i', { class: 'none', title: '没有工作项' }));
+  for (const key of keys) if (counts[key]) bar.append(h('i', { class: key, style: `flex:${counts[key]} 1 0`, title: `${ITEM[key][1]} ${counts[key]}（${Math.round(counts[key] / total * 100)}%）` }));
+  return bar;
+}
+const itemLegend = () => h('div', { class: 'legend' }, ITEM_KEYS.map(key => h('span', {}, h('i', { class: 'sw seg-' + key, style: `background:var(--${{ claimed: 'accent', pending: 'idle', completed: 'good', failed: 'critical', cancelled: 'void' }[key]})` }), ITEM[key][1])));
+function tile(label, value, sub, extra) {
+  return h('div', { class: 'tile' }, h('div', { class: 'k' }, label), h('div', { class: 'v' }, value), sub ? h('div', { class: 's' }, sub) : null, extra || null);
+}
+function paintHead() {
+  const s = S.summary, head = $('head');
+  if (!s) { head.hidden = true; return; }
+  head.hidden = false;
+  if (s.unreadable) {
+    head.replaceChildren(h('div', { class: 'title' }, h('h2', { class: 'mono' }, short(s.id, 13)), chip('bad', '无法读取')), h('div', { class: 'meta' }, h('span', {}, s.status), h('span', {}, s.scope)), h('div', { style: 'height:12px' }));
+    return;
+  }
+  const [tone, label] = pair(STAGE, s.stage);
+  const running = s.stage === 'running' || s.stage === 'summarizing' || s.stage === 'queued';
+  const total = s.deadlineAt - s.createdAt, used = Math.min(1, Math.max(0, (Date.now() - s.createdAt) / (total || 1)));
+  const goalKey = 'goal:' + s.id;
+  const tiles = [
+    tile('执行中的轮次', [String(s.turns.running), h('small', {}, ` / 共 ${s.turns.total}`)], `完成 ${s.turns.done} · 失败 ${s.turns.failed}` + (s.turns.slot ? ` · 等槽位 ${s.turns.slot}` : '') + (s.turns.queued ? ` · 排队 ${s.turns.queued}` : '') + (s.turns.waiting ? ` · 等待 ${s.turns.waiting}` : '')),
+    s.members.total ? tile('在跑的成员', [String(s.members.running), h('small', {}, ` / 共 ${s.members.total}`)], s.members.stopped ? `已停止 ${s.members.stopped}` : '无成员停止') : null,
+    s.work ? tile('已完成的工作项', [String(s.work.completed), h('small', {}, ` / 共 ${s.work.total}`)], `进行中 ${s.work.claimed} · 待领取 ${s.work.pending} · 失败 ${s.work.failed}`, h('div', { style: 'margin-top:6px' }, segbar(s.work))) : null,
+    tile('待办', String(s.todos), `未答请求 ${s.asks} · 主会话待处理 ${s.notices}`),
+    running ? tile('已用时', tick('for', s.createdAt), tick('until', s.deadlineAt, '距截止 '), h('div', { class: 'meter' + (used >= 1 ? ' over' : ''), title: `已用 ${Math.round(used * 100)}%` }, h('i', { style: `width:${Math.round(used * 100)}%` })))
+      : tile('创建于', h('span', { style: 'font-size:16px' }, clock(s.createdAt)), null),
+  ];
+  head.replaceChildren(
+    h('div', { class: 'title' }, h('h2', {}, s.name), chip(tone, label, { pulse: s.stage === 'running' }), s.parentId ? h('a', { class: 'tag', href: makeHash({ wf: s.parentId, tab: 'overview', q: {} }) }, '↑ 父工作流') : null,
+      s.phase ? h('span', { class: 'dim' }, s.phase) : null),
+    h('div', { class: 'meta' }, h('span', {}, 'ID ', copyable(s.id, short(s.id, 13) + '…')), h('span', {}, `${s.agent}${s.model ? ' · ' + s.model : ''}${s.effort ? ' · ' + s.effort : ''}`), h('span', {}, 'profile ', s.profile),
+      h('span', { title: s.scope }, '会话 ', copyable(s.scope, '…' + s.scope.slice(-12))), h('span', { class: 'clip', style: 'max-width:340px', title: s.cwd }, s.cwd), h('span', {}, '状态版本 ', String(s.version))),
+    s.goal ? h('div', { class: 'goal prose' + (S.open.has(goalKey) ? '' : ' clip'), title: '点击展开/收起', style: 'cursor:pointer', onclick: () => { toggle(goalKey); paintHead(); } }, s.goal) : null,
+    h('div', { class: 'tiles' }, tiles),
+    h('nav', { class: 'tabs' }, TABS.map(([key, title]) => h('a', { class: key === S.tab ? 'on' : '', href: makeHash({ tab: key, q: {} }) }, title,
+      key === 'members' && s.members.total ? h('span', { class: 'count' }, String(s.members.total)) : key === 'work' && s.work ? h('span', { class: 'count' }, String(s.work.total)) : key === 'turns' ? h('span', { class: 'count' }, String(s.turns.total)) : null))));
+}
+function toggle(key) { if (S.open.has(key)) S.open.delete(key); else S.open.add(key); }
+
+// ---------- generic pieces ----------
+/** A long text that opens on click; what is open survives refreshes. */
+function folded(key, text, { mono = false, tall = false, limit = 420 } = {}) {
+  if (!text) return h('span', { class: 'faint' }, '—');
+  const long = text.length > limit || text.split('\n').length > 7;
+  const open = S.open.has(key) || !long;
+  const body = h('div', { class: (mono ? 'pre' : 'prose') + (open ? '' : ' fold' + (tall ? ' tall' : '')) }, text);
+  if (!long) return body;
+  return h('div', {}, body, h('a', { onclick: event => { event.stopPropagation(); toggle(key); S.dirty = S.drawerDirty = true; refresh(); } }, open ? '收起' : `展开全文（${text.length} 字）`));
+}
+function table(id, columns, rows, { onRow, selected, empty = '没有条目。' } = {}) {
+  if (!rows.length) return h('div', { class: 'empty' }, empty);
+  const sort = S.sort[id];
+  let shown = rows;
+  if (sort && columns[sort.col] && columns[sort.col].sort) {
+    const by = columns[sort.col].sort;
+    shown = [...rows].sort((a, b) => { const x = by(a), y = by(b); return (x < y ? -1 : x > y ? 1 : 0) * sort.dir; });
+  }
+  return h('div', { class: 'tablewrap' }, h('table', {},
+    h('thead', {}, h('tr', {}, columns.map((column, index) => h('th', { class: (column.sort ? 'sort ' : '') + (column.num ? 'num' : ''), title: column.hint,
+      onclick: column.sort ? () => { S.sort[id] = sort && sort.col === index ? (sort.dir === 1 ? { col: index, dir: -1 } : undefined) : { col: index, dir: 1 }; S.dirty = S.drawerDirty = true; refresh(); } : undefined },
+      column.title, sort && sort.col === index ? (sort.dir === 1 ? ' ↑' : ' ↓') : '')))),
+    h('tbody', {}, shown.map(row => h('tr', { class: (onRow ? 'row ' : '') + (selected && selected(row) ? 'sel' : ''), tabIndex: onRow ? 0 : undefined,
+      onclick: onRow ? () => onRow(row) : undefined, onkeydown: onRow ? event => { if (event.key === 'Enter') onRow(row); } : undefined },
+      columns.map(column => h('td', { class: (column.num ? 'num ' : '') + (column.cls || '') }, column.cell(row))))))));
+}
+const card = (title, more, ...body) => h('section', { class: 'card' }, h('h3', {}, title, more ? h('span', { class: 'more' }, more) : null), ...body);
+function input(id, value, placeholder, onChange, width = 200) {
+  let timer;
+  return h('input', { type: 'search', id, value: value || '', placeholder, style: `width:${width}px`, oninput: event => { clearTimeout(timer); const text = event.target.value; timer = setTimeout(() => onChange(text), 250); } });
+}
+function select(id, value, options, onChange) {
+  return h('select', { id, onchange: event => onChange(event.target.value) }, options.map(([key, label]) => h('option', { value: key, selected: key === (value || '') }, label)));
+}
+const drawerKey = () => (S.q.d || '').split(':').slice(1).join(':');
+const drawerKind = () => (S.q.d || '').split(':')[0];
+function turnTiming(turn) {
+  if (!turn || !turn.startedAt) return '';
+  if (turn.endedAt) return dur(turn.endedAt - (turn.admittedAt || turn.startedAt));
+  if (turn.status === 'starting' && !turn.admittedAt) return tick('for', turn.startedAt, '等槽位 ');
+  if (turn.status === 'running' || turn.status === 'starting' || turn.status === 'cancelling') return tick('for', turn.admittedAt || turn.startedAt);
+  return '';
+}
+const model = row => [row.agent, row.model, row.effort].filter(Boolean).join(' · ');
+
+// ---------- views ----------
+async function loadView() {
+  if (S.tab === 'overview') { const view = await get(api('overview')); return { ...view, summary: view.body.summary }; }
+  if (S.tab === 'members') return get(api('members'));
+  if (S.tab === 'work') return get(api('work', { queue: S.q.queue, status: S.q.status, q: S.q.q, archived: S.q.archived, limit: 500 }));
+  if (S.tab === 'board') return get(api('board', { topic: S.q.topic, member: S.q.member, q: S.q.q, limit: 50 }));
+  if (S.tab === 'turns') return get(api('turns', { show: S.q.show ?? 'active', member: S.q.member, limit: 500 }));
+  if (S.tab === 'plan') return get(api('plan'));
+  return get(api('journal', { limit: 200 }));
+}
+function paintView(view) {
+  const content = $('content');
+  const active = document.activeElement && content.contains(document.activeElement) && document.activeElement.id ? document.activeElement : null;
+  const caret = active && 'selectionStart' in active ? [active.selectionStart, active.selectionEnd] : null;
+  const top = content.scrollTop;
+  const paint = { overview: paintOverview, members: paintMembers, work: paintWork, board: paintBoard, turns: paintTurns, plan: paintPlan, journal: paintJournal }[S.tab];
+  content.replaceChildren(...[paint(view.body)].flat().filter(Boolean));
+  content.scrollTop = top;
+  if (active) { const again = $(active.id); if (again) { again.focus(); if (caret) try { again.setSelectionRange(caret[0], caret[1]); } catch { /* not a text field */ } } }
+}
+
+function queueTable(queues, onPick) {
+  return table('queues', [
+    { title: '队列', cell: q => h('b', {}, q.name), sort: q => q.name },
+    { title: '负责人', cell: q => q.lead ? h('a', { onclick: event => { event.stopPropagation(); openDrawer('member', q.lead); } }, q.lead) : h('span', { class: 'faint' }, '—') },
+    { title: '入口', cell: q => q.open ? '开放' : '已关闭' },
+    { title: '执行者', num: true, hint: '还能领活的 / 全部', cell: q => `${q.staffed}/${q.consumers.length}`, sort: q => q.staffed },
+    { title: '进度', cell: q => segbar(q.counts) },
+    { title: '进行中', num: true, cell: q => q.counts.claimed, sort: q => q.counts.claimed },
+    { title: '待领取', num: true, cell: q => q.counts.pending, sort: q => q.counts.pending },
+    { title: '完成', num: true, cell: q => q.counts.completed, sort: q => q.counts.completed },
+    { title: '失败', num: true, cell: q => q.counts.failed, sort: q => q.counts.failed },
+    { title: '搁置', num: true, hint: '被 hold 的未完成项', cell: q => q.held || '', sort: q => q.held },
+    { title: '等依赖', num: true, hint: '待领取但依赖项未完成', cell: q => q.blocked || '', sort: q => q.blocked },
+    { title: '断粮', hint: '已结束的断粮次数与累计时长', cell: q => q.dry ? `${q.dry.spells} 次 · ${dur(q.dry.ms)}` : '' },
+  ], queues, { onRow: onPick, empty: '这个工作流没有工作队列。' });
+}
+function paintOverview(o) {
+  const s = o.summary;
+  const todoRow = todo => {
+    const holder = todo.holder || '（宽限期内，尚未告知）';
+    return h('tr', {}, h('td', { class: 'num faint' }, '#' + todo.id), h('td', { class: 'nowrap' }, chip(todo.deferred ? 'mute' : todo.told.length > 1 ? 'serious' : 'warn', TODO[todo.kind] || todo.kind)),
+      h('td', {}, h('div', { class: 'mono' }, todo.subject), todo.deferred ? h('div', { class: 'faint' }, `${todo.deferred.by} 推迟` + (todo.deferred.until ? '至 ' + clock(todo.deferred.until) : '') + (todo.deferred.note ? '：' + todo.deferred.note : '')) : null,
+        todo.told.filter(step => step.note).map(step => h('div', { class: 'faint' }, `${step.by || step.who}：${step.note}`))),
+      h('td', {}, todo.told.length > 1 ? h('span', { title: '上报链' }, todo.told.map(step => step.who).join(' → ')) : holder), h('td', { class: 'nowrap' }, tick('for', todo.since)));
+  };
+  const blocks = [];
+  if (s.unreadable) return h('div', { class: 'error' }, s.unreadable);
+  const left = [], right = [];
+  left.push(card('目标', o.charter ? `第 ${o.charter.version} 版 · ${o.charter.by} · ${clock(o.charter.at)}` : '原始需求（未另设目标）', h('div', { class: 'body' }, folded('charter:' + s.id, o.charter ? o.charter.text : o.goal, { tall: true }))));
+  if (o.statuses.length) left.push(card('各负责人写的现状', `${o.statuses.length} 份`, o.statuses.sort((a, b) => b.at - a.at).map(note => h('div', { class: 'post' },
+    h('div', { class: 'hd' }, h('a', { onclick: () => openDrawer('member', note.lead) }, h('b', {}, note.lead)), h('span', { class: 'faint' }, `第 ${note.version} 版 · `, tick('ago', note.at))), folded('status:' + note.lead, note.text)))));
+  right.push(card('待办', `${o.todos.length} 项 · 引擎每个调度周期按现状核对`, o.todos.length ? h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['', '状况', '对象', '当前负责', '已持续'].map(title => h('th', {}, title)))), h('tbody', {}, o.todos.map(todoRow))))
+    : h('div', { class: 'empty' }, '没有待办。')));
+  if (o.asks.length) right.push(card('未答复的请求', `${o.asks.length} 条`, o.asks.map(ask => h('div', { class: 'post' }, h('div', { class: 'hd' }, h('a', { href: makeHash({ tab: 'board', q: { q: '' } }) }, '#' + ask.seq), h('b', {}, ask.from), '→', h('b', {}, ask.to),
+    h('span', { class: 'faint' }, tick('for', ask.at, '已等 '), ` · 期限 ${dur(ask.within)}`), Date.now() - ask.at > ask.within ? chip('serious', '已超期') : null), h('div', { class: 'dim' }, ask.excerpt)))));
+  if (o.notices.length) right.push(card('主会话待处理的事件', `${o.notices.length} 条`, o.notices.map(notice => h('div', { class: 'post' }, h('div', { class: 'hd' }, h('span', { class: 'tag' }, notice.kind), h('span', { class: 'faint' }, tick('ago', notice.createdAt), notice.notified ? ' · 已通知' : ' · 未通知')), h('div', { class: 'dim' }, notice.summary)))));
+  if (o.script) right.push(card('脚本', `${o.script.status} · 重放 ${o.script.revision} 次 · 调用 ${o.script.calls}/${o.script.maxCalls}` + (o.script.readOnly ? ' · 只读' : ''), h('div', { class: 'body' },
+    o.script.phase ? h('div', {}, '阶段：', o.script.phase) : null,
+    o.script.waits.map(wait => h('div', { class: 'dim' }, `等待 ${wait.key}（${wait.kinds.join(' / ')}）`, tick('for', wait.since, '，已 '))),
+    o.script.error ? h('div', { class: 'error', style: 'margin-top:8px' }, o.script.error) : null,
+    o.script.logs.length ? h('div', { style: 'margin-top:8px' }, h('div', { class: 'faint' }, `最近日志（${o.script.logs.length} 条）`), folded('logs:' + s.id, o.script.logs.slice().reverse().join('\n'), { mono: true })) : null)));
+  blocks.push(card('工作队列', null, h('div', { class: 'body', style: 'padding-bottom:4px' }, itemLegend()), queueTable(o.queues, queue => go({ tab: 'work', q: { queue: queue.name } }))));
+  blocks.push(h('div', { class: 'cols' }, h('div', {}, left), h('div', {}, right)));
+  for (const swarm of o.swarms) blocks.push(card('Swarm ' + swarm.key, null, h('div', { class: 'body' }, h('dl', { class: 'kv' },
+    h('dt', {}, '状态'), h('dd', {}, swarm.status === 'running' ? '运行中' : '已结束' + (swarm.stop ? `（${swarm.stop}）` : ''), swarm.reason ? ' · ' + swarm.reason : ''),
+    h('dt', {}, '负责人'), h('dd', {}, swarm.lead ? h('a', { onclick: () => openDrawer('member', swarm.lead) }, swarm.lead) : '无（并行成员）'),
+    h('dt', {}, '成员'), h('dd', {}, `${swarm.members} 名，已停止 ${swarm.stopped}；每名成员最多 ${swarm.maxTurns} 轮`),
+    h('dt', {}, '轮次'), h('dd', {}, `${swarm.turns} 轮` + (swarm.results ? `；${swarm.results} 项结果等负责人查看` : '')),
+    h('dt', {}, '任务'), h('dd', {}, folded('swarm:' + swarm.key, swarm.task)),
+    swarm.finish ? [h('dt', {}, '结果'), h('dd', {}, folded('swarmfin:' + swarm.key, swarm.finish))] : null))));
+  const extras = [];
+  if (o.slots.waiting || o.slots.totalMs >= 60e3) extras.push(`执行槽位：${o.slots.waiting} 个轮次在等，累计等待 ${dur(o.slots.totalMs)}，单次最长 ${dur(o.slots.longestMs)}`);
+  if (o.mainWake) extras.push(`主会话定时唤醒：${clock(o.mainWake.at)}` + (o.mainWake.every ? `，每 ${dur(o.mainWake.every)}` : '') + (o.mainWake.note ? `（${o.mainWake.note}）` : ''));
+  if (o.restart) extras.push(`宿主重启于 ${clock(o.restart.since)}，${o.restart.resume ? '将自动续跑' : '需要手动恢复'}`);
+  if (o.archived.turns) extras.push(`已归档：${o.archived.turns} 轮` + Object.entries(o.archived.records).map(([kind, count]) => `，${kind} ${count}`).join(''));
+  if (o.tree && o.tree.length > 1) blocks.push(card('工作流树', `${o.tree.length} 个`, table('tree', [
+    { title: 'ID', cell: row => h('span', { class: 'mono' }, short(row.id, 13)) }, { title: '层级', cell: row => row.parentId ? (row.parentId === o.tree[0].id ? '子工作流' : '更深的子工作流') : '根' },
+    { title: '状态', cell: row => row.status }, { title: '最近变化', cell: row => tick('ago', row.updatedAt) }], o.tree, { onRow: row => go({ wf: row.id, tab: 'overview', q: {} }), selected: row => row.id === S.wf })));
+  if (extras.length) blocks.push(h('div', { class: 'faint' }, extras.map(line => h('div', {}, line))));
+  return blocks;
+}
+
+function paintMembers(data) {
+  const all = data.members;
+  const words = (S.q.q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const counts = {};
+  for (const member of all) counts[member.phase] = (counts[member.phase] || 0) + 1;
+  const queues = [...new Set(all.flatMap(member => [member.queue, ...(member.leads || [])]).filter(Boolean))].sort();
+  const rows = all.filter(member => (!S.q.phase || member.phase === S.q.phase) && (!S.q.queue || member.queue === S.q.queue || (member.leads || []).includes(S.q.queue)) && (!S.q.role || member.role === S.q.role)
+    && words.every(word => [member.name, member.queue, member.model, member.item && member.item.key, member.item && member.item.title, member.task && member.task.key, member.detail].some(text => String(text || '').toLowerCase().includes(word))));
+  if (!S.sort.members) rows.sort((a, b) => PHASE_ORDER.indexOf(a.phase) - PHASE_ORDER.indexOf(b.phase) || (a.role === 'worker') - (b.role === 'worker') || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return [
+    h('div', { class: 'bar' }, input('f-members', S.q.q, '筛选成员、工作项、模型', text => setQ({ q: text })),
+      queues.length ? select('f-queue', S.q.queue, [['', '全部队列'], ...queues.map(name => [name, name])], value => setQ({ queue: value })) : null,
+      select('f-role', S.q.role, [['', '全部角色'], ...Object.entries(ROLE)], value => setQ({ role: value })),
+      h('span', { class: 'spacer' }), h('span', { class: 'faint' }, `${rows.length} / ${all.length} 名`)),
+    h('div', { class: 'bar' }, PHASE_ORDER.filter(phase => counts[phase]).map(phase => h('span', { class: 'chip btn' + (S.q.phase === phase ? ' on' : ''), onclick: () => setQ({ phase: S.q.phase === phase ? '' : phase }) },
+      h('span', { class: 'dot ' + PHASE[phase][0] }), PHASE[phase][1], h('b', {}, String(counts[phase]))))),
+    card('成员', null, table('members', [
+      { title: '成员', cls: 'nowrap', cell: m => h('b', {}, m.name), sort: m => m.name },
+      { title: '角色', cls: 'nowrap', cell: m => [ROLE[m.role] || m.role, m.under ? h('span', { class: 'faint' }, ' ← ' + m.under) : null], sort: m => m.role },
+      { title: '队列', cls: 'nowrap', cell: m => m.queue || (m.leads ? h('span', { class: 'dim' }, '领 ' + m.leads.join('、')) : ''), sort: m => m.queue || (m.leads || []).join() },
+      { title: '状态', cell: m => chip(...pair(PHASE, m.phase)), sort: m => PHASE_ORDER.indexOf(m.phase) },
+      { title: '本轮', cls: 'nowrap', hint: '执行中：已执行时长；否则：上一轮耗时', cell: m => turnTiming(m.task), sort: m => m.task && m.task.startedAt || 0 },
+      { title: '手上的工作项', cls: 'wide', cell: m => m.item ? h('div', { class: 'clip', title: m.item.title }, h('span', { class: 'mono' }, m.item.key), ' ', h('span', { class: 'dim' }, m.item.title)) : m.detail ? h('div', { class: 'clip faint', title: m.detail }, m.detail) : m.wakeAt ? h('span', { class: 'faint' }, tick('until', m.wakeAt, '定时唤醒 ')) : '', sort: m => m.item ? m.item.key : '' },
+      { title: '轮次', num: true, hint: '已用唤醒次数 / 上限', cell: m => m.maxTurns ? `${m.turns}/${m.maxTurns}` : m.turns, sort: m => m.turns },
+      { title: '完成', num: true, hint: '完成的工作项', cell: m => m.itemsDone || '', sort: m => m.itemsDone },
+      { title: '失败', num: true, hint: '在它手上失败的工作项', cell: m => m.itemsFailed || '', sort: m => m.itemsFailed },
+      { title: '未读', num: true, hint: '尚未被某一轮消费的消息', cell: m => m.unread || '', sort: m => m.unread },
+      { title: '模型', cls: 'mid', cell: m => h('div', { class: 'clip dim', title: model(m) }, model(m)), sort: m => model(m) },
+      { title: '最近活动', cls: 'nowrap', cell: m => tick('ago', m.activeAt), sort: m => -(m.activeAt || 0) },
+    ], rows, { onRow: m => openDrawer('member', m.name), selected: m => drawerKind() === 'member' && drawerKey() === m.name, empty: '没有匹配的成员。' })),
+  ];
+}
+
+function paintWork(data) {
+  const itemRow = i => openDrawer('item', i.key);
+  return [
+    h('div', { class: 'bar' }, input('f-work', S.q.q, '筛选 key、标题、负责人', text => setQ({ q: text })),
+      select('f-status', S.q.status, [['', '全部状态'], ...ITEM_KEYS.map(key => [key, ITEM[key][1]])], value => setQ({ status: value })),
+      h('label', {}, h('input', { type: 'checkbox', id: 'f-arch', checked: S.q.archived === '1', onchange: event => setQ({ archived: event.target.checked ? '1' : '' }) }), '含已归档'),
+      h('span', { class: 'spacer' }), h('span', { class: 'faint' }, `显示 ${data.items.length} / ${data.total} 项`)),
+    h('div', { class: 'bar' }, h('span', { class: 'chip btn' + (!S.q.queue ? ' on' : ''), onclick: () => setQ({ queue: '' }) }, '全部队列'),
+      data.queues.map(queue => h('span', { class: 'chip btn' + (S.q.queue === queue.name ? ' on' : ''), title: `进行中 ${queue.counts.claimed} · 待领取 ${queue.counts.pending} · 完成 ${queue.counts.completed} · 失败 ${queue.counts.failed}`,
+        onclick: () => setQ({ queue: S.q.queue === queue.name ? '' : queue.name }) }, queue.name, h('b', {}, `${queue.counts.claimed}`), h('span', { class: 'faint' }, `+${queue.counts.pending}`)))),
+    card('工作项', '队列名后的数字：进行中 + 待领取', table('work', [
+      { title: 'Key', cls: 'nowrap', cell: i => h('span', { class: 'mono' }, i.key), sort: i => i.key },
+      { title: '标题', cls: 'wide', cell: i => h('div', { class: 'clip', title: i.title }, i.title), sort: i => i.title },
+      { title: '队列', cell: i => i.queue, sort: i => i.queue },
+      { title: '优先级', num: true, hint: '越大越先', cell: i => i.priority || '', sort: i => -i.priority },
+      { title: '状态', cls: 'nowrap', cell: i => [chip(...pair(ITEM, i.status)), i.hold ? h('span', { class: 'tag', title: i.heldReason || '' }, '搁置') : null, i.gate ? h('span', { class: 'tag' }, '条件项') : null, i.archived ? h('span', { class: 'tag' }, '已归档') : null], sort: i => ITEM_KEYS.indexOf(i.status) },
+      { title: '负责', cell: i => i.owner || i.doneBy || (i.assignee ? h('span', { class: 'dim' }, '指定 ' + i.assignee) : ''), sort: i => i.owner || i.doneBy || i.assignee || '' },
+      { title: '认领', num: true, hint: '已认领次数 / 上限', cell: i => `${i.generation}/${i.maxAttempts}`, sort: i => i.generation },
+      { title: '进展', num: true, hint: '进展保存的版本', cell: i => i.progress ? '#' + i.progress : '', sort: i => i.progress },
+      { title: '等待', cls: 'mid', cell: i => i.waitsOn ? h('div', { class: 'clip mono', title: i.waitsOn.join('\n') }, i.waitsOn.join(' ')) : i.error ? h('div', { class: 'clip', title: i.error }, i.error) : '' },
+      { title: '更新', cls: 'nowrap', cell: i => tick('ago', i.updatedAt), sort: i => -i.updatedAt },
+    ], data.items, { onRow: itemRow, selected: i => drawerKind() === 'item' && drawerKey() === i.key, empty: '没有匹配的工作项。' })),
+  ];
+}
+
+function postCard(post) {
+  const to = post.all ? ['全体'] : post.to.length ? post.to.map(name => '@' + name) : post.ask ? ['主会话'] : [];
+  const who = { main: '主会话', script: '脚本', system: '系统' }[post.from] || post.from;
+  return h('div', { class: 'post' + (post.resolved ? ' done' : '') },
+    h('div', { class: 'hd' }, h('span', { class: 'faint mono' }, '#' + post.seq), post.from in { main: 1, script: 1, system: 1 } ? h('b', {}, who) : h('a', { onclick: () => openDrawer('member', post.from) }, h('b', {}, who)),
+      to.length ? ['→', h('span', { class: 'dim' }, to.join(' '))] : null, post.topic ? h('span', { class: 'tag' }, '#' + post.topic) : null,
+      post.ask ? chip(post.ask.open ? 'serious' : 'mute', post.ask.open ? '请求，待答复' : '请求') : null, post.answers ? h('span', { class: 'tag' }, '答复 #' + post.answers) : null,
+      h('span', { class: 'faint', title: clock(post.createdAt) }, tick('ago', post.createdAt))),
+    folded('post:' + post.seq, post.text + (post.truncated ? '\n…（已截断）' : ''), { limit: post.resolved ? 200 : 600 }),
+    post.resolved ? h('div', { class: 'faint' }, `✓ 已解决（${post.resolved.by}）` + (post.resolved.note ? '：' + post.resolved.note : '') + (post.resolved.see ? ` 见 #${post.resolved.see}` : '')) : null);
+}
+function paintBoard(data) {
+  const key = JSON.stringify([S.q.topic, S.q.member, S.q.q]);
+  if (S.older.key !== key) S.older = { key, posts: [], next: undefined };
+  const seen = new Set(data.posts.map(post => post.seq));
+  const posts = [...data.posts, ...S.older.posts.filter(post => !seen.has(post.seq))];
+  const next = S.older.posts.length ? S.older.next : data.next;
+  const more = async () => {
+    const page = (await get(api('board', { topic: S.q.topic, member: S.q.member, q: S.q.q, limit: 100, before: next }))).body;
+    S.older.posts.push(...page.posts); S.older.next = page.next; S.dirty = true; refresh();
+  };
+  return [
+    h('div', { class: 'bar' }, input('f-board', S.q.q, '搜索帖子正文', text => setQ({ q: text })), input('f-bmember', S.q.member, '只看某成员发出/收到的', text => setQ({ member: text }), 190),
+      h('span', { class: 'spacer' }), h('span', { class: 'faint' }, `共 ${data.total} 帖，已载入 ${posts.length}`)),
+    data.topics.length > 1 ? h('div', { class: 'bar' }, h('span', { class: 'chip btn' + (S.q.topic === undefined || S.q.topic === '' ? ' on' : ''), onclick: () => setQ({ topic: '' }) }, '全部主题'),
+      data.topics.map(topic => h('span', { class: 'chip btn' + (S.q.topic === topic.topic ? ' on' : ''), onclick: () => setQ({ topic: S.q.topic === topic.topic ? '' : topic.topic }) }, '#' + topic.topic, h('b', {}, String(topic.posts)),
+        topic.resolved ? h('span', { class: 'faint' }, `已解决 ${topic.resolved}`) : null))) : null,
+    posts.length ? card('留言板', '新的在上', posts.map(postCard)) : h('div', { class: 'empty' }, '没有匹配的帖子。'),
+    next ? h('div', { style: 'text-align:center' }, h('button', { onclick: more }, '加载更早的帖子')) : null,
+  ];
+}
+
+function paintTurns(data) {
+  const show = S.q.show ?? 'active';
+  return [
+    h('div', { class: 'bar' }, [['active', '进行中'], ['failed', '失败/未知'], ['all', '全部']].map(([key, label]) => h('span', { class: 'chip btn' + (show === key ? ' on' : ''), onclick: () => setQ({ show: key }) }, label)),
+      input('f-tmember', S.q.member, '只看某成员', text => setQ({ member: text }), 160), h('span', { class: 'spacer' }),
+      h('span', { class: 'faint' }, `显示 ${data.turns.length} / ${data.total} 轮` + (data.archived ? `；另有 ${data.archived} 轮已归档（从成员或工作项的详情进入）` : ''))),
+    card('轮次', '一轮 = 一名成员或一次 agent 调用的一个回合', table('turns', [
+      { title: '任务', cls: 'wide', cell: t => h('div', { class: 'clip mono', title: t.key }, brief(t.key)), sort: t => t.key },
+      { title: '成员', cell: t => t.member || h('span', { class: 'faint' }, '一次性'), sort: t => t.member || '' },
+      { title: '状态', cell: t => chip(...pair(TURN, t.status === 'starting' && !t.admittedAt ? 'queued' : t.status), t.status === 'starting' && !t.admittedAt ? '等执行槽位' : pair(TURN, t.status)[1]), sort: t => t.status },
+      { title: '尝试', num: true, cell: t => t.attempts, sort: t => t.attempts },
+      { title: '开始', cls: 'nowrap', cell: t => tick('ago', t.startedAt), sort: t => -(t.startedAt || 0) },
+      { title: '耗时', cls: 'nowrap', cell: t => turnTiming(t), sort: t => (t.endedAt || Date.now()) - (t.admittedAt || t.startedAt || Date.now()) },
+      { title: '模型', cls: 'mid', cell: t => h('div', { class: 'clip dim', title: model(t) }, model(t)) },
+      { title: '错误', cls: 'mid', cell: t => t.error ? h('div', { class: 'clip', title: t.error }, t.error) : '' },
+    ], data.turns, { onRow: t => openDrawer('turn', t.taskId), selected: t => drawerKind() === 'turn' && drawerKey() === t.taskId, empty: show === 'active' ? '现在没有进行中的轮次。' : '没有匹配的轮次。' })),
+  ];
+}
+
+function paintPlan(data) {
+  return [data.plan ? card('执行方案', '启动前展示给用户的那一份', h('div', { class: 'body prose' }, data.plan)) : h('div', { class: 'empty' }, '这个工作流没有保存执行方案。'),
+    data.args ? card('脚本参数', null, h('div', { class: 'body' }, folded('args:' + S.wf, data.args, { mono: true }))) : null,
+    data.source ? card('脚本源码', `${data.source.length} 字`, h('div', { class: 'body' }, folded('source:' + S.wf, data.source, { mono: true, tall: true }))) : null];
+}
+
+function paintJournal(data) {
+  const key = S.source + '/' + S.wf;
+  if (S.journal.key !== key) S.journal = { key, entries: [] };
+  const seen = new Set(data.entries.map(entry => entry.seq));
+  const entries = [...data.entries, ...S.journal.entries.filter(entry => !seen.has(entry.seq) && entry.seq < (data.entries.at(-1)?.seq ?? Infinity))];
+  const more = async () => {
+    const page = (await get(api('journal', { limit: 500, before: entries.at(-1).seq }))).body;
+    S.journal.entries.push(...page.entries); if (!page.entries.length) S.journal.end = true; S.dirty = true; refresh();
+  };
+  return [h('div', { class: 'bar faint' }, '工作流的每一次变化都是日志里的一个事件；快照已覆盖的旧事件会被宿主清理，所以这里只有最近的一段。'),
+    card('事件日志', `已载入 ${entries.length} 条，新的在上`, table('journal', [
+      { title: 'seq', num: true, cell: e => e.seq }, { title: '时间', cls: 'nowrap', cell: e => clock(e.at) }, { title: '事件', cell: e => h('span', { class: 'mono' }, e.type) },
+      { title: '对象', cell: e => e.entity ? h('span', { class: 'mono dim' }, e.entity) : '' }], entries, { empty: '日志里没有这个工作流的事件（都已并入快照）。' })),
+    entries.length && !S.journal.end ? h('div', { style: 'text-align:center' }, h('button', { onclick: more }, '加载更早的事件')) : null];
+}
+
+// ---------- drawer ----------
+async function loadDrawer() {
+  const kind = drawerKind(), key = drawerKey();
+  if (kind === 'member') return get(api('member', { name: key }));
+  if (kind === 'item') return get(api('item', { key }));
+  return get(api('turn', { task: key }));
+}
+const section = (title, more, ...body) => h('section', {}, h('h4', {}, title, more ? h('span', { class: 'faint', style: 'font-weight:400' }, more) : null), ...body);
+const turnList = turns => turns.length ? h('div', { class: 'box', style: 'padding:0' }, table('dturns', [
+  { title: '任务', cls: 'wide', cell: t => h('div', { class: 'clip mono', title: t.key }, brief(t.key)) }, { title: '状态', cell: t => chip(...pair(TURN, t.status)) },
+  { title: '开始', cls: 'nowrap', cell: t => tick('ago', t.startedAt) }, { title: '耗时', cls: 'nowrap', cell: t => turnTiming(t) },
+  { title: '错误', cls: 'mid', cell: t => t.error ? h('div', { class: 'clip', title: t.error }, t.error) : '' }], turns, { onRow: t => openDrawer('turn', t.taskId) })) : h('div', { class: 'faint' }, '还没有轮次。');
+function paintDrawer(detail) {
+  const kind = drawerKind(), d = detail.body, body = $('drawerBody');
+  const top = body.dataset.key === S.q.d ? body.scrollTop : 0;
+  body.dataset.key = S.q.d;
+  let title, nodes;
+  if (kind === 'member') {
+    title = `成员 ${d.name}`;
+    nodes = [
+      section('概况', null, h('dl', { class: 'kv box' },
+        h('dt', {}, '状态'), h('dd', {}, chip(...pair(PHASE, d.phase)), d.detail ? ' ' + d.detail : ''),
+        h('dt', {}, '角色'), h('dd', {}, ROLE[d.role] || d.role, d.swarm ? ` · swarm ${d.swarm}` : '', d.queue ? ` · 队列 ${d.queue}` : '', d.leads ? ` · 负责队列 ${d.leads.join('、')}` : '', d.under ? ` · 上级 ${d.under}` : '', d.added ? ' · 运行中加入' : ''),
+        h('dt', {}, '执行'), h('dd', {}, model(d)),
+        h('dt', {}, '轮次'), h('dd', {}, d.maxTurns ? `已用 ${d.turns} / ${d.maxTurns} 次唤醒` : `${d.turns} 轮`, d.sessions ? ` · 第 ${d.sessions} 个会话` : '', d.autoRevived ? ` · 自动复活 ${d.autoRevived} 次` : ''),
+        h('dt', {}, '工作项'), h('dd', {}, `完成 ${d.itemsDone} · 失败 ${d.itemsFailed}`, d.item ? [' · 手上：', h('a', { onclick: () => openDrawer('item', d.item.key) }, d.item.key)] : ''),
+        d.wakeAt ? [h('dt', {}, '定时唤醒'), h('dd', {}, clock(d.wakeAt), d.wakeNote ? '：' + d.wakeNote : '')] : null,
+        d.checkpoint ? [h('dt', {}, '恢复点'), h('dd', {}, `#${d.checkpoint.version} · ${clock(d.checkpoint.at)}`)] : null,
+        d.workspace ? [h('dt', {}, '工作树'), h('dd', { class: 'mono' }, d.workspace)] : null,
+        d.nativeSessionId ? [h('dt', {}, '原生会话'), h('dd', {}, copyable(d.nativeSessionId))] : null)),
+      d.task ? section('当前/最近一轮', null, turnList([d.task])) : null,
+      d.takeover ? section('换会话接手', null, h('div', { class: 'box prose' }, [d.takeover.by ? '由 ' + d.takeover.by + ' 更换' : null, d.takeover.was ? '旧会话 ' + d.takeover.was : null, d.takeover.detail, d.takeover.brief].filter(Boolean).join('\n'))) : null,
+      d.brief ? section('加入时的说明', null, h('div', { class: 'box' }, folded('brief:' + d.name, d.brief))) : null,
+      d.roleText ? section('角色说明', null, h('div', { class: 'box' }, folded('role:' + d.name, d.roleText))) : null,
+      section('未读消息', `${d.messages.length} 条尚未被某一轮消费`, d.messages.length ? h('div', { class: 'box', style: 'padding:0' }, d.messages.map(message => h('div', { class: 'post' },
+        h('div', { class: 'hd' }, h('b', {}, message.from), message.post ? h('span', { class: 'tag' }, '帖 #' + message.post) : null, message.topic ? h('span', { class: 'tag' }, '#' + message.topic) : null, h('span', { class: 'faint' }, tick('ago', message.at))),
+        folded('msg:' + message.id, message.text)))) : h('div', { class: 'faint' }, '没有未读消息。')),
+      section('最近轮次', `最近 ${d.recentTurns.length} 轮（仍在状态里的）`, turnList(d.recentTurns)),
+      section('认领记录', `最近 ${d.claims.length} 次`, d.claims.length ? h('div', { class: 'box', style: 'padding:0' }, table('dclaims', [
+        { title: '工作项', cell: c => h('span', { class: 'mono' }, c.item) }, { title: '标题', cls: 'wide', cell: c => h('div', { class: 'clip', title: c.title }, c.title) }, { title: '结果', cell: c => CLAIM[c.status] || c.status },
+        { title: '认领于', cls: 'nowrap', cell: c => tick('ago', c.createdAt) }, { title: '原因', cls: 'mid', cell: c => c.reason ? h('div', { class: 'clip', title: c.reason }, c.reason) : '' }], d.claims, { onRow: c => openDrawer('item', c.item) }))
+        : h('div', { class: 'faint' }, '没有认领过工作项。')),
+      d.checkpointState ? section('恢复点内容', null, h('div', { class: 'box' }, folded('cp:' + d.name, d.checkpointState, { mono: true }))) : null,
+    ];
+  } else if (kind === 'item') {
+    title = `工作项 ${d.key}`;
+    nodes = [
+      section('概况', null, h('dl', { class: 'kv box' },
+        h('dt', {}, '标题'), h('dd', {}, d.title),
+        h('dt', {}, '状态'), h('dd', {}, chip(...pair(ITEM, d.status)), d.hold ? ` · 搁置${d.heldReason ? '：' + d.heldReason : ''}` : '', d.gate ? ' · 条件项' : '', d.archived ? ' · 已归档' : ''),
+        h('dt', {}, '队列'), h('dd', {}, `${d.queue} · 优先级 ${d.priority}（越大越先）`),
+        h('dt', {}, '负责'), h('dd', {}, d.owner ? h('a', { onclick: () => openDrawer('member', d.owner) }, d.owner) : d.doneBy ? ['完成者 ', h('a', { onclick: () => openDrawer('member', d.doneBy) }, d.doneBy)] : '无人持有', d.assignee ? ` · 指定给 ${d.assignee}` : '', d.by ? ` · 创建者 ${d.by}` : ''),
+        h('dt', {}, '认领'), h('dd', {}, `${d.generation} / ${d.maxAttempts} 次` + (d.failures ? ` · 成员自身失败 ${d.failures} 次` : '') + ` · 进展 #${d.progress}` + (d.progressAt ? `（${clock(d.progressAt)}）` : '')),
+        d.origin ? [h('dt', {}, '出自'), h('dd', {}, d.origin)] : null,
+        d.dependsOn ? [h('dt', {}, '依赖'), h('dd', {}, d.dependsOn.map(key => [h('a', { class: 'mono', onclick: () => openDrawer('item', key) }, key), (d.waitsOn || []).includes(key) ? h('span', { class: 'tag' }, '未完成') : null, ' ']))] : null,
+        d.supersedes ? [h('dt', {}, '取代了'), h('dd', { class: 'mono' }, d.supersedes.join(' '))] : null, d.supersededBy ? [h('dt', {}, '被取代'), h('dd', {}, h('a', { class: 'mono', onclick: () => openDrawer('item', d.supersededBy) }, d.supersededBy))] : null,
+        d.settledBy ? [h('dt', {}, '裁定者'), h('dd', {}, d.settledBy)] : null,
+        d.resources.length ? [h('dt', {}, '资源'), h('dd', { class: 'mono' }, d.resources.join(' '))] : null, d.writes ? [h('dt', {}, '写入'), h('dd', { class: 'mono' }, d.writes.join(' '))] : null,
+        h('dt', {}, '时间'), h('dd', {}, `创建 ${clock(d.createdAt)} · 更新 ${clock(d.updatedAt)}`))),
+      d.error ? section('失败原因', null, h('div', { class: 'error' }, d.error)) : null,
+      section('任务内容', null, h('div', { class: 'box' }, folded('in:' + d.key, d.input, { tall: true }))),
+      d.result !== undefined ? section('结果', null, h('div', { class: 'box' }, folded('out:' + d.key, d.result, { tall: true }))) : null,
+      d.progressState ? section('保存的进展', `#${d.progress}`, h('div', { class: 'box' }, folded('prog:' + d.key, d.progressState, { mono: true }))) : null,
+      section('认领历史', `${d.claims.length} 次（仍在状态里的）`, d.claims.length ? h('div', { class: 'box', style: 'padding:0' }, table('iclaims', [
+        { title: '第几次', num: true, cell: c => c.generation }, { title: '成员', cell: c => c.member }, { title: '结果', cell: c => CLAIM[c.status] || c.status },
+        { title: '认领于', cls: 'nowrap', cell: c => clock(c.createdAt) }, { title: '历时', cls: 'nowrap', cell: c => c.endedAt ? dur(c.endedAt - c.createdAt) : tick('for', c.createdAt) },
+        { title: '原因', cls: 'mid', cell: c => c.reason ? h('div', { class: 'clip', title: c.reason }, c.reason) : '' }], d.claims, { onRow: c => openDrawer('turn', c.taskId) })) : h('div', { class: 'faint' }, '还没有被认领过。')),
+    ];
+  } else {
+    title = `轮次 ${d.member ? d.member + ' · ' : ''}${brief(d.key)}`;
+    nodes = [
+      section('概况', null, h('dl', { class: 'kv box' },
+        h('dt', {}, '状态'), h('dd', {}, chip(...pair(TURN, d.status)), d.archived ? ' · 已归档' : '', d.readOnly ? ' · 只读' : ''),
+        h('dt', {}, '成员'), h('dd', {}, d.member ? h('a', { onclick: () => openDrawer('member', d.member) }, d.member) : '一次性 agent 调用'),
+        h('dt', {}, '执行'), h('dd', {}, model(d)),
+        d.workspace ? [h('dt', {}, '工作树'), h('dd', { class: 'mono' }, d.workspace)] : null,
+        d.nativeSessionId ? [h('dt', {}, '原生会话'), h('dd', {}, copyable(d.nativeSessionId))] : null,
+        h('dt', {}, 'taskId'), h('dd', {}, copyable(d.taskId)))),
+      d.error ? section('错误', null, h('div', { class: 'error' }, d.error)) : null,
+      section('尝试', `${d.attemptList.length} 次`, h('div', { class: 'box', style: 'padding:0' }, table('attempts', [
+        { title: '排队于', cls: 'nowrap', cell: a => clock(a.startedAt) }, { title: '等槽位', cls: 'nowrap', cell: a => a.admittedAt ? dur(a.admittedAt - a.startedAt) : a.endedAt ? '—' : tick('for', a.startedAt) },
+        { title: '执行', cls: 'nowrap', cell: a => a.admittedAt ? (a.endedAt ? dur(a.endedAt - a.admittedAt) : tick('for', a.admittedAt)) : '' },
+        { title: '首个会话信号', cls: 'nowrap', cell: a => a.sessionAt && a.admittedAt ? '+' + dur(a.sessionAt - a.admittedAt) : '' },
+        { title: '结果', cell: a => [a.result, a.failureKind, a.stopReason].filter(Boolean).join(' · ') || (a.endedAt ? '' : '进行中') }], d.attemptList))),
+      d.direct.length ? section('回合内收到的话', `${d.direct.length} 条`, h('div', { class: 'box', style: 'padding:0' }, d.direct.map(message => h('div', { class: 'post' }, h('div', { class: 'hd' }, h('b', {}, message.by || message.from),
+        h('span', { class: 'faint' }, clock(message.at), message.delivery ? ' · ' + message.delivery : '')), h('div', { class: 'prose' }, message.text))))) : null,
+      d.results.map((result, index) => section(index ? `结果 ${index + 1}` : '结果', `${result.kind} · ${clock(result.createdAt)}` + (result.truncated ? ' · 已截断' : ''), h('div', { class: 'box' }, folded('res:' + result.ref, result.text, { tall: true, limit: 1500 })))),
+      section('这一轮收到的提示', `${d.objective.length} 字`, h('div', { class: 'box' }, folded('obj:' + d.taskId, d.objective, { tall: true }))),
+    ];
+  }
+  $('drawerTitle').textContent = title; $('drawerTitle').title = title;
+  body.replaceChildren(...nodes.flat(Infinity).filter(Boolean));
+  body.scrollTop = top;
+  $('drawer').classList.add('open');
+}
+function closeDrawer() { const { d, ...rest } = S.q; if (d !== undefined) go({ q: rest }); }
+$('drawerClose').addEventListener('click', closeDrawer);
+$('drawerBack').addEventListener('click', () => history.back());
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && S.q.d) closeDrawer(); });
+
+// ---------- chrome ----------
+$('label').textContent = LABEL || '';
+if (LABEL) document.title = 'Workflows · ' + LABEL;
+$('source').addEventListener('change', event => go({ source: event.target.value, wf: null, tab: 'overview', q: {} }));
+$('pause').addEventListener('click', () => { S.paused = !S.paused; $('pause').textContent = S.paused ? '继续' : '暂停'; if (!S.paused) refresh(); else live('warn', '已暂停自动刷新'); });
+$('theme').addEventListener('click', () => {
+  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+  try { localStorage.setItem('wf-dashboard-theme', document.documentElement.dataset.theme); } catch { /* storage may be unavailable in an embedded page */ }
+});
+try { const saved = localStorage.getItem('wf-dashboard-theme'); if (saved) document.documentElement.dataset.theme = saved; } catch { /* as above */ }
+Object.assign(S, parseHash());
+refresh();
+})();
+</script>
+</body>
+</html>

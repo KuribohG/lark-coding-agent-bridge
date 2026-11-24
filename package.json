@@ -74,6 +74,7 @@
     "docs/configuration.md",
     "docs/config.example.toml",
     "docs/workflows.md",
+    "docs/workflow-dashboard.md",
     "docs/workflow-scheduling.md",
     "docs/workflow-collaboration.md",
     "docs/workflow-worktrees.md",

@@ -925,15 +925,26 @@ export class WorkflowStore {  readonly db: Database.Database;
       : this.db.prepare('SELECT seq, data FROM wf_snapshots WHERE workflow_id = ?').get(workflowId) as { seq: number; data: string } | undefined;
     let state = snapshot ? JSON.parse(snapshot.data) as WorkflowData : undefined;
     let seq = snapshot?.seq ?? 0;
-    const rows = this.db.prepare('SELECT seq, version, data FROM wf_events WHERE workflow_id = ? AND seq > ? ORDER BY seq')
+    const rows = this.eventsAfter(workflowId, seq);
+    ({ state, seq } = this.replay(workflowId, state, seq, rows));
+    if (state) this.replayLeases(state);
+    return state && { state, seq, sinceSnapshot: rows.length };
+  }
+
+  private eventsAfter(workflowId: string, seq: number): Array<{ seq: number; version: number; data: string }> {
+    return this.db.prepare('SELECT seq, version, data FROM wf_events WHERE workflow_id = ? AND seq > ? ORDER BY seq')
       .all(workflowId, seq) as Array<{ seq: number; version: number; data: string }>;
+  }
+
+  private replay<S extends WorkflowData | undefined>(workflowId: string, state: S, seq: number,
+    rows: ReadonlyArray<{ seq: number; version: number; data: string }>): { state: S; seq: number } {
     for (const row of rows) {
       // A journal written by another build is validated here rather than silently skipped: an event this reducer
       // does not know cannot be ignored without the rest of the state drifting away from what its writer meant.
       let event: DomainEvent | undefined;
       try {
         event = JSON.parse(row.data) as DomainEvent;
-        if (event.type === 'workflow_created') state = event.state;
+        if (event.type === 'workflow_created') state = event.state as S;
         else evolve(state!, event);
       } catch (error) {
         throw new WorkflowJournalError(workflowId, row.seq, event?.type ?? 'unparseable', error);
@@ -941,17 +952,52 @@ export class WorkflowStore {  readonly db: Database.Database;
       state!.stateVersion = row.version;
       seq = row.seq;
     }
-    // A lease renewal never reaches the journal (see append), so the last one for each claim is replayed on top. A
-    // claim's row lives as long as the workflow, so a claim that ended replays the lease it ended with too.
-    if (state) {
-      const leases = this.db.prepare('SELECT claim_id AS claimId, lease_until AS leaseUntil FROM wf_leases WHERE workflow_id = ?')
-        .all(workflowId) as Array<{ claimId: string; leaseUntil: number }>;
-      for (const lease of leases) {
-        const claim = state.workQueue?.claims.find(candidate => candidate.id === lease.claimId);
-        if (claim) claim.leaseUntil = lease.leaseUntil;
-      }
+    return { state, seq };
+  }
+
+  /**
+   * A lease renewal never reaches the journal (see append), so the last one for each claim is replayed on top. A
+   * claim's row lives as long as the workflow, so a claim that ended replays the lease it ended with too.
+   */
+  private replayLeases(state: WorkflowData): void {
+    const leases = this.db.prepare('SELECT claim_id AS claimId, lease_until AS leaseUntil FROM wf_leases WHERE workflow_id = ?')
+      .all(state.workflowId) as Array<{ claimId: string; leaseUntil: number }>;
+    for (const lease of leases) {
+      const claim = state.workQueue?.claims.find(candidate => candidate.id === lease.claimId);
+      if (claim) claim.leaseUntil = lease.leaseUntil;
     }
-    return state && { state, seq, sinceSnapshot: rows.length };
+  }
+
+  /**
+   * For a store opened read-only beside the process that writes the file: the workflow as the journal has it now, and
+   * the journal position that state stands at. Events committed since the last call are applied to the state already
+   * in memory; when the writer has meanwhile compacted the journal past that state, it is loaded again from the
+   * snapshot. A workflow that failed to replay keeps failing with the same error, as it does for the writer.
+   */
+  follow(workflowId: string): { state: WorkflowView; seq: number } | undefined {
+    if (!this.options.readonly) throw new Error('Only a read-only store follows a journal that another process writes');
+    // One read transaction: a snapshot the writer takes between two of these reads compacts away the very events the
+    // second one would look for.
+    return this.db.transaction(() => {
+      const known = this.aggregates.get(workflowId);
+      const snapshot = known && this.db.prepare('SELECT seq FROM wf_snapshots WHERE workflow_id = ?').get(workflowId) as { seq: number } | undefined;
+      if (known && (snapshot?.seq ?? 0) <= known.seq) {
+        try {
+          known.seq = this.replay(workflowId, known.state, known.seq, this.eventsAfter(workflowId, known.seq)).seq;
+        } catch (error) {
+          // The state stopped part-way through an event; nothing may read it again.
+          known.stale = true;
+          this.aggregates.delete(workflowId);
+          throw error;
+        }
+        this.replayLeases(known.state);
+        return { state: known.state, seq: known.seq };
+      }
+      if (known) known.stale = true;
+      this.aggregates.delete(workflowId);
+      const loaded = this.aggregate(workflowId);
+      return loaded && { state: loaded.state, seq: loaded.seq };
+    })();
   }
 
   /** Verification mode: the journal alone, replayed from its first event, must reproduce the in-memory state. */
