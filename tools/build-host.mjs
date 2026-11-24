@@ -27,6 +27,7 @@ const result = await esbuild.build({ absWorkingDir: root,
   entryPoints: { runtime: 'src/host.ts', workflows: 'packages/workflow-engine/src/index.ts' },
   outdir: output, outExtension: { '.js': '.mjs' }, bundle: true, splitting: false, platform: 'node', format: 'esm',
   target: 'node24', sourcemap: false, metafile: true, external: ['better-sqlite3', 'quickjs-emscripten'],
+  loader: { '.html': 'text' },
   // Bundled CommonJS packages call require() for Node builtins, which an ES module has to provide.
   banner: { js: "import { createRequire as bundleRequire } from 'node:module';\nconst require = bundleRequire(import.meta.url);" },
   define: { 'process.env.LARK_BUILD_COMMIT': JSON.stringify(sourceCommit),
@@ -46,6 +47,15 @@ const workflowClient = await esbuild.build({ absWorkingDir: root, entryPoints: [
   outfile: path.join(output, 'workflow-cli.js'), bundle: true, platform: 'node', format: 'esm', target: 'node22',
   sourcemap: false, metafile: true, external: ['better-sqlite3', 'quickjs-emscripten'],
   banner: { js: "import { createRequire as bundleRequire } from 'node:module';\nconst require = bundleRequire(import.meta.url);" },
+  plugins: [{
+    name: 'exclude-dashboard-cli',
+    setup(build) {
+      build.onResolve({ filter: /^\.\/dashboard\/cli$/ }, () => ({ path: 'dashboard-cli-excluded', namespace: 'host-build' }));
+      build.onLoad({ filter: /.*/, namespace: 'host-build' }, () => ({
+        contents: "export async function runDashboardCli() { throw new Error('Dashboard command is unavailable in the standalone workflow client.'); }\n",
+      }));
+    },
+  }],
 });
 for (const file of Object.values(workflowClient.metafile.outputs)) {
   for (const dep of file.imports) {
@@ -56,7 +66,9 @@ for (const file of Object.values(workflowClient.metafile.outputs)) {
 }
 const inputs = {};
 const remember = relative => { inputs[relative] = sha(fs.readFileSync(path.join(root, relative))); };
-for (const name of [...Object.keys(result.metafile.inputs), ...Object.keys(helpers.metafile.inputs), ...Object.keys(workflowClient.metafile.inputs)]) remember(name.replaceAll('\\', '/'));
+for (const name of [...Object.keys(result.metafile.inputs), ...Object.keys(helpers.metafile.inputs), ...Object.keys(workflowClient.metafile.inputs)]) {
+  if (!name.startsWith('host-build:')) remember(name.replaceAll('\\', '/'));
+}
 for (const name of ['package.json', 'packages/workflow-engine/package.json', 'pnpm-lock.yaml', 'tools/build-host.mjs', 'tools/publish-host.mjs']) remember(name);
 const nativeSource = path.join(root, 'src/agent/dsh/native');
 const nativeOutput = path.join(output, 'dsh');
