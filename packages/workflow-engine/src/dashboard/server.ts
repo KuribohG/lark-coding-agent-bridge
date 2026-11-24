@@ -43,6 +43,11 @@ function send(request: IncomingMessage, response: ServerResponse, status: number
   response.end(zipped ? gzipSync(text) : text);
 }
 
+/** Render the standalone read-only workflow dashboard HTML document for direct HTTP or RPC embedding. */
+export function renderDashboardPage(label = ''): string {
+  return page.replace('__DASHBOARD_LABEL__', JSON.stringify(label).replace(/</g, '\\u003c'));
+}
+
 /**
  * Serves the dashboard page and its read-only API over HTTP. The page asks for everything relative to its own
  * address, so it works unchanged behind a proxy that puts it under a path.
@@ -51,7 +56,7 @@ export async function startDashboard(options: DashboardOptions): Promise<Dashboa
   const api = new DashboardApi(options.sources);
   const token = options.token === false ? undefined : options.token || randomBytes(24).toString('hex');
   const host = options.host ?? '127.0.0.1';
-  const html = page.replace('__DASHBOARD_LABEL__', JSON.stringify(options.label ?? '').replace(/</g, '\\u003c'));
+  const html = renderDashboardPage(options.label ?? '');
 
   const server = createServer((request, response) => {
     try {

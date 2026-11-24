@@ -38,5 +38,5 @@ export { DashboardApi } from './dashboard/api';
 export type { DashboardResponse, DashboardSource } from './dashboard/api';
 export { runDashboardCli } from './dashboard/cli';
 export { WorkflowJournal } from './dashboard/journal';
-export { startDashboard } from './dashboard/server';
+export { renderDashboardPage, startDashboard } from './dashboard/server';
 export type { DashboardHandle, DashboardOptions } from './dashboard/server';
