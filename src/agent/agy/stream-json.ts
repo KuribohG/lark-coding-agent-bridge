@@ -38,6 +38,7 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
       const update = object(raw.step_update);
       const index = number(update.step_index);
       if (index === undefined) return events;
+      events.push(...this.flushCompletedTools(index));
       const previous = this.steps.get(index);
       const step: ObjectValue = { ...previous, ...update,
         tool_info: { ...object(previous?.tool_info), ...object(update.tool_info) } };
@@ -72,6 +73,7 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
       this.terminal = true;
       const result = object(raw.result);
       this.sessionId = text(result.conversation_id) || this.sessionId;
+      events.push(...this.flushCompletedTools());
       const usage = this.usage.size ? this.sumUsage() : object(result.usage);
       if (Object.keys(usage).length) events.push({ type: 'usage',
         inputTokens: number(usage.input_tokens), outputTokens: number(usage.output_tokens),
@@ -99,6 +101,17 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
   }
 
   terminalEmitted(): boolean { return this.terminal; }
+
+  private flushCompletedTools(exceptIndex?: number): AgentEvent[] {
+    const flushed: AgentEvent[] = [];
+    for (const idx of this.tools) {
+      if (idx !== exceptIndex && this.completed.has(idx) && !this.finishedTools.has(idx)) {
+        this.finishedTools.add(idx);
+        flushed.push({ type: 'tool_result', id: `agy:${this.sessionId ?? 'run'}:${idx}`, output: '', isError: false });
+      }
+    }
+    return flushed;
+  }
 
   private sumUsage(): ObjectValue {
     const result: Record<string, number> = {};

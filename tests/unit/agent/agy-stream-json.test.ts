@@ -49,6 +49,27 @@ describe('Antigravity stream protocol', () => {
     expect(t.translate(step(3, { tool_info: { output: '/repo' } }))).toEqual([]);
   });
 
+  it('flushes completed tool steps missing output or error when another step or result arrives', () => {
+    const t = new AgyStreamTranslator(); t.translate(init);
+    t.translate(step(3, { step_type: 'tool', state: 'ACTIVE', tool_name: 'read_file',
+      tool_info: { parameters: { Path: '/repo/a.ts' } } }));
+    expect(t.translate(step(3, { state: 'DONE' }))).toEqual([]);
+    expect(t.translate(step(4, { step_type: 'agent_response', state: 'ACTIVE', text_delta: 'next' }))).toEqual([
+      { type: 'tool_result', id: 'agy:conversation-1:3', output: '', isError: false },
+      { type: 'text', delta: 'next' },
+    ]);
+    expect(t.translate(step(4, { step_type: 'agent_response', state: 'DONE' }))).toEqual([]);
+
+    t.translate(step(5, { step_type: 'tool', state: 'ACTIVE', tool_name: 'run_command',
+      tool_info: { parameters: { CommandLine: 'true' } } }));
+    expect(t.translate(step(5, { state: 'DONE' }))).toEqual([]);
+    expect(t.translate(result('SUCCESS'))).toEqual([
+      { type: 'tool_result', id: 'agy:conversation-1:5', output: '', isError: false },
+      { type: 'final_text', content: 'final answer' },
+      { type: 'done', sessionId: 'conversation-1', terminationReason: 'normal' },
+    ]);
+  });
+
   it.each(['ERROR', 'INVALID', 'WAITING', 'RUNNING'])('never reports %s as a completed task', status => {
     const events = new AgyStreamTranslator().translate(result(status));
     expect(events).toEqual([expect.objectContaining({ type: 'error', terminationReason: 'failed' })]);
