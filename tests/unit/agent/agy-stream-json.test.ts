@@ -128,4 +128,163 @@ describe('Antigravity stream protocol', () => {
     expect(new AgyStreamTranslator().translate(result('ERROR', { error: '429 Too Many Requests' }))[0])
       .toMatchObject({ type: 'error', failureKind: 'rate_limit' });
   });
+
+  it('translates step_type subagent lifecycle into sanitized tool calls and agent task events', () => {
+    const t = new AgyStreamTranslator();
+    t.translate(init);
+    const active = step(2, {
+      step_type: 'subagent',
+      state: 'ACTIVE',
+      tool_name: 'invoke_subagent',
+      subagent_info: {
+        subagents: [{
+          type_name: 'research',
+          role: 'Contract and Correctness Auditor',
+          initial_prompt: 'Inspect the contract carefully.',
+        }],
+      },
+    });
+    expect(t.translate(active)).toEqual([
+      {
+        type: 'tool_use',
+        id: 'agy:conversation-1:2',
+        name: 'invoke_subagent',
+        input: {
+          subagents: [{
+            role: 'Contract and Correctness Auditor',
+            typeName: 'research',
+            promptPreview: 'Inspect the contract carefully.',
+          }],
+        },
+      },
+    ]);
+
+    const done = step(2, {
+      step_type: 'subagent',
+      state: 'DONE',
+      tool_name: 'invoke_subagent',
+      subagent_info: {
+        subagents: [{
+          type_name: 'research',
+          role: 'Contract and Correctness Auditor',
+          initial_prompt: 'Inspect the contract carefully.',
+          conversation_id: 'd2ee1ad2-1111-2222-3333-444455556666',
+          log_uri: 'file:///C:/Users/secret/.gemini/antigravity/brain/d2ee1ad2/transcript.jsonl',
+        }],
+      },
+    });
+    const doneEvents = t.translate(done);
+    expect(doneEvents).toEqual([
+      {
+        type: 'task',
+        id: 'd2ee1ad2-1111-2222-3333-444455556666',
+        kind: 'agent',
+        nativeType: 'research',
+        state: 'running',
+        name: 'Contract and Correctness Auditor',
+        description: 'Inspect the contract carefully.',
+        background: true,
+        members: [{
+          index: 0,
+          label: 'Contract and Correctness Auditor',
+          agentId: 'd2ee1ad2-1111-2222-3333-444455556666',
+          state: 'running',
+        }],
+      },
+      {
+        type: 'tool_result',
+        id: 'agy:conversation-1:2',
+        output: JSON.stringify({
+          subagents: [{
+            conversationId: 'd2ee1ad2-1111-2222-3333-444455556666',
+            role: 'Contract and Correctness Auditor',
+            typeName: 'research',
+          }],
+        }),
+        isError: false,
+      },
+    ]);
+    expect(JSON.stringify(doneEvents)).not.toContain('log_uri');
+    expect(JSON.stringify(doneEvents)).not.toContain('C:/Users/secret');
+    expect(t.translate(done)).toEqual([]);
+
+    expect(t.translate(result('SUCCESS'))).toEqual([
+      {
+        type: 'task',
+        id: 'd2ee1ad2-1111-2222-3333-444455556666',
+        state: 'completed',
+        members: [{
+          index: 0,
+          label: 'Contract and Correctness Auditor',
+          agentId: 'd2ee1ad2-1111-2222-3333-444455556666',
+          state: 'done',
+        }],
+      },
+      { type: 'final_text', content: 'final answer' },
+      { type: 'done', sessionId: 'conversation-1', terminationReason: 'normal' },
+    ]);
+  });
+
+  it('tracks multiple native subagents across steps and multi-item payloads', () => {
+    const t = new AgyStreamTranslator();
+    t.translate(init);
+    const step2 = t.translate(step(2, {
+      step_type: 'subagent',
+      state: 'DONE',
+      tool_name: 'invoke_subagent',
+      subagent_info: {
+        subagents: [
+          { type_name: 'research', role: 'Adversarial Challenger and Auditor', conversation_id: 'fb214631-0000-0000-0000-000000000001' },
+          { type_name: 'research', role: 'Variant Hunter and Evidence Verifier', conversation_id: '480a98b5-0000-0000-0000-000000000002' },
+        ],
+      },
+    }));
+    const tasks = step2.filter(e => e.type === 'task');
+    expect(tasks.map(e => (e as { id: string }).id)).toEqual([
+      'fb214631-0000-0000-0000-000000000001',
+      '480a98b5-0000-0000-0000-000000000002',
+    ]);
+    expect(tasks.map(e => (e as { name: string }).name)).toEqual([
+      'Adversarial Challenger and Auditor',
+      'Variant Hunter and Evidence Verifier',
+    ]);
+
+    const resEvents = t.translate(result('SUCCESS'));
+    expect(resEvents.filter(e => e.type === 'task')).toHaveLength(2);
+  });
+
+  it('marks ERROR subagent steps as failed and settles running subagents as stopped on cancellation', () => {
+    const tErr = new AgyStreamTranslator();
+    tErr.translate(init);
+    const errEvents = tErr.translate(step(2, {
+      step_type: 'subagent',
+      state: 'ERROR',
+      tool_name: 'invoke_subagent',
+      subagent_info: {
+        subagents: [{ type_name: 'research', role: 'Failed Auditor', conversation_id: 'child-err-1' }],
+      },
+    }));
+    expect(errEvents).toContainEqual(expect.objectContaining({ type: 'task', id: 'child-err-1', state: 'failed' }));
+    expect(errEvents).toContainEqual(expect.objectContaining({ type: 'tool_result', id: 'agy:conversation-1:2', isError: true }));
+
+    const tCancel = new AgyStreamTranslator();
+    tCancel.translate(init);
+    tCancel.translate(step(2, {
+      step_type: 'subagent',
+      state: 'DONE',
+      tool_name: 'invoke_subagent',
+      subagent_info: {
+        subagents: [{ type_name: 'research', role: 'Interrupted Auditor', conversation_id: 'child-cancel-1' }],
+      },
+    }));
+    expect(tCancel.translate(result('CANCELED'))).toEqual([
+      {
+        type: 'task',
+        id: 'child-cancel-1',
+        state: 'stopped',
+        members: [{ index: 0, label: 'Interrupted Auditor', agentId: 'child-cancel-1', state: 'stopped' }],
+      },
+      { type: 'done', sessionId: 'conversation-1', terminationReason: 'interrupted' },
+    ]);
+  });
 });

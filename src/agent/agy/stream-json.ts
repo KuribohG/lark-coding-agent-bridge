@@ -8,6 +8,39 @@ const object = (value: unknown): ObjectValue => value && typeof value === 'objec
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
 const number = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 
+function sanitizedSubagentsInput(subInfo: ObjectValue): ObjectValue {
+  if (!Array.isArray(subInfo.subagents)) return {};
+  return {
+    subagents: subInfo.subagents.map(raw => {
+      const sub = object(raw);
+      const role = text(sub.role);
+      const typeName = text(sub.type_name);
+      const promptPreview = text(sub.initial_prompt).slice(0, 240);
+      return {
+        ...(role ? { role } : {}),
+        ...(typeName ? { typeName } : {}),
+        ...(promptPreview ? { promptPreview } : {}),
+      };
+    }),
+  };
+}
+
+function sanitizedSubagentsOutput(subInfo: ObjectValue): string {
+  if (!Array.isArray(subInfo.subagents) || subInfo.subagents.length === 0) return '';
+  const subagents = subInfo.subagents.map(raw => {
+    const sub = object(raw);
+    const conversationId = text(sub.conversation_id);
+    const role = text(sub.role);
+    const typeName = text(sub.type_name);
+    return {
+      ...(conversationId ? { conversationId } : {}),
+      ...(role ? { role } : {}),
+      ...(typeName ? { typeName } : {}),
+    };
+  }).filter(item => Object.keys(item).length > 0);
+  return subagents.length > 0 ? JSON.stringify({ subagents }) : '';
+}
+
 /** One native prompt per process; result.response is the authoritative final answer. */
 export class AgyStreamTranslator implements ProcessEventTranslator {
   private sessionId?: string;
@@ -17,6 +50,8 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
   private finishedTools = new Set<number>();
   private steps = new Map<number, ObjectValue>();
   private usage = new Map<number, ObjectValue>();
+  private stepSubagentIds = new Map<string, string>();
+  private subagentTasks = new Map<string, { label: string; agentId?: string; state: 'running' | 'completed' | 'failed' | 'stopped' }>();
   private latestUsageStep = -1;
   private latestUsage?: ObjectValue;
   private latestMainUsageStep = -1;
@@ -44,10 +79,14 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
       if (index === undefined) return events;
       events.push(...this.flushCompletedTools(index));
       const previous = this.steps.get(index);
-      const step: ObjectValue = { ...previous, ...update,
-        tool_info: { ...object(previous?.tool_info), ...object(update.tool_info) } };
+      const step: ObjectValue = {
+        ...previous,
+        ...update,
+        tool_info: { ...object(previous?.tool_info), ...object(update.tool_info) },
+        subagent_info: { ...object(previous?.subagent_info), ...object(update.subagent_info) },
+      };
       this.steps.set(index, step);
-      if (this.completed.has(index) && step.step_type !== 'tool') return events;
+      if (this.completed.has(index) && step.step_type !== 'tool' && step.step_type !== 'subagent') return events;
       this.sessionId = text(step.conversation_id) || this.sessionId;
       const stepTerminal = step.state === 'DONE' || step.state === 'ERROR';
       if (stepTerminal) {
@@ -85,11 +124,40 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
             isError: Boolean(info.error) || step.state === 'ERROR' });
         }
       }
+      if (step.step_type === 'subagent') {
+        const subInfo = object(step.subagent_info);
+        const info = object(step.tool_info);
+        const name = text(step.tool_name) || text(info.name) || 'invoke_subagent';
+        const id = `agy:${this.sessionId ?? 'run'}:${index}`;
+        if (!this.tools.has(index)) {
+          this.tools.add(index);
+          events.push({ type: 'tool_use', id, name, input: sanitizedSubagentsInput(subInfo) });
+        }
+        events.push(...this.emitSubagentTasks(index, step, false));
+        const subs = Array.isArray(subInfo.subagents) ? subInfo.subagents : [];
+        const hasConvId = subs.some(s => Boolean(text(object(s).conversation_id)));
+        if (stepTerminal && this.tools.has(index) && !this.finishedTools.has(index)
+          && (hasConvId || subs.length === 0 || 'output' in info || 'error' in info || step.state === 'ERROR')) {
+          this.finishedTools.add(index);
+          const error = object(info.error);
+          const out = sanitizedSubagentsOutput(subInfo) || text(info.output) || text(error.message);
+          events.push({
+            type: 'tool_result',
+            id,
+            output: out,
+            isError: Boolean(info.error) || step.state === 'ERROR',
+          });
+        }
+      }
     } else if (raw.event === 'result') {
       this.terminal = true;
       const result = object(raw.result);
       this.sessionId = text(result.conversation_id) || this.sessionId;
       events.push(...this.flushCompletedTools());
+      const settledState = result.status === 'SUCCESS'
+        ? 'completed'
+        : (result.status === 'CANCELED' || result.status === 'INTERRUPTED') ? 'stopped' : 'failed';
+      events.push(...this.settleSubagentTasks(settledState));
       const usage = this.usage.size ? this.sumUsage() : object(result.usage);
       const latest = this.latestMainUsage ?? this.latestUsage ?? object(result.usage);
       const contextTokens = (number(latest.input_tokens) ?? 0)
@@ -119,6 +187,8 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
     if (this.terminal) return [];
     this.terminal = true;
     const events = this.notices.splice(0);
+    events.push(...this.flushCompletedTools());
+    events.push(...this.settleSubagentTasks(state.interrupted || state.timedOut ? 'stopped' : 'failed'));
     if (state.timedOut) return [...events, this.done('timeout')];
     if (state.interrupted) return [...events, this.done('interrupted')];
     const message = state.runtimeError?.message || state.stderr || `agy exited with code ${state.exitCode} without a result`;
@@ -127,18 +197,100 @@ export class AgyStreamTranslator implements ProcessEventTranslator {
 
   terminalEmitted(): boolean { return this.terminal; }
 
+  private emitSubagentTasks(index: number, step: ObjectValue, forceFallbackId: boolean): AgentEvent[] {
+    const subInfo = object(step.subagent_info);
+    const subagents = Array.isArray(subInfo.subagents) ? subInfo.subagents : [];
+    const emitted: AgentEvent[] = [];
+    const isError = step.state === 'ERROR';
+    for (let subIdx = 0; subIdx < subagents.length; subIdx++) {
+      const sub = object(subagents[subIdx]);
+      const convId = text(sub.conversation_id);
+      const role = text(sub.role);
+      const typeName = text(sub.type_name);
+      const label = role || typeName || 'Subagent';
+      const description = text(sub.initial_prompt).slice(0, 400) || undefined;
+      const key = `${index}:${subIdx}`;
+      if (!this.stepSubagentIds.has(key)) {
+        if (!convId && !isError && !forceFallbackId) continue;
+        const taskId = convId || `agy:${this.sessionId ?? 'run'}:subagent:${index}:${subIdx}`;
+        const state: 'running' | 'failed' = isError ? 'failed' : 'running';
+        this.stepSubagentIds.set(key, taskId);
+        this.subagentTasks.set(taskId, { label, agentId: convId || undefined, state });
+        emitted.push({
+          type: 'task',
+          id: taskId,
+          kind: 'agent',
+          nativeType: typeName || 'subagent',
+          state,
+          name: label,
+          ...(description ? { description } : {}),
+          background: true,
+          members: [{
+            index: 0,
+            label,
+            ...(convId ? { agentId: convId } : {}),
+            state: isError ? 'error' : 'running',
+          }],
+        });
+      } else if (isError) {
+        const taskId = this.stepSubagentIds.get(key)!;
+        const tracked = this.subagentTasks.get(taskId);
+        if (tracked && tracked.state !== 'failed') {
+          tracked.state = 'failed';
+          emitted.push({
+            type: 'task',
+            id: taskId,
+            state: 'failed',
+            members: [{
+              index: 0,
+              label: tracked.label,
+              ...(tracked.agentId ? { agentId: tracked.agentId } : {}),
+              state: 'error',
+            }],
+          });
+        }
+      }
+    }
+    return emitted;
+  }
+
+  private settleSubagentTasks(finalState: 'completed' | 'failed' | 'stopped'): AgentEvent[] {
+    const settled: AgentEvent[] = [];
+    const memberState = finalState === 'completed' ? 'done' : finalState === 'stopped' ? 'stopped' : 'error';
+    for (const [taskId, tracked] of this.subagentTasks) {
+      if (tracked.state !== 'running') continue;
+      tracked.state = finalState;
+      settled.push({
+        type: 'task',
+        id: taskId,
+        state: finalState,
+        members: [{
+          index: 0,
+          label: tracked.label,
+          ...(tracked.agentId ? { agentId: tracked.agentId } : {}),
+          state: memberState,
+        }],
+      });
+    }
+    return settled;
+  }
+
   private flushCompletedTools(exceptIndex?: number): AgentEvent[] {
     const flushed: AgentEvent[] = [];
     for (const idx of this.tools) {
       if (idx !== exceptIndex && (exceptIndex === undefined || this.completed.has(idx)) && !this.finishedTools.has(idx)) {
         this.finishedTools.add(idx);
         const step = this.steps.get(idx);
+        if (step?.step_type === 'subagent') {
+          flushed.push(...this.emitSubagentTasks(idx, step, true));
+        }
         const info = object(step?.tool_info);
         const error = object(info.error);
+        const subOut = step?.step_type === 'subagent' ? sanitizedSubagentsOutput(object(step.subagent_info)) : '';
         flushed.push({
           type: 'tool_result',
           id: `agy:${this.sessionId ?? 'run'}:${idx}`,
-          output: text(info.output) || text(error.message) || (info.output ? JSON.stringify(info.output) : ''),
+          output: subOut || text(info.output) || text(error.message) || (info.output ? JSON.stringify(info.output) : ''),
           isError: Boolean(info.error) || step?.state === 'ERROR',
         });
       }
