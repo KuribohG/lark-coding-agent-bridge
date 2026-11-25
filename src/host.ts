@@ -5,6 +5,7 @@ import { configureLogger } from './core/logger';
 configureLogger({ stdout: false });
 
 export { configureLogger };
+export { parseModelJson } from './utils/model-json';
 export { RunExecutor } from './runtime/run-executor';
 export { ActiveRuns } from './runtime/active-runs';
 export { ProcessPool } from './runtime/process-pool';

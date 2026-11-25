@@ -4,7 +4,9 @@ import { jsonrepair } from 'jsonrepair';
 export function parseModelJson(text: string): unknown {
   const source = text.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, '$1').trim();
   try { return JSON.parse(source); } catch { /* Try bounded syntax repair below. */ }
-  if (!source.startsWith('{') || !source.endsWith('}') || /:\s*(?:[,}]|(?:undefined|NaN|None)\s*[,}])/.test(source)) {
+  const isObject = source.startsWith('{') && source.endsWith('}');
+  const isArray = source.startsWith('[') && source.endsWith(']');
+  if ((!isObject && !isArray) || /:\s*(?:[,}\]]|(?:undefined|NaN|None)\s*[,}\]])/.test(source)) {
     throw new SyntaxError('模型 JSON 不完整');
   }
   const stack: string[] = [];
@@ -18,6 +20,7 @@ export function parseModelJson(text: string): unknown {
     else if (char === '{' || char === '[') stack.push(char);
     else if (char === '}' || char === ']') {
       if (stack.pop() !== (char === '}' ? '{' : '[')) throw new SyntaxError('模型 JSON 不完整');
+      if (stack.length === 0 && i < source.length - 1) throw new SyntaxError('模型 JSON 不完整');
     }
   }
   if (quote || stack.length) throw new SyntaxError('模型 JSON 不完整');
