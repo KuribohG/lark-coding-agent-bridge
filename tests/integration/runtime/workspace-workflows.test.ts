@@ -204,7 +204,8 @@ describe('workspace script runtime', () => {
       expect((await stat(join(path(tree.workspace), '.git'))).isFile()).toBe(true);
       // Like the member in a clone, it gets a clone; a worktree of the repository is still there for the asking.
       const clone = (await staff({ add: ['c1'], like: 'c0', workspace: true })).workspaces[0]!;
-      expect(await readFile(join(path(clone.workspace), 'value.txt'), 'utf8')).toBe('original\n');
+      // The clone does not take the source's core.autocrlf, so Git for Windows writes its files with CRLF.
+      expect((await readFile(join(path(clone.workspace), 'value.txt'), 'utf8')).replace(/\r\n/g, '\n')).toBe('original\n');
       expect((await stat(join(path(clone.workspace), '.git'))).isDirectory()).toBe(true);
       const shared = (await staff({ add: ['c2'], like: 'c0', workspace: { isolation: 'worktree' } })).workspaces[0]!;
       expect((await stat(join(path(shared.workspace), '.git'))).isFile()).toBe(true);
