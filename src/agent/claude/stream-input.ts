@@ -64,6 +64,16 @@ export class ClaudeStreamInput {
     return this.control({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } });
   }
 
+  /**
+   * Ask for the model's thinking as text. Run without a terminal, Claude Code has the API keep it back, and the
+   * thinking blocks arrive empty. A request rather than the `--thinking-display` flag: a CLI that does not know
+   * the field answers the request and changes nothing, where an unknown flag ends the run.
+   */
+  showThinking(): boolean {
+    return this.control({ type: 'control_request', request_id: randomUUID(),
+      request: { subtype: 'set_max_thinking_tokens', thinking_display: 'summarized' } });
+  }
+
   steer(prompt: string, messageId: string): Promise<Receipt> {
     const previous = this.deliveries.get(messageId);
     if (previous) return previous;

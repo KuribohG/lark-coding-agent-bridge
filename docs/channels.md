@@ -329,7 +329,12 @@ commands enable it.
 `rawThinking` asks engines for the model's own thinking where they otherwise
 keep it back (Claude Code's thinking blocks). It is for a host that folds
 reasoning away until someone asks for it, as the Web page does; shown in line
-it buries the answer, so Lark and Slack leave it off.
+it buries the answer, so Lark and Slack leave it off. With it the Claude
+adapter also asks Claude Code, at the start of each run, to have the API return
+the thinking as text (for Claude models, a summary of it): run without a
+terminal Claude Code otherwise leaves the blocks empty. A Claude Code too old
+to know the request ignores it. A step the model did not think about has no
+thinking to show either way.
 
 Every `run.started` event carries `settings`: the engine, and the model and
 effort where the bridge chose them.

@@ -324,6 +324,7 @@ export class ClaudeAdapter implements AgentAdapter {
       input.restore(written);
       questions.restore(written);
     } else {
+      if (opts.rawThinking) input.showThinking();
       input.start(opts.prompt);
     }
 

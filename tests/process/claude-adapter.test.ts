@@ -237,6 +237,25 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv[record.argv.indexOf('--effort') + 1]).toBe('high');
   });
 
+  it('asks for the thinking text only for a host that shows it', async () => {
+    const fake = await createFakeClaude({ lines: [
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'weighing it', signature: 's' }, { type: 'text', text: 'done' }] } },
+      { type: 'result', session_id: 'sess-thinking' },
+    ] });
+    cleanup.push(fake.dir);
+    const adapter = new ClaudeAdapter({ binary: fake.path });
+
+    const shown = (await adapter.prepareRun({ runId: 'run-shown', prompt: 'think', cwd: fake.dir, rawThinking: true })).start();
+    const events = await collect(shown.events);
+    expect(events).toContainEqual({ type: 'thinking', delta: 'weighing it\n\n' });
+    expect(events).toContainEqual({ type: 'done', sessionId: 'sess-thinking', terminationReason: 'normal' });
+    expect((await readRecord(fake.recordPath)).controls).toEqual([{ subtype: 'set_max_thinking_tokens', thinking_display: 'summarized' }]);
+
+    const kept = (await adapter.prepareRun({ runId: 'run-kept', prompt: 'think', cwd: fake.dir })).start();
+    expect((await collect(kept.events)).some(event => event.type === 'thinking')).toBe(false);
+    expect((await readRecord(fake.recordPath)).controls).toEqual([]);
+  });
+
   it('passes the configured MCP file through --mcp-config', async () => {
     const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-mcp' }] });
     cleanup.push(fake.dir);
@@ -791,13 +810,17 @@ async function createFakeClaude(options: {
       'let stdin = "";',
       'process.stdin.on("data", (c) => { stdin += c; });',
       'const rl = (await import("node:readline")).createInterface({ input: process.stdin });',
-      'rl.once("line", line => {',
+      'const controls = [];',
+      'rl.on("line", function take(line) {',
       '  const input = JSON.parse(line);',
+      '  if (input.type === "control_request") { controls.push(input.request); return; }',
+      '  rl.off("line", take);',
       `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
       '    argv,',
       '    stdin,',
       '    systemPrompt,',
       '    settings,',
+      '    controls,',
       '    cwd: process.cwd(),',
       '    env: {',
       '      LARK_CHANNEL: process.env.LARK_CHANNEL,',
@@ -832,6 +855,7 @@ async function readRecord(path: string): Promise<{
   stdin: string;
   systemPrompt: string | null;
   settings: string | null;
+  controls: unknown[];
   cwd: string;
   env: {
     LARK_CHANNEL?: string;
@@ -852,6 +876,7 @@ async function readRecord(path: string): Promise<{
     stdin: string;
     systemPrompt: string | null;
     settings: string | null;
+    controls: unknown[];
     cwd: string;
     env: {
       LARK_CHANNEL?: string;
