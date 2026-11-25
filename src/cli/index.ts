@@ -116,6 +116,7 @@ program.command('web')
   .requiredOption('--workspace <path>', 'workspace for browser conversations')
   .option('--state-dir <path>', 'private conversation state directory')
   .option('--port <port>', 'localhost port; default 8787, use 0 for a free port')
+  .option('--state-file <path>', 'record the address and token (0600) for a local proxy or launcher')
   .option('--binary <path>', 'agent executable')
   .option('--model <id>', 'model for new runs')
   .action(runWeb);

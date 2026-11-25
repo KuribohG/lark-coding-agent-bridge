@@ -70,7 +70,6 @@ export class Session {
   }
 
   async start(): Promise<void> {
-    if (!this.api.authorized) { this.set({ link: 'unauthorized' }); return; }
     this.route.onChange(id => { if (id !== this.state.conversationId) this.show(id); });
     this.show(this.route.current());
     try { this.set({ meta: await this.api.meta() }); }

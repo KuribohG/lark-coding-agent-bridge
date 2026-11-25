@@ -6,7 +6,8 @@ import {
 } from '../../commands/conversation';
 import { commandDefinitionsFor, commandHelpLines } from '../../commands/catalog';
 import { createWebCommandChannel } from './command-channel';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { once } from 'node:events';
@@ -25,6 +26,11 @@ import { recordable, WebTranscripts, type TranscriptEvent, type WebConversation 
 export interface WebChannelOptions extends Omit<WebChatRuntimeOptions, 'authorize'> {
   port?: number;
   display?: Partial<WebDisplayConfig>;
+  /**
+   * Where to record the address, the token and the process (0600), for a local program that brings the page to a
+   * browser: a proxy that adds the token, or a command that opens the page. Removed on close.
+   */
+  stateFile?: string;
 }
 export interface WebConnection {
   url: string;
@@ -69,10 +75,21 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
     });
   } catch (error) { await runtime.close(); await transcripts.close(); workflows?.close(); await lock.release(); throw error; }
   const port = (server.address() as AddressInfo).port;
+  const origin = `http://127.0.0.1:${port}`;
+  const stateFile = options.stateFile;
+  const release = async () => {
+    server.close(); server.closeAllConnections();
+    await runtime.close(); await transcripts.close(); workflows?.close(); await lock.release();
+  };
+  if (stateFile) {
+    try { await recordAddress(stateFile, { url: origin, port, token, pid: process.pid, startedAt: new Date().toISOString() }); }
+    catch (error) { await release(); throw error; }
+  }
   return {
-    port, url: `http://127.0.0.1:${port}/#token=${token}`,
+    port, url: `${origin}/#token=${token}`,
     async close() {
       closing = true;
+      if (stateFile) await forgetAddress(stateFile);
       const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       try {
         // Runs stopped by the runtime still report how they ended; the record closes after it has that.
@@ -84,6 +101,21 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
       } finally { await lock.release(); }
     },
   };
+}
+
+/** Written whole or not at all, and readable by its owner only: it holds the token. */
+async function recordAddress(file: string, record: { url: string; port: number; token: string; pid: number; startedAt: string }): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, file);
+}
+
+/** Removes the record unless another process has since written its own there. */
+async function forgetAddress(file: string): Promise<void> {
+  try {
+    if ((JSON.parse(await readFile(file, 'utf8')) as { pid?: unknown }).pid === process.pid) await rm(file, { force: true });
+  } catch { /* already gone, or not ours to read */ }
 }
 
 /** The name the page's workflow panel knows this host's store by. */

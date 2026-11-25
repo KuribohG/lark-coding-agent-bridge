@@ -72,6 +72,17 @@ and `--agent` remains an optional initial override. `--binary`, `--model` and
 This command starts browser chat; `run --web-ui` still starts the existing Lark
 profile management console.
 
+The page requests everything relative to its own address, so a host that
+already authenticates its users can bring it to them under any path prefix.
+`--state-file <path>` records the address, the token and the process ID (mode
+0600, removed on exit) for such a proxy, which adds the token as `x-ui-token`;
+a page opened without a token asks anyway and the server's answer decides. The
+proxy must send its own `Host` and no `Origin`, must not buffer `api/stream`,
+and owns authentication and cross-site request protection. A host document
+that cannot reach the server over HTTP at all may define
+`window.__bridgeChatFetch` (the contract is `fetch`'s, streamed bodies
+included) before the page script runs.
+
 On Windows, run the same command in PowerShell:
 
 ```powershell

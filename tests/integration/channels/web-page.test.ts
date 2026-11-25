@@ -1,3 +1,5 @@
+import { createServer, request } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { preparedRun } from '../../../src/agent/prepared-run';
@@ -38,10 +40,10 @@ async function serve(agent: AgentAdapter) {
  * The page's own logic (web/chat/src/lib) against a real server: everything the page does except drawing.
  * Each call is another browser: it shares nothing with the others but the server.
  */
-async function open(url: URL, conversation?: string, token = new URLSearchParams(url.hash.slice(1)).get('token')!) {
+async function open(url: URL, conversation?: string, token = new URLSearchParams(url.hash.slice(1)).get('token')!, base = `${url.origin}/`) {
   let at = conversation;
   const route: Route = { current: () => at, go: id => { at = id; }, onChange: () => {} };
-  const session = new Session(new Api(token, `${url.origin}/`), route);
+  const session = new Session(new Api(token, base), route);
   cleanups.push(async () => session.close());
   await session.start();
   const page = {
@@ -56,6 +58,22 @@ async function open(url: URL, conversation?: string, token = new URLSearchParams
     close: async () => session.close(),
   };
   return page;
+}
+
+/** What a host puts in front of the page to bring it to its own users: under a path of its own, and it is what holds the token. */
+async function proxy(url: URL, prefix: string): Promise<string> {
+  const token = new URLSearchParams(url.hash.slice(1)).get('token')!;
+  const server = createServer((req, res) => {
+    if (!req.url?.startsWith(prefix)) { res.writeHead(404).end(); return; }
+    const upstream = request({ host: url.hostname, port: url.port, method: req.method, path: `/${req.url.slice(prefix.length)}`,
+      headers: { ...req.headers, host: url.host, 'x-ui-token': token } }, answer => { res.writeHead(answer.statusCode!, answer.headers); answer.pipe(res); });
+    upstream.on('error', () => res.destroy());
+    res.on('close', () => upstream.destroy());
+    req.pipe(upstream);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanups.push(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}${prefix}`;
 }
 
 /** Streams some text, then waits for an answer to its question (or for `release`) before finishing. */
@@ -221,5 +239,30 @@ describe('bundled Web page', () => {
     expect(page.state().view.items).toMatchObject([{ kind: 'user', text: 'will not arrive', failed: expect.stringContaining('连接不到服务') }]);
     page.session.dismiss(page.state().view.items[0]!.key);
     await vi.waitFor(() => expect(page.state().view.items).toEqual([]));
+  });
+
+  it('needs no token of its own behind a proxy that adds it, under any path, or over a transport its host document supplies', async () => {
+    const url = await serve(new FakeAgentAdapter({ id: 'claude', events: [
+      { type: 'system', sessionId: 's1' }, { type: 'final_text', content: 'answer' }, { type: 'done', terminationReason: 'normal' },
+    ] }));
+    const page = await open(url, undefined, '', await proxy(url, '/user/someone/chat/'));
+    await vi.waitFor(() => expect(page.state().link).toBe('live'));
+    await page.session.send('through the proxy');
+    await vi.waitFor(() => expect(page.said()).toEqual([['user', 'through the proxy'], ['run', 'answer']]));
+
+    // A host document that reaches the server some other way: here, by adding what a plain request lacks.
+    const token = new URLSearchParams(url.hash.slice(1)).get('token')!;
+    const host = globalThis as { __bridgeChatFetch?: typeof fetch };
+    const asked: string[] = [];
+    host.__bridgeChatFetch = (input, init) => {
+      asked.push(new URL(String(input)).pathname);
+      return fetch(input, { ...init, headers: { ...init?.headers as Record<string, string>, 'x-ui-token': token } });
+    };
+    try {
+      const other = await open(url, page.id(), '');
+      await vi.waitFor(() => expect(other.said()).toEqual([['user', 'through the proxy'], ['run', 'answer']]));
+      expect(asked).toEqual(expect.arrayContaining(['/api/meta', '/api/stream']));
+      await other.close();
+    } finally { delete host.__bridgeChatFetch; }
   });
 });

@@ -6,22 +6,28 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A page that cannot reach the server over HTTP is given another way by its host document, which defines
+ * `__bridgeChatFetch` before the page's script runs. The contract is `fetch`'s, streamed bodies included.
+ */
+const send: typeof fetch = (input, init) =>
+  ((globalThis as { __bridgeChatFetch?: typeof fetch }).__bridgeChatFetch ?? fetch)(input, init);
+
 export class Api {
-  /** `base` is where the server is, for a caller that is not a page it served. */
+  /**
+   * `token` is empty for a page that reached the server through a proxy that adds it; the server's answer says
+   * whether that is so. `base` is where the server is, for a caller that is not a page it served.
+   */
   constructor(private readonly token: string, private readonly base = '') {}
 
-  get authorized(): boolean {
-    return this.token.length > 0;
-  }
-
   private headers(json = false): Record<string, string> {
-    return { 'x-ui-token': this.token, ...(json ? { 'Content-Type': 'application/json' } : {}) };
+    return { ...(this.token ? { 'x-ui-token': this.token } : {}), ...(json ? { 'Content-Type': 'application/json' } : {}) };
   }
 
   async request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     let response: Response;
     try {
-      response = await fetch(this.base + path, body === undefined
+      response = await send(this.base + path, body === undefined
         ? { headers: this.headers(), signal }
         : { method: 'POST', headers: this.headers(true), body: JSON.stringify(body), signal });
     } catch (error) {
@@ -38,7 +44,7 @@ export class Api {
 
   /** The page's one long-lived connection; the caller reads NDJSON lines from it. */
   stream(query: URLSearchParams, signal: AbortSignal): Promise<Response> {
-    return fetch(`${this.base}api/stream?${query}`, { headers: this.headers(), signal });
+    return send(`${this.base}api/stream?${query}`, { headers: this.headers(), signal });
   }
 
   meta = () => this.request<Meta>('api/meta');
@@ -63,7 +69,7 @@ export class Api {
 
   /** A read of the workflow views; `etag` makes an unchanged answer cost nothing. */
   async workflows<T>(path: string, etag?: string, signal?: AbortSignal): Promise<{ status: number; etag?: string; body?: T }> {
-    const response = await fetch(`${this.base}api/workflows${path}`, { headers: { ...this.headers(), ...(etag ? { 'If-None-Match': etag } : {}) }, signal });
+    const response = await send(`${this.base}api/workflows${path}`, { headers: { ...this.headers(), ...(etag ? { 'If-None-Match': etag } : {}) }, signal });
     if (response.status === 304) return { status: 304, etag };
     const body = await response.json().catch(() => undefined) as T | undefined;
     return { status: response.status, etag: response.headers.get('ETag') ?? undefined, body };

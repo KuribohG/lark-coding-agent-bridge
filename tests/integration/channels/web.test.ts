@@ -1,6 +1,7 @@
 import { preparedRun } from '../../../src/agent/prepared-run';
 import { AGENT_KINDS } from '../../../src/agent/backend-spec';
 import { join } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createConversationRuntime, type ConversationRuntime } from '../../../src/runtime/conversation';
 import type { ConversationStreamEvent } from '../../../src/runtime/conversation-events';
@@ -551,6 +552,20 @@ describe('standalone Web plugin', () => {
     const offHeaders = { 'x-ui-token': new URLSearchParams(new URL(off.url).hash.slice(1)).get('token')! };
     expect(await (await fetch(`${new URL(off.url).origin}/api/meta`, { headers: offHeaders })).json()).toMatchObject({ workflows: false });
     expect((await fetch(`${new URL(off.url).origin}/api/workflows?conversationId=a`, { headers: offHeaders })).status).toBe(404);
+  });
+
+  it('records its address and token for a local proxy, readable by the owner only, until it closes', async () => {
+    const h = await harness(); await h.runtime.close();
+    const host = new ChannelHost(); cleanups.push(() => host.close());
+    const stateFile = join(h.tmp.root, 'run', 'web.json');
+    const web = await host.connect(createWebPlugin({ ...h.options, stateDir: join(h.tmp.root, 'recorded'), stateFile }));
+    const record = JSON.parse(await readFile(stateFile, 'utf8'));
+    expect(record).toMatchObject({ url: `http://127.0.0.1:${web.port}`, port: web.port, pid: process.pid });
+    expect(web.url).toBe(`${record.url}/#token=${record.token}`);
+    if (process.platform !== 'win32') expect((await stat(stateFile)).mode & 0o777).toBe(0o600);
+    expect((await fetch(`${record.url}/api/meta`, { headers: { 'x-ui-token': record.token } })).status).toBe(200);
+    await host.close();
+    await expect(stat(stateFile)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects duplicate channels and closes all plugins even if one close fails', async () => {

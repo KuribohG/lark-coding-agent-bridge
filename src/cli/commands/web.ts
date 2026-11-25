@@ -30,6 +30,7 @@ export interface RunWebOptions {
   config?: string;
   workspace: string;
   stateDir?: string;
+  stateFile?: string;
   port?: string;
   binary?: string;
   model?: string;
@@ -68,6 +69,7 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
     systemPrompt: WEB_SYSTEM_PROMPT,
     workflows: true,
     port,
+    stateFile: options.stateFile ? resolve(options.stateFile) : undefined,
     display: doc ? resolveChannels(doc, profile).web : undefined,
   }));
   console.log(`Bridge Chat: ${connection.url} (engine: ${defaultAgentKind})`);
