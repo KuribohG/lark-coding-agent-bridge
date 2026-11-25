@@ -12,9 +12,11 @@ export interface WorkspaceBinding {
   /**
    * Absent for a worktree of `repository`, which shares its refs, stash and Git metadata with every other worktree.
    * A clone is a repository of its own at `path` that borrows the objects of `repository`; `repository` and
-   * `commonDir` still name the checkout it was made from, where its work is reviewed and landed.
+   * `commonDir` still name the checkout it was made from, where its work is reviewed and landed. An overlay is such
+   * a repository whose files are not copied either: `path` is a mount that shows one checkout of the baseline,
+   * shared with every overlay made from that commit, under the files this workspace changed.
    */
-  isolation?: 'clone';
+  isolation?: 'clone' | 'overlay';
   changeId?: string;
   status: 'preparing' | 'ready' | 'removed';
   /** `hostKey` names the hosted worker process that runs here; it keeps the lease while no service is attached to it. */
