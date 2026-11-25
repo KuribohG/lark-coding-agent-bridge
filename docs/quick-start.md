@@ -48,7 +48,7 @@ node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .we
 - Replace `.` after `--workspace` with your project path; quote paths containing spaces.
 - Replace `codex` with `claude` or `pi` only if that agent is installed and configured. Omitting `--agent` without a config defaults to Claude, not Codex.
 - Open the **complete URL printed by the command**, including `#token=...`. The server listens only on this machine's `127.0.0.1`.
-- Send “Explain this project without changing files.” Use **Send**, **Stop**, **New conversation**, and the engine selector. Ctrl/⌘+Enter sends a message.
+- Send “Explain this project without changing files.” Conversations are listed on the left; stop and the engine selector sit under the message box. Enter sends, Shift+Enter starts a new line.
 - Keep the terminal open. **Ctrl+C** stops this foreground server.
 
 **After a restart, use the newly printed URL.** The token changes on each server start. A stale bookmark or bare `http://127.0.0.1:8787/` in a new browser session can show the page but fail authentication. If you replace only the URL fragment in an already open tab, reload it as well.

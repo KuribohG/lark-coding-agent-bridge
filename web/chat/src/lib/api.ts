@@ -1,0 +1,71 @@
+import type { Conversation, ConversationState, Meta, TranscriptItem } from './types';
+
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+export class Api {
+  /** `base` is where the server is, for a caller that is not a page it served. */
+  constructor(private readonly token: string, private readonly base = '') {}
+
+  get authorized(): boolean {
+    return this.token.length > 0;
+  }
+
+  private headers(json = false): Record<string, string> {
+    return { 'x-ui-token': this.token, ...(json ? { 'Content-Type': 'application/json' } : {}) };
+  }
+
+  async request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    let response: Response;
+    try {
+      response = await fetch(this.base + path, body === undefined
+        ? { headers: this.headers(), signal }
+        : { method: 'POST', headers: this.headers(true), body: JSON.stringify(body), signal });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new ApiError(0, '连接不到服务，请确认它还在运行。');
+    }
+    if (!response.ok) {
+      let message = `请求失败（${response.status}）`;
+      try { message = ((await response.json()) as { error?: string }).error || message; } catch { /* not JSON */ }
+      throw new ApiError(response.status, message);
+    }
+    return response.json() as Promise<T>;
+  }
+
+  /** The page's one long-lived connection; the caller reads NDJSON lines from it. */
+  stream(query: URLSearchParams, signal: AbortSignal): Promise<Response> {
+    return fetch(`${this.base}api/stream?${query}`, { headers: this.headers(), signal });
+  }
+
+  meta = () => this.request<Meta>('api/meta');
+  state = (conversationId: string, signal?: AbortSignal) =>
+    this.request<ConversationState>(`api/state?conversationId=${encodeURIComponent(conversationId)}`, undefined, signal);
+  items = (conversationId: string, before: number, limit = 60) =>
+    this.request<{ items: TranscriptItem[]; more: boolean }>(`api/items?conversationId=${encodeURIComponent(conversationId)}&before=${before}&limit=${limit}`);
+  send = (conversationId: string, text: string, messageId: string) =>
+    this.request<{ runId: string }>('api/send', { conversationId, text, messageId });
+  command = (conversationId: string, text: string, messageId: string) =>
+    this.request<{ reply?: string }>('api/command', { conversationId, text, messageId });
+  input = (conversationId: string, runId: string, text: string, messageId: string) =>
+    this.request<{ status: 'accepted' | 'inactive' | 'unsupported' | 'unknown' }>('api/input', { conversationId, runId, text, messageId });
+  stop = (conversationId: string, runId: string) => this.request<{ stopped: boolean }>('api/stop', { conversationId, runId });
+  answer = (conversationId: string, requestId: string, answers: string[][]) =>
+    this.request<{ settled: boolean; message: string }>('api/answer', { conversationId, requestId, answers });
+  setEngine = (conversationId: string, agent: string) =>
+    this.request<{ agent: string }>('api/engine', { conversationId, agent });
+  update = (conversationId: string, change: { title?: string; pinned?: boolean }) =>
+    this.request<{ conversation: Conversation }>('api/conversation', { conversationId, ...change });
+  remove = (conversationId: string) => this.request<{ deleted: boolean }>('api/conversation/delete', { conversationId });
+
+  /** A read of the workflow views; `etag` makes an unchanged answer cost nothing. */
+  async workflows<T>(path: string, etag?: string, signal?: AbortSignal): Promise<{ status: number; etag?: string; body?: T }> {
+    const response = await fetch(`${this.base}api/workflows${path}`, { headers: { ...this.headers(), ...(etag ? { 'If-None-Match': etag } : {}) }, signal });
+    if (response.status === 304) return { status: 304, etag };
+    const body = await response.json().catch(() => undefined) as T | undefined;
+    return { status: response.status, etag: response.headers.get('ETag') ?? undefined, body };
+  }
+}

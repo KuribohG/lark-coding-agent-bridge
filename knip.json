@@ -7,12 +7,15 @@
         "tests/**/*.test.ts",
         "tests/acceptance/workflow-native.ts",
         "tests/setup/*.ts",
-        "web/src/main.tsx"
+        "web/src/main.tsx",
+        "web/chat/src/main.tsx"
       ],
       "project": [
         "src/**/*.ts",
         "tests/**/*.ts",
-        "web/src/**/*.{ts,tsx}"
+        "web/src/**/*.{ts,tsx}",
+        "web/chat/src/**/*.{ts,tsx}",
+        "web/shared/**/*.{ts,tsx}"
       ]
     },
     "packages/workflow-engine": {

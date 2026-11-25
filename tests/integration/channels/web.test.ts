@@ -365,7 +365,11 @@ describe('standalone Web plugin', () => {
     const token = new URLSearchParams(url.hash.slice(1)).get('token')!;
     url.hash = '';
     const base = url.origin;
-    expect(await (await fetch(base)).text()).toContain('Bridge Chat');
+    const page = await (await fetch(base)).text();
+    expect(page).toContain('<title>Bridge</title>');
+    expect(page).toContain('<div id="root"></div>');
+    // The page is one file: a browser asks this server for nothing but the API.
+    expect(page).not.toMatch(/<(?:script|link)[^>]+(?:src|href)="(?!data:)/);
     expect((await fetch(`${base}/api/chat`, { method: 'POST' })).status).toBe(401);
     expect((await fetch(`${base}/api/chat`, { method: 'POST', headers: { 'x-ui-token': token, origin: 'https://evil.example' } })).status).toBe(403);
     const response = await fetch(`${base}/api/chat`, { method: 'POST', headers: { 'x-ui-token': token },
@@ -461,6 +465,92 @@ describe('standalone Web plugin', () => {
     expect(again).toHaveLength(1);
     const replayed = await follow('', event => event.type === 'run.finished');
     expect(replayed.at(-1)).toMatchObject({ type: 'run.finished', runId });
+  });
+
+  it('keeps a record of browser conversations and serves it to the page', async () => {
+    const h = await harness(); await h.runtime.close();
+    const asking = askingAgent();
+    const host = new ChannelHost(); cleanups.push(() => host.close());
+    const stateDir = join(h.tmp.root, 'record');
+    const web = await host.connect(createWebPlugin({ ...h.options, stateDir, workflows: true,
+      execution: new FixedExecutionController(asking.agent, h.options.config) }));
+    const url = new URL(web.url);
+    const headers = { 'x-ui-token': new URLSearchParams(url.hash.slice(1)).get('token')! };
+    const get = (path: string) => fetch(`${url.origin}${path}`, { headers });
+    const post = (path: string, body: object) => fetch(`${url.origin}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+    /** Reads the page stream until `until` holds for an event. */
+    const follow = async (query: string, until: (event: Record<string, unknown>) => boolean) => {
+      const abort = new AbortController();
+      const response = await fetch(`${url.origin}/api/stream?${query}`, { headers, signal: abort.signal });
+      const reader = response.body!.getReader(); const decoder = new TextDecoder();
+      const seen: Array<Record<string, unknown>> = []; let pending = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        pending += decoder.decode(value, { stream: !done });
+        const lines = pending.split('\n'); pending = lines.pop()!;
+        for (const line of lines.filter(Boolean)) seen.push(JSON.parse(line) as Record<string, unknown>);
+        if (done || seen.some(until)) break;
+      }
+      abort.abort();
+      return seen;
+    };
+
+    for (const path of ['/api/meta', '/api/conversations', '/api/stream', '/api/items?conversationId=a&before=1', '/api/state?conversationId=a', '/api/workflows?conversationId=a']) {
+      expect((await fetch(`${url.origin}${path}`)).status, path).toBe(401);
+    }
+    expect(await (await get('/api/meta')).json()).toMatchObject({ agent: 'claude', workflows: true, workspace: h.tmp.workspace,
+      display: { show_tools: true, show_reasoning: true } });
+    expect(await (await get('/api/conversations')).json()).toEqual({ conversations: [] });
+    expect(await (await get('/api/state?conversationId=a')).json()).toMatchObject({ agent: 'claude', cwd: h.tmp.workspace });
+    // No workflow has run, so the store does not exist yet; that is an empty list, not an error.
+    expect(await (await get('/api/workflows?conversationId=a')).json()).toEqual({ source: 'chat', workflows: [] });
+    expect(await (await get('/api/workflows/sources')).json()).toMatchObject({ sources: [{ name: 'chat' }] });
+    expect((await get('/api/workflows/s/chat/w/none/overview')).status).not.toBe(200);
+    expect((await post('/api/conversation', { conversationId: 'a', title: 'x' })).status).toBe(404);
+    expect((await post('/api/conversation/delete', { conversationId: 'a' })).status).toBe(404);
+    expect((await get(`/api/stream?conversationId=${'x'.repeat(201)}`)).status).toBe(400);
+
+    expect((await post('/api/send', { conversationId: 'a', text: 'choose one', messageId: 'message-aaaa' })).status).toBe(200);
+    const live = await follow('conversationId=a', event => event.type === 'item' && (event.item as { kind: string }).kind === 'question');
+    expect(live[0]).toMatchObject({ type: 'conversations' });
+    expect(live.find(event => event.type === 'open')).toMatchObject({ reset: true });
+    const question = (live.find(event => event.type === 'item' && (event.item as { kind: string }).kind === 'question')!.item) as { id: string };
+    const listed = (await (await get('/api/conversations')).json() as { conversations: Array<Record<string, unknown>> }).conversations;
+    expect(listed).toMatchObject([{ id: 'a', title: 'choose one' }]);
+    expect(listed[0]).toHaveProperty('activeRunId');
+    // A going run keeps its conversation; a message sent into a busy conversation is recorded with why it went nowhere.
+    expect((await post('/api/conversation/delete', { conversationId: 'a' })).status).toBe(409);
+    expect((await post('/api/send', { conversationId: 'a', text: 'second' })).status).toBe(409);
+
+    expect(await (await post('/api/answer', { conversationId: 'a', requestId: question.id, answers: [['B']] })).json()).toMatchObject({ settled: true });
+    const done = await follow('conversationId=a', event => event.type === 'item' && (event.item as { result?: string }).result === 'completed');
+    const items = done.filter(event => event.type === 'item').map(event => event.item as Record<string, unknown>);
+    expect(items.map(item => item.kind)).toEqual(expect.arrayContaining(['user', 'run', 'question', 'notice']));
+    expect(items.find(item => item.key === 'u-message-aaaa')).toMatchObject({ kind: 'user', text: 'choose one', via: 'message' });
+    expect(items.find(item => item.kind === 'question')).toMatchObject({ answers: [['B']] });
+    expect(items.find(item => item.kind === 'notice')).toMatchObject({ source: 'bridge' });
+    const cursor = done.find(event => event.type === 'ready') as { rev: number };
+    const epoch = (done.find(event => event.type === 'open') as { epoch: string }).epoch;
+
+    // A page that returns with its cursor is sent only what it has not seen.
+    expect(await (await post('/api/command', { conversationId: 'a', text: '/status' })).json()).toEqual({ reply: 'Engine: claude\nState: idle' });
+    const resumed = await follow(`conversationId=a&epoch=${epoch}&since=${cursor.rev}`, event => event.type === 'ready');
+    expect(resumed.find(event => event.type === 'open')).toMatchObject({ reset: false });
+    expect(resumed.filter(event => event.type === 'item').map(event => (event.item as { kind: string; text: string }).text)).toEqual(['/status', '**Engine:** claude\n**State:** idle']);
+    expect(await (await get('/api/items?conversationId=a&before=2&limit=1')).json()).toMatchObject({ more: true, items: [{ ord: 1 }] });
+
+    expect(await (await post('/api/conversation', { conversationId: 'a', title: 'Renamed', pinned: true })).json())
+      .toMatchObject({ conversation: { id: 'a', title: 'Renamed', pinned: true, named: true } });
+    expect(await (await post('/api/conversation/delete', { conversationId: 'a' })).json()).toEqual({ deleted: true });
+    expect(await (await get('/api/conversations')).json()).toEqual({ conversations: [] });
+
+    // Workflows off: the page is told so and the views are not served.
+    await host.close();
+    const plain = new ChannelHost(); cleanups.push(() => plain.close());
+    const off = await plain.connect(createWebPlugin({ ...h.options, stateDir, execution: new FixedExecutionController(asking.agent, h.options.config) }));
+    const offHeaders = { 'x-ui-token': new URLSearchParams(new URL(off.url).hash.slice(1)).get('token')! };
+    expect(await (await fetch(`${new URL(off.url).origin}/api/meta`, { headers: offHeaders })).json()).toMatchObject({ workflows: false });
+    expect((await fetch(`${new URL(off.url).origin}/api/workflows?conversationId=a`, { headers: offHeaders })).status).toBe(404);
   });
 
   it('rejects duplicate channels and closes all plugins even if one close fails', async () => {

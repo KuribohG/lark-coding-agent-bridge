@@ -1,0 +1,94 @@
+@import "tailwindcss";
+@import "../../shared/theme.css";
+@source "../../shared";
+
+html, body, #root {
+  height: 100%;
+}
+body {
+  overflow: hidden;
+}
+
+/* What the agent writes: Markdown set for reading, not for a document page. */
+.prose-chat {
+  font-size: 15px;
+  line-height: 1.72;
+  overflow-wrap: anywhere;
+}
+.prose-chat > :first-child { margin-top: 0; }
+.prose-chat > :last-child { margin-bottom: 0; }
+.prose-chat p { margin: 0.7em 0; }
+.prose-chat h1, .prose-chat h2, .prose-chat h3, .prose-chat h4 {
+  font-weight: 650;
+  line-height: 1.35;
+  margin: 1.45em 0 0.55em;
+  letter-spacing: -0.005em;
+}
+.prose-chat h1 { font-size: 1.36em; }
+.prose-chat h2 { font-size: 1.2em; }
+.prose-chat h3 { font-size: 1.07em; }
+.prose-chat h4 { font-size: 1em; }
+.prose-chat ul, .prose-chat ol { margin: 0.6em 0; padding-left: 1.5em; }
+.prose-chat ul { list-style: disc; }
+.prose-chat ol { list-style: decimal; }
+.prose-chat ul ul { list-style: circle; }
+.prose-chat li { margin: 0.22em 0; }
+.prose-chat li > p { margin: 0.3em 0; }
+.prose-chat li::marker { color: var(--subtle); }
+.prose-chat ul.contains-task-list { list-style: none; padding-left: 0.3em; }
+.prose-chat input[type="checkbox"] { margin-right: 0.5em; accent-color: var(--primary); }
+.prose-chat a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: oklch(from var(--primary) l c h / 35%);
+  text-underline-offset: 3px;
+}
+.prose-chat a:hover { text-decoration-color: currentColor; }
+.prose-chat strong { font-weight: 650; }
+.prose-chat blockquote {
+  margin: 0.8em 0;
+  padding: 0.1em 0 0.1em 1em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted-foreground);
+}
+.prose-chat hr { margin: 1.5em 0; border: 0; border-top: 1px solid var(--border); }
+.prose-chat :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+  padding: 0.14em 0.38em;
+  border-radius: 5px;
+  background: var(--code);
+  border: 1px solid var(--code-border);
+  color: var(--code-foreground);
+}
+.prose-chat .table-wrap {
+  margin: 0.9em 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.prose-chat table { width: 100%; border-collapse: collapse; font-size: 0.93em; }
+.prose-chat th, .prose-chat td { padding: 0.5em 0.85em; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+.prose-chat th { font-weight: 600; background: var(--muted); white-space: nowrap; }
+.prose-chat tr:last-child td { border-bottom: 0; }
+.prose-chat img { max-width: 100%; border-radius: 8px; }
+
+/* Smaller, for notices and the workflow panel. */
+.prose-chat.prose-compact { font-size: 13.5px; line-height: 1.65; }
+.prose-chat.prose-compact h1, .prose-chat.prose-compact h2 { font-size: 1.08em; margin: 1.1em 0 0.4em; }
+.prose-chat.prose-compact h3, .prose-chat.prose-compact h4 { font-size: 1em; margin: 1em 0 0.35em; }
+
+/* The end of text that is still being written. */
+.streaming-caret > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1.05em;
+  margin-left: 0.15em;
+  vertical-align: -0.18em;
+  border-radius: 2px;
+  background: var(--primary);
+  animation: caret 1s steps(1) infinite;
+}
+
+.mono { font-family: var(--font-mono); }

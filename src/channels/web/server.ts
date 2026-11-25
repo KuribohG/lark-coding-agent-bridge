@@ -4,6 +4,7 @@ import {
   assertConversationCommandsSupported,
   handleConversationCommand,
 } from '../../commands/conversation';
+import { commandDefinitionsFor, commandHelpLines } from '../../commands/catalog';
 import { createWebCommandChannel } from './command-channel';
 import { join } from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -14,9 +15,12 @@ import { checkToken, HttpError, isLocalRequest, readJsonBody, sendHtml, sendJson
 import { createWebChatRuntime, type WebChatRuntimeOptions, type WebChatRuntime } from './runtime';
 import { createWebRunOutput } from './output';
 import { filterWebState } from './config';
-import html from './page.html';
+import html from './generated/index.html';
 import { acquireHostLock } from '../../runtime/host-lock';
 import { AGENT_OPTIONS, isAgentKind } from '../../agent/backends';
+import { DashboardApi } from '@kuribohg/agent-workflows';
+import { getBuildInfo } from '../../build-info';
+import { recordable, WebTranscripts, type TranscriptEvent, type WebConversation } from './transcript';
 
 export interface WebChannelOptions extends Omit<WebChatRuntimeOptions, 'authorize'> {
   port?: number;
@@ -39,15 +43,21 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
   if (!lock) throw new Error('Web state directory is already in use or cannot be locked');
   let runtime: WebChatRuntime;
   const shown = { ...WEB_DISPLAY_DEFAULTS, ...options.display };
+  const transcripts = new WebTranscripts(join(options.stateDir, 'web-chat'));
   try {
+    await transcripts.load();
     runtime = await createWebChatRuntime({ ...options, authorize: async identity => identity.actorId === 'local',
-      filterState: state => filterWebState(state, shown) });
+      filterState: state => filterWebState(state, shown),
+      observe: (identity, event) => { if (identity.actorId === 'local') transcripts.observe(identity.conversationId, event); } });
   }
   catch (error) { await lock.release(); throw error; }
   const token = randomBytes(32).toString('hex');
   let closing = false;
+  // The page's workflow panel reads this host's own store through the dashboard's read-only views.
+  const workflows = options.workflows ? new DashboardApi([{ name: WORKFLOW_SOURCE, path: join(options.stateDir, 'workflows.sqlite') }]) : undefined;
+  const site: Site = { runtime, transcripts, workflows, token, display: shown, options };
   const server = createServer((req, res) => {
-    handle(req, res, runtime, token, closing, shown).catch(() => {
+    handle(req, res, site, closing).catch(() => {
       if (!res.headersSent) sendJson(res, 500, { error: 'request failed' });
       else res.end();
     });
@@ -57,7 +67,7 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
       server.once('error', reject);
       server.listen(options.port ?? 0, '127.0.0.1', resolve);
     });
-  } catch (error) { await runtime.close(); await lock.release(); throw error; }
+  } catch (error) { await runtime.close(); await transcripts.close(); workflows?.close(); await lock.release(); throw error; }
   const port = (server.address() as AddressInfo).port;
   return {
     port, url: `http://127.0.0.1:${port}/#token=${token}`,
@@ -65,7 +75,10 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
       closing = true;
       const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       try {
+        // Runs stopped by the runtime still report how they ended; the record closes after it has that.
         await runtime.close();
+        await transcripts.close();
+        workflows?.close();
         server.closeAllConnections();
         await closed;
       } finally { await lock.release(); }
@@ -73,12 +86,26 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
   };
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebChatRuntime, token: string, closing: boolean, display: WebDisplayConfig) {
+/** The name the page's workflow panel knows this host's store by. */
+const WORKFLOW_SOURCE = 'chat';
+
+interface Site {
+  runtime: WebChatRuntime;
+  transcripts: WebTranscripts;
+  workflows?: DashboardApi;
+  token: string;
+  display: WebDisplayConfig;
+  options: WebChannelOptions;
+}
+
+async function handle(req: IncomingMessage, res: ServerResponse, site: Site, closing: boolean) {
+  const { runtime, transcripts, token, display } = site;
   if (!isLocalRequest(req)) { sendJson(res, 403, { error: 'forbidden' }); return; }
   const url = new URL(req.url ?? '/', 'http://localhost');
-  if (url.pathname === '/' && req.method === 'GET') { sendHtml(res, html); return; }
+  if ((url.pathname === '/' || url.pathname === '/index.html') && req.method === 'GET') { sendHtml(res, html); return; }
   if (!checkToken(req, url, token)) { sendJson(res, 401, { error: 'unauthorized' }); return; }
   if (closing) { sendJson(res, 503, { error: 'channel is closing' }); return; }
+  if (req.method === 'GET' && await read(req, res, url, site)) return;
   if (req.method === 'GET' && url.pathname === '/api/engine') {
     try {
       const conversationId = boundedValue(url.searchParams.get('conversationId'), 'conversationId');
@@ -95,7 +122,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
     return;
   }
   if (req.method === 'GET' && url.pathname === '/api/events') { await streamEvents(req, res, url, runtime); return; }
-  if (req.method !== 'POST' || !['/api/chat', '/api/send', '/api/command', '/api/stop', '/api/input', '/api/answer', '/api/engine'].includes(url.pathname)) {
+  if (req.method !== 'POST' || !['/api/chat', '/api/send', '/api/command', '/api/stop', '/api/input', '/api/answer', '/api/engine',
+    '/api/conversation', '/api/conversation/delete'].includes(url.pathname)) {
     sendJson(res, 404, { error: 'not found' }); return;
   }
   try {
@@ -107,6 +135,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       return boundedValue(value, key);
     };
     const identity = { actorId: 'local', conversationId: required('conversationId') };
+    const id = identity.conversationId;
+    if (url.pathname === '/api/conversation') {
+      let conversation = transcripts.get(id);
+      if (!conversation) throw new HttpError(404, 'no such conversation');
+      if (typeof data.title === 'string') conversation = await transcripts.rename(id, boundedValue(data.title, 'title'));
+      if (typeof data.pinned === 'boolean') conversation = await transcripts.pin(id, data.pinned);
+      sendJson(res, 200, { conversation });
+      return;
+    }
+    if (url.pathname === '/api/conversation/delete') {
+      if (!transcripts.get(id)) throw new HttpError(404, 'no such conversation');
+      if ((await runtime.status(identity)).activeRunId || !await transcripts.remove(id)) throw new HttpError(409, '任务还在运行，先停止它再删除对话。');
+      // The agent's own session goes with the conversation; a new conversation never continues it.
+      await runtime.reset(identity);
+      sendJson(res, 200, { deleted: true });
+      return;
+    }
     if (url.pathname === '/api/engine') {
       const agent = required('agent');
       if (!isAgentKind(agent)) throw new HttpError(400, 'invalid agent');
@@ -125,18 +170,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       sendJson(res, 200, { stopped: await runtime.stop(identity, required('runId')) }); return;
     }
     if (url.pathname === '/api/input') {
-      sendJson(res, 200, await runtime.sendInput(identity, required('runId'), {
-        text: required('text'), messageId: required('messageId'),
-      })); return;
+      const text = required('text');
+      const receipt = await runtime.sendInput(identity, required('runId'), { text, messageId: required('messageId') });
+      if (receipt.status === 'accepted') await transcripts.addUser(id, text, 'input', messageId(data));
+      sendJson(res, 200, receipt); return;
     }
     if (url.pathname === '/api/answer') {
-      sendJson(res, 200, await runtime.answerQuestion(identity, required('requestId'), answerLists(data.answers))); return;
+      const answers = answerLists(data.answers);
+      const requestId = required('requestId');
+      const result = await runtime.answerQuestion(identity, requestId, answers);
+      if (result.settled) await transcripts.recordAnswers(id, requestId, answers);
+      sendJson(res, 200, result); return;
     }
     const prompt = required('text');
     if (url.pathname === '/api/command') {
       // The commands are shared with every ConversationRuntime-backed front
       // end; this channel collects the handler's replies for this response.
       const web = createWebCommandChannel();
+      await transcripts.addUser(id, prompt, 'command', messageId(data));
       const handled = await handleConversationCommand(prompt, {
         runtime,
         identity,
@@ -156,13 +207,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       });
       if (!handled) throw new HttpError(400, 'unknown command');
       const reply = web.reply();
+      const shown = web.markdown();
+      if (shown !== undefined) await transcripts.addNotice(id, shown, 'command');
       sendJson(res, 200, reply === undefined ? {} : { reply });
       return;
     }
     if (url.pathname === '/api/send') {
+      await transcripts.addUser(id, prompt, 'message', messageId(data));
       const run = await runtime.submit({ ...identity, prompt });
       if (run.ok) sendJson(res, 200, { runId: run.runId });
-      else sendJson(res, 409, { error: run.rejectReason.userVisible });
+      else {
+        // The message is in the record; so is why nothing came of it.
+        await transcripts.addNotice(id, run.rejectReason.userVisible, 'bridge');
+        sendJson(res, 409, { error: run.rejectReason.userVisible });
+      }
       return;
     }
     const controller = new AbortController();
@@ -198,8 +256,120 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
   }
 }
 
+/** Answers a GET of the page's own API; false when the path is not one of them. */
+async function read(req: IncomingMessage, res: ServerResponse, url: URL, site: Site): Promise<boolean> {
+  const { runtime, transcripts, display, options } = site;
+  const path = url.pathname;
+  try {
+    if (path === '/api/meta') {
+      const build = getBuildInfo();
+      sendJson(res, 200, {
+        version: build.version, commit: build.commit,
+        workspace: options.config.workspaces.default,
+        agent: runtime.defaultAgentKind, agents: AGENT_OPTIONS,
+        display, workflows: Boolean(site.workflows),
+        commands: commandDefinitionsFor('web').map(definition => ({ name: definition.name, aliases: definition.aliases ?? [],
+          help: commandHelpLines('', [definition], 'web').map(line => line.replace(/^- /, '')) })),
+      });
+      return true;
+    }
+    if (path === '/api/conversations') { sendJson(res, 200, { conversations: transcripts.list() }); return true; }
+    if (path === '/api/stream') { await streamPage(req, res, url, site); return true; }
+    if (path === '/api/items') {
+      const id = boundedValue(url.searchParams.get('conversationId'), 'conversationId');
+      const before = Number(url.searchParams.get('before'));
+      if (!recordable(id) || !Number.isSafeInteger(before) || before < 0) throw new HttpError(400, 'invalid request');
+      sendJson(res, 200, await transcripts.page(id, before, Number(url.searchParams.get('limit')) || 60));
+      return true;
+    }
+    if (path === '/api/state') {
+      const identity = { actorId: 'local', conversationId: boundedValue(url.searchParams.get('conversationId'), 'conversationId') };
+      const status = await runtime.status(identity);
+      const preferences = (options.configForAgent?.(status.agentKind, identity) ?? options.config).preferences;
+      sendJson(res, 200, {
+        agent: status.agentKind, ...(status.activeRunId ? { activeRunId: status.activeRunId } : {}),
+        cwd: await runtime.workingDirectory(identity) ?? options.config.workspaces.default,
+        ...(preferences.model ? { model: preferences.model } : {}),
+        ...(preferences.reasoningEffort ? { effort: preferences.reasoningEffort } : {}),
+      });
+      return true;
+    }
+    if (path === '/api/workflows' || path.startsWith('/api/workflows/')) {
+      if (!site.workflows) throw new HttpError(404, 'workflows are off');
+      const rest = path.slice('/api/workflows'.length);
+      if (!rest) {
+        // The workflows of one conversation: the store holds every conversation's.
+        const identity = { actorId: 'local', conversationId: boundedValue(url.searchParams.get('conversationId'), 'conversationId') };
+        const scope = runtime.scopeKey(identity);
+        const listed = site.workflows.handle(`s/${WORKFLOW_SOURCE}/workflows`, new URLSearchParams({ finished: '100' }));
+        const all = listed.status === 200 ? (listed.body as { workflows: Array<{ scope: string }> }).workflows : [];
+        sendJson(res, 200, { source: WORKFLOW_SOURCE, workflows: all.filter(workflow => workflow.scope === scope) });
+        return true;
+      }
+      const etag = req.headers['if-none-match'];
+      const answer = site.workflows.handle(rest, url.searchParams, typeof etag === 'string' ? etag : undefined);
+      res.writeHead(answer.status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache',
+        'X-Content-Type-Options': 'nosniff', ...(answer.etag ? { ETag: answer.etag } : {}) });
+      res.end(answer.status === 304 ? undefined : JSON.stringify(answer.body));
+      return true;
+    }
+  } catch (error) {
+    sendJson(res, error instanceof HttpError ? error.status : 400, { error: error instanceof Error ? error.message : 'invalid request' });
+    return true;
+  }
+  return false;
+}
+
 /** A slow reader is disconnected rather than buffered without bound; it reconnects with its cursor. */
 const MAX_UNSENT_EVENTS = 1_000;
+/** A quiet connection is told it is alive this often, so the page can tell a dead one. */
+const PING_MS = 20_000;
+
+type PageEvent = TranscriptEvent | { type: 'conversations'; conversations: WebConversation[] } | { type: 'ping' };
+
+/**
+ * Everything one open page follows, on one connection: the list of conversations, and the conversation it shows.
+ * A browser allows few connections to a host, and every tab of the chat holds this one.
+ */
+async function streamPage(req: IncomingMessage, res: ServerResponse, url: URL, site: Site): Promise<void> {
+  const { transcripts } = site;
+  const id = url.searchParams.get('conversationId');
+  const since = url.searchParams.get('since');
+  const tail = url.searchParams.get('tail');
+  if (id !== null && !recordable(id)) { sendJson(res, 400, { error: 'invalid conversationId' }); return; }
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Accel-Buffering': 'no' });
+  let unsent = 0;
+  let writes: Promise<void> = Promise.resolve();
+  const send = (event: PageEvent) => {
+    if (res.destroyed) return;
+    if (++unsent > MAX_UNSENT_EVENTS) { res.destroy(); return; }
+    writes = writes.then(async () => {
+      if (!res.destroyed && !res.write(`${JSON.stringify(event)}\n`)) await once(res, 'drain');
+    }).catch(() => { res.destroy(); }).finally(() => { unsent--; });
+  };
+  let listed: NodeJS.Timeout | undefined;
+  const list = () => { listed ??= setTimeout(() => { listed = undefined; send({ type: 'conversations', conversations: transcripts.list() }); }, 80); };
+  send({ type: 'conversations', conversations: transcripts.list() });
+  const stops = [transcripts.watch(list)];
+  const ping = setInterval(() => send({ type: 'ping' }), PING_MS);
+  const stop = () => {
+    clearInterval(ping);
+    if (listed) clearTimeout(listed);
+    for (const end of stops.splice(0)) end();
+  };
+  req.on('close', stop);
+  res.on('close', stop);
+  if (id !== null) {
+    const unfollow = await transcripts.follow(id, {
+      epoch: url.searchParams.get('epoch') ?? undefined,
+      since: since === null ? undefined : Number(since),
+      tail: tail === null ? undefined : Number(tail) || undefined,
+    }, send);
+    if (res.destroyed) unfollow(); else stops.push(unfollow);
+  }
+  if (res.destroyed) stop();
+}
 
 /** The conversation's events as NDJSON until the client goes away; `stream` and `after` resume a previous connection. */
 async function streamEvents(req: IncomingMessage, res: ServerResponse, url: URL, runtime: WebChatRuntime): Promise<void> {
@@ -237,6 +407,11 @@ function answerLists(value: unknown): string[][] {
     throw new HttpError(400, 'invalid answers');
   }
   return value as string[][];
+}
+
+/** The page's own name for a message it sent, when it gave one. */
+function messageId(data: Record<string, unknown>): string | undefined {
+  return typeof data.messageId === 'string' ? data.messageId : undefined;
 }
 
 function boundedValue(value: unknown, key: string): string {

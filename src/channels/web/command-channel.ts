@@ -6,8 +6,10 @@ import type { CommandChannel } from '../../commands/types';
  */
 export interface WebCommandChannel {
   channel: CommandChannel;
-  /** Everything the command replied, in order; undefined when it stayed silent. */
+  /** Everything the command replied, in order, as plain text; undefined when it stayed silent. */
   reply(): string | undefined;
+  /** The same replies as the handler wrote them, in Markdown, for a client that renders it. */
+  markdown(): string | undefined;
 }
 
 export function createWebCommandChannel(): WebCommandChannel {
@@ -16,8 +18,7 @@ export function createWebCommandChannel(): WebCommandChannel {
     channel: {
       async send(_recipientId, content) {
         if (!('markdown' in content)) throw new Error('Web replies support text only');
-        // The page shows replies as plain text, so emphasis markers would be noise.
-        replies.push(content.markdown.replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/`([^`\n]+)`/g, '$1'));
+        replies.push(content.markdown);
         return { messageId: `reply-${replies.length}` };
       },
       async sendCard() {
@@ -27,6 +28,9 @@ export function createWebCommandChannel(): WebCommandChannel {
         throw new Error('The Web chat has no card messages');
       },
     },
-    reply: () => (replies.length > 0 ? replies.join('\n\n') : undefined),
+    // A client that shows the reply as it comes would show the emphasis markers as noise.
+    reply: () => (replies.length > 0
+      ? replies.map(reply => reply.replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/`([^`\n]+)`/g, '$1')).join('\n\n') : undefined),
+    markdown: () => (replies.length > 0 ? replies.join('\n\n') : undefined),
   };
 }

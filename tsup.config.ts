@@ -38,7 +38,7 @@ export default defineConfig([
     // Bundle the in-repo engine package from source; it is not published separately yet.
     noExternal: ['@kuribohg/agent-workflows'],
     define,
-    // Inline the Vite-built console (src/ui/generated/index.html) as a string.
+    // Inline the Vite-built pages (the console and the chat page) as strings.
     esbuildOptions(options) {
       options.loader = { ...options.loader, '.html': 'text' };
     },

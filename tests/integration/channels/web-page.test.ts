@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { preparedRun } from '../../../src/agent/prepared-run';
@@ -6,6 +5,9 @@ import type { AgentAdapter, AgentEvent, AgentQuestionAnswer } from '../../../src
 import { ChannelHost } from '../../../src/channels/plugin';
 import { createWebPlugin } from '../../../src/channels/web/server';
 import type { RunProfileConfig } from '../../../src/config/profile-schema';
+import { Api } from '../../../web/chat/src/lib/api';
+import { Session, type Route } from '../../../web/chat/src/lib/session';
+import type { QuestionItem, RunItem } from '../../../web/chat/src/lib/types';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { FixedExecutionController } from '../../helpers/fixed-execution';
 import { createTmpProfile } from '../../helpers/tmp-profile';
@@ -14,58 +16,6 @@ vi.mock('@larksuite/channel', () => { throw new Error('Web imported the Lark SDK
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-
-/** The few DOM operations the bundled page uses; enough to run its script against a real server. */
-class Element {
-  children: Element[] = []; parentNode?: Element; dataset: Record<string, string> = {};
-  className = ''; value = ''; hidden = false; disabled = false; checked = false; type = ''; name = ''; placeholder = '';
-  onclick?: (event: unknown) => unknown; onsubmit?: (event: unknown) => unknown; onchange?: unknown; onkeydown?: unknown;
-  private own = '';
-  constructor(readonly tag: string) {}
-  get textContent(): string { return this.own + this.children.map(child => child.textContent).join(''); }
-  set textContent(value: string) { this.own = value; this.children = []; }
-  get options(): Element[] { return this.children; }
-  append(...nodes: Array<Element | string>) {
-    for (const node of nodes) {
-      if (typeof node === 'string') this.own += node;
-      else { node.parentNode = this; this.children.push(node); }
-    }
-  }
-  replaceChildren() { this.children = []; }
-  all(tag: string): Element[] { return this.children.flatMap(child => [...(child.tag === tag ? [child] : []), ...child.all(tag)]); }
-}
-
-class Storage {
-  private readonly items = new Map<string, string>();
-  getItem(key: string) { return this.items.get(key) ?? null; }
-  setItem(key: string, value: string) { this.items.set(key, value); }
-}
-
-interface Browser { local: Storage; session: Storage }
-
-async function open(url: URL, browser: Browser, withToken = true) {
-  const html = await readFile(new URL('../../../src/channels/web/page.html', import.meta.url), 'utf8');
-  const script = html.slice(html.indexOf('<script>') + 8, html.indexOf('</script>'));
-  const elements = new Map<string, Element>();
-  const document = {
-    getElementById: (id: string) => elements.get(id) ?? elements.set(id, new Element(id)).get(id)!,
-    createElement: (tag: string) => new Element(tag),
-  };
-  const aborts = new AbortController();
-  const fetchPage = (path: string, init: RequestInit = {}) => fetch(`${url.origin}${path}`,
-    { ...init, signal: init.signal ? AbortSignal.any([init.signal, aborts.signal]) : aborts.signal });
-  new Function('document', 'location', 'history', 'sessionStorage', 'localStorage', 'fetch', script)(
-    document, { hash: withToken ? url.hash : '', host: url.host, pathname: '/' }, { replaceState() {} }, browser.session, browser.local, fetchPage);
-  const page = {
-    el: document.getElementById,
-    articles: () => document.getElementById('messages').children.map(article => ({ role: article.className, text: article.all('pre')[0]?.textContent ?? '', article })),
-    send: async (text: string) => { document.getElementById('prompt').value = text; await document.getElementById('form').onsubmit!({ preventDefault() {} }); },
-    /** Closing the tab drops its connections; the server keeps the conversation. */
-    close: async () => { aborts.abort(); },
-  };
-  cleanups.push(page.close);
-  return page;
-}
 
 function config(workspace: string): RunProfileConfig {
   return {
@@ -84,14 +34,40 @@ async function serve(agent: AgentAdapter) {
   return new URL(web.url);
 }
 
+/**
+ * The page's own logic (web/chat/src/lib) against a real server: everything the page does except drawing.
+ * Each call is another browser: it shares nothing with the others but the server.
+ */
+async function open(url: URL, conversation?: string, token = new URLSearchParams(url.hash.slice(1)).get('token')!) {
+  let at = conversation;
+  const route: Route = { current: () => at, go: id => { at = id; }, onChange: () => {} };
+  const session = new Session(new Api(token, `${url.origin}/`), route);
+  cleanups.push(async () => session.close());
+  await session.start();
+  const page = {
+    session,
+    state: () => session.getState(),
+    id: () => at,
+    /** What the conversation shows, as kind and words. */
+    said: () => session.getState().view.items.map(item =>
+      item.kind === 'run' ? ['run', item.state.finalText ?? item.state.blocks.flatMap(block => block.kind === 'text' ? [block.content] : []).join('')]
+        : item.kind === 'question' ? ['question', item.questions[0]!.question] : [item.kind, item.text]),
+    run: () => session.getState().view.items.filter(item => item.kind === 'run').at(-1) as RunItem | undefined,
+    close: async () => session.close(),
+  };
+  return page;
+}
+
 /** Streams some text, then waits for an answer to its question (or for `release`) before finishing. */
 function heldAgent(question: boolean) {
   let release!: (answer: AgentQuestionAnswer) => void;
   const released = new Promise<AgentQuestionAnswer>(resolve => { release = resolve; });
+  const inputs: string[] = [];
   const capabilities = { input: 'active-turn', finalAnswer: 'stream' } as const;
   const agent: AgentAdapter = { id: 'claude', displayName: 'held', capabilities, isAvailable: async () => true,
     prepareRun: async options => preparedRun({}, () => ({ runId: options.runId, capabilities,
       answerUserInput: async (_id: string, value: AgentQuestionAnswer) => { release(value); return 'accepted' as const; },
+      sendInput: async input => { inputs.push(input.text); return { status: 'accepted' as const, messageId: input.messageId, scope: 'active-turn' as const }; },
       events: (async function* (): AsyncGenerator<AgentEvent> {
         yield { type: 'system', sessionId: 'session-held' };
         yield { type: 'text', delta: 'working' };
@@ -102,81 +78,148 @@ function heldAgent(question: boolean) {
         yield { type: 'done', terminationReason: 'normal' };
       })(),
       stop: async () => release({ declined: 'stopped' }), waitForExit: async () => true })) };
-  return { agent, release: () => release({ declined: 'released' }) };
+  return { agent, inputs, release: () => release({ declined: 'released' }) };
 }
 
 describe('bundled Web page', () => {
-  it('sends a message, renders the run from the event stream and keeps one entry per run across reloads', async () => {
+  it('sends a message, shows the run as it goes, and shows the same conversation to any browser afterwards', async () => {
     const url = await serve(new FakeAgentAdapter({ id: 'claude', events: [
-      { type: 'system', sessionId: 's1' }, { type: 'tool_use', id: 't1', name: 'Read', input: {} },
+      { type: 'system', sessionId: 's1' }, { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'a.ts' } },
       { type: 'tool_result', id: 't1', output: 'ok', isError: false },
       { type: 'final_text', content: 'answer' }, { type: 'done', terminationReason: 'normal' },
     ] }));
-    const browser = { local: new Storage(), session: new Storage() };
-    const page = await open(url, browser);
-    await page.send('hello');
-    await vi.waitFor(() => expect(page.articles().map(a => [a.role, a.text])).toEqual([['user', 'hello'], ['assistant', 'answer']]));
-    await vi.waitFor(() => expect(page.el('send').textContent).toBe('发送'));
-    expect(page.el('status').textContent).toBe('就绪');
-    expect(page.articles()[1]!.article.all('details')[0]!.all('pre')[0]!.textContent).toBe('Read · done');
-    expect(page.el('error').textContent).toBe('');
-    await page.send('/workflow status');
-    expect(page.articles().slice(2).map(a => [a.role, a.text])).toEqual([['user', '/workflow status'], ['assistant', '当前会话未启用工作流。']]);
+    const page = await open(url);
+    await vi.waitFor(() => expect(page.state().meta).toMatchObject({ agent: 'claude', workflows: false }));
+    expect(page.state().meta!.commands.map(command => command.name)).toEqual(expect.arrayContaining(['help', 'new', 'status', 'stop']));
+    expect(page.state().conversationId).toBeUndefined();
+
+    await page.session.send('hello');
+    const id = page.id()!;
+    expect(id).toBe(page.state().conversationId);
+    await vi.waitFor(() => expect(page.said()).toEqual([['user', 'hello'], ['run', 'answer']]));
+    await vi.waitFor(() => expect(page.run()).toMatchObject({ result: 'completed', state: { terminal: 'done' } }));
+    expect(page.run()!.state.blocks).toMatchObject([{ kind: 'tool', tool: { name: 'Read', status: 'done', output: 'ok' } }]);
+    // What was shown at once has become the server's record of it: one item, no longer pending.
+    expect(page.state().view.items[0]).toMatchObject({ kind: 'user', via: 'message' });
+    expect(page.state().view.items[0]).not.toHaveProperty('pending');
+    expect(page.session.runningId()).toBeUndefined();
+    await vi.waitFor(() => expect(page.state().conversations).toMatchObject([{ id, title: 'hello', preview: 'answer' }]));
+
+    await page.session.send('/workflow status');
+    await vi.waitFor(() => expect(page.said().slice(2)).toEqual([['user', '/workflow status'], ['notice', '当前会话未启用工作流。']]));
+    expect(page.state().view.items.at(-1)).toMatchObject({ source: 'command' });
     await page.close();
 
-    // The reloaded page replays the server's buffer on top of its saved transcript.
-    const reloaded = await open(url, browser, false);
-    await vi.waitFor(() => expect(reloaded.el('status').textContent).toBe('就绪'));
-    await new Promise(resolve => setTimeout(resolve, 100));
-    expect(reloaded.articles().map(a => a.text)).toEqual(['hello', 'answer', '/workflow status', '当前会话未启用工作流。']);
-    expect(reloaded.el('send').textContent).toBe('发送');
+    // Another browser has no memory of the conversation; the server has all of it.
+    const other = await open(url, id);
+    await vi.waitFor(() => expect(other.state().view.ready).toBe(true));
+    expect(other.said()).toEqual([['user', 'hello'], ['run', 'answer'], ['user', '/workflow status'], ['notice', '当前会话未启用工作流。']]);
+    expect(other.state().conversations).toMatchObject([{ id, title: 'hello' }]);
+    await vi.waitFor(() => expect(other.state().engine).toMatchObject({ agent: 'claude' }));
   });
 
-  it('answers shared slash commands in the transcript without starting a run', async () => {
+  it('answers shared slash commands in the conversation without starting a run', async () => {
     const url = await serve(new FakeAgentAdapter({ id: 'claude', events: [] }));
-    const page = await open(url, { local: new Storage(), session: new Storage() });
-    await page.send('/status');
-    await vi.waitFor(() => expect(page.articles().map(article => [article.role, article.text]))
-      .toEqual([['user', '/status'], ['assistant', 'Engine: claude\nState: idle']]));
+    const page = await open(url);
+    await page.session.send('/status');
+    await vi.waitFor(() => expect(page.said()).toEqual([['user', '/status'], ['notice', '**Engine:** claude\n**State:** idle']]));
+    expect(page.state().view.items[0]).toMatchObject({ via: 'command' });
+    // A conversation is not named after a command.
+    await vi.waitFor(() => expect(page.state().conversations).toMatchObject([{ title: '新对话' }]));
   });
 
-  it('shows a run that is still going to a page opened after it started, and its result afterwards', async () => {
+  it('shows a run that is still going to a page opened after it started, takes more input for it, and shows its result', async () => {
     const held = heldAgent(false);
     const url = await serve(held.agent);
-    const browser = { local: new Storage(), session: new Storage() };
-    const page = await open(url, browser);
-    await page.send('long task');
-    await vi.waitFor(() => expect(page.articles().at(-1)).toMatchObject({ role: 'assistant', text: 'working' }));
+    const page = await open(url);
+    await page.session.send('long task');
+    await vi.waitFor(() => expect(page.said().at(-1)).toEqual(['run', 'working']));
+    await vi.waitFor(() => expect(page.state().conversations[0]).toHaveProperty('activeRunId'));
     await page.close();
 
-    const reopened = await open(url, browser, false);
-    await vi.waitFor(() => expect(reopened.el('send').textContent).toBe('补充'));
-    expect(reopened.el('stop').disabled).toBe(false);
+    const reopened = await open(url, page.id());
+    await vi.waitFor(() => expect(reopened.said()).toEqual([['user', 'long task'], ['run', 'working']]));
+    expect(reopened.session.runningId()).toBe(reopened.run()!.runId);
+    await reopened.session.send('one more thing');
+    expect(held.inputs).toEqual(['one more thing']);
+    await vi.waitFor(() => expect(reopened.state().view.items.at(-1)).toMatchObject({ kind: 'user', via: 'input', text: 'one more thing' }));
     held.release();
-    await vi.waitFor(() => expect(reopened.articles().map(a => a.text)).toEqual(['long task', 'working\n\nreleased']));
-    await vi.waitFor(() => expect(reopened.el('send').textContent).toBe('发送'));
+    await vi.waitFor(() => expect(reopened.run()).toMatchObject({ result: 'completed', state: { finalText: 'released' } }));
+    await vi.waitFor(() => expect(reopened.session.runningId()).toBeUndefined());
+    expect(reopened.state().conversations[0]).not.toHaveProperty('activeRunId');
   });
 
-  it('renders a question, restores it after a reload and continues the run with the submitted answer', async () => {
+  it('stops a run on request and says so in the conversation', async () => {
+    const url = await serve(heldAgent(false).agent);
+    const page = await open(url);
+    await page.session.send('long task');
+    await vi.waitFor(() => expect(page.session.runningId()).toBeDefined());
+    await vi.waitFor(() => expect(page.said().at(-1)).toEqual(['run', 'working']));
+    await page.session.stop();
+    await vi.waitFor(() => expect(page.run()!.finishedAt).toBeTypeOf('number'));
+    expect(page.session.runningId()).toBeUndefined();
+  });
+
+  it('shows a question, shows it again to another browser and continues the run with the submitted answer', async () => {
     const url = await serve(heldAgent(true).agent);
-    const browser = { local: new Storage(), session: new Storage() };
-    const page = await open(url, browser);
-    await page.send('choose');
-    await vi.waitFor(() => expect(page.el('messages').all('fieldset')).toHaveLength(1));
+    const page = await open(url);
+    await page.session.send('choose');
+    await vi.waitFor(() => expect(page.said().at(-1)).toEqual(['question', 'Which?']));
     await page.close();
 
-    const reloaded = await open(url, browser, false);
-    await vi.waitFor(() => expect(reloaded.el('send').textContent).toBe('补充'));
-    const forms = reloaded.el('messages').all('fieldset');
-    expect(forms).toHaveLength(1);
-    expect(forms[0]!.textContent).toContain('Which?');
-    const picks = forms[0]!.all('input').filter(input => input.type === 'radio');
-    expect(picks.map(pick => pick.value)).toEqual(['A', 'B']);
-    picks[1]!.checked = true;
-    const submit = reloaded.el('messages').all('button')[0]!;
-    await submit.onclick!({});
-    expect(submit.disabled).toBe(true);
-    await vi.waitFor(() => expect(reloaded.articles().filter(a => a.text).at(-1)!.text).toContain('chose B'));
-    await vi.waitFor(() => expect(reloaded.el('send').textContent).toBe('发送'));
+    const reloaded = await open(url, page.id());
+    await vi.waitFor(() => expect(reloaded.said().map(([kind]) => kind)).toEqual(['user', 'run', 'question']));
+    const question = reloaded.state().view.items.at(-1) as QuestionItem;
+    expect(question).toMatchObject({ mode: 'blocking', questions: [{ options: [{ label: 'A' }, { label: 'B' }] }] });
+    expect(question.status).toBeUndefined();
+    expect(await reloaded.session.answer(question.id, [['B']])).toMatchObject({ settled: true });
+    await vi.waitFor(() => expect(reloaded.run()).toMatchObject({ result: 'completed', state: { finalText: 'chose B' } }));
+    const answered = reloaded.state().view.items.find(item => item.kind === 'question') as QuestionItem;
+    expect(answered.answers).toEqual([['B']]);
+    expect(answered.status).toBeTruthy();
+  });
+
+  it('renames, pins and deletes a conversation for every open page', async () => {
+    const url = await serve(new FakeAgentAdapter({ id: 'claude', events: [
+      { type: 'system', sessionId: 's1' }, { type: 'final_text', content: 'answer' }, { type: 'done', terminationReason: 'normal' }] }));
+    const page = await open(url);
+    await page.session.send('first');
+    await vi.waitFor(() => expect(page.run()?.result).toBe('completed'));
+    const id = page.id()!;
+    const other = await open(url, id);
+    await vi.waitFor(() => expect(other.state().view.ready).toBe(true));
+
+    await page.session.rename(id, 'A name of my own');
+    await page.session.pin(id, true);
+    await vi.waitFor(() => expect(other.state().conversations).toMatchObject([{ id, title: 'A name of my own', pinned: true }]));
+
+    await other.session.remove(id);
+    expect(other.state().conversationId).toBeUndefined();
+    await vi.waitFor(() => expect(page.state().view.gone).toBe(true));
+    await vi.waitFor(() => expect(page.state().conversations).toEqual([]));
+    // Nothing of it is left for a page that asks again.
+    const again = await open(url, id);
+    await vi.waitFor(() => expect(again.state().view.ready).toBe(true));
+    expect(again.state().view.items).toEqual([]);
+  });
+
+  it('tells a page with a stale link so, and keeps a message the server never took on screen as failed', async () => {
+    const url = await serve(new FakeAgentAdapter({ id: 'claude', events: [] }));
+    const locked = await open(url, undefined, 'not-the-token');
+    await vi.waitFor(() => expect(locked.state().link).toBe('unauthorized'));
+    const none = await open(url, undefined, '');
+    expect(none.state().link).toBe('unauthorized');
+
+    const page = await open(url);
+    await vi.waitFor(() => expect(page.state().link).toBe('live'));
+    const fetching = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      if (String(input).endsWith('/api/send')) throw new TypeError('network down');
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    try { await expect(page.session.send('will not arrive')).rejects.toThrow('连接不到服务'); }
+    finally { fetching.mockRestore(); }
+    expect(page.state().view.items).toMatchObject([{ kind: 'user', text: 'will not arrive', failed: expect.stringContaining('连接不到服务') }]);
+    page.session.dismiss(page.state().view.items[0]!.key);
+    await vi.waitFor(() => expect(page.state().view.items).toEqual([]));
   });
 });

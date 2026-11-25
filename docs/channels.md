@@ -285,6 +285,11 @@ client keeps its own transcript and treats a new id as a fresh stream.
 `{ type: 'notice', text }` is something the bridge tells the conversation
 outside any run, such as a workflow's plan.
 
+A host that keeps its own record of conversations passes `observe(identity,
+event)` when it creates the runtime. It is called in order with every event the
+runtime publishes, whether or not anyone is subscribed, so the record does not
+depend on the 256-event buffer or on a connected client.
+
 With `workflows: true` the runtime hosts workflows for its conversations:
 `runtime.workflowCommand(identity, args)` handles `/workflow <args>` and returns
 the reply to show, or `undefined` when it queued a turn. Workflow turns wait
@@ -298,14 +303,56 @@ as `POST /api/command` (`{ conversationId, text: "/workflow …" }`).
 Web also takes the shared conversation commands there: `/help`, `/new`,
 `/status`, `/stop` and `/model` run without starting a run, and the reply comes
 back as `{ reply }` text. `src/channels/web/command-channel.ts` collects what
-the shared handler says instead of posting it, so the page shows it in the
-transcript.
+the shared handler says instead of posting it; the Markdown form goes into the
+conversation's record.
 
-Web exposes this as `GET /api/events?conversationId=…[&stream=…&after=…]`
+Web exposes the event stream as `GET /api/events?conversationId=…[&stream=…&after=…]`
 (NDJSON, open until the client disconnects) and `POST /api/send`
-(`{ conversationId, text }` returning `{ runId }`). Stop, supplemental input,
-answers and engine selection use the existing `POST` endpoints. `POST /api/chat`
-remains as the single-request form of the same run.
+(`{ conversationId, text[, messageId] }` returning `{ runId }`). Stop,
+supplemental input, answers and engine selection use the existing `POST`
+endpoints. `POST /api/chat` remains as the single-request form of the same run.
+
+### The Web channel's record and page
+
+The chat page keeps nothing but its settings and unsent drafts in the browser.
+`src/channels/web/transcript.ts` records every conversation under
+`<state-dir>/web-chat`: `index.json` lists the conversations (title, pinned,
+last activity, the run that is going), and each conversation is an append-only
+JSONL file of items — what the person sent, each run with its blocks, notices
+and questions. The record is fed by the runtime's `observe` hook and by the
+`POST` handlers, so a conversation reads the same from any browser and after a
+restart. A run that was going when the service stopped is shown as interrupted.
+Long tool input and output are clipped in the record; the agent's own session
+is unaffected.
+
+The page reads through these routes, all behind the same token:
+
+| Route | Returns |
+|---|---|
+| `GET /api/meta` | Version, workspace, default and available engines, display settings, whether workflows are on, the slash commands |
+| `GET /api/conversations` | The conversations, pinned first, then by last activity |
+| `GET /api/stream[?conversationId=…&epoch=…&since=…&tail=…]` | NDJSON, open until the client disconnects: the conversation list whenever it changes, and the items of the one conversation the page shows |
+| `GET /api/items?conversationId=…&before=…[&limit=…]` | An older page of that conversation's items |
+| `GET /api/state?conversationId=…` | Engine, active run, working directory, model and effort |
+| `GET /api/workflows?conversationId=…`, `GET /api/workflows/…` | The conversation's workflows, then the read-only [dashboard API](workflow-dashboard.md) for one of them; 404 unless workflows are on |
+| `POST /api/conversation`, `POST /api/conversation/delete` | Rename or pin (`{ conversationId, title?, pinned? }`); delete, refused with 409 while a run is going |
+
+One connection per tab carries both the list and the open conversation, because
+a browser allows few connections to a host. Within a conversation every change
+has a revision. The stream opens with `{ type: 'open', epoch, reset }`, sends
+the items the client is missing, then `ready`, then live changes: a whole
+`item` when one appears or settles, and for a run that is going a `run` patch
+holding only the blocks from the first changed one. A patch names the revision
+it builds on; a client that does not hold that revision reconnects with its
+cursor (`epoch` and `since`) and is sent the items again. `epoch` changes when
+the service restarts or the record is rewritten, and the client then starts
+from the tail. `messageId` on `POST /api/send` becomes the key of the recorded
+message, so the page can show it before the server confirms it and a retry is
+not recorded twice.
+
+The page itself is a React app in `web/chat`, built by Vite into one
+self-contained HTML file that tsup inlines into the bundle, like the console.
+`web/shared` holds the design tokens and primitives the bridge's pages share.
 
 Call `runtime.close()` on plugin shutdown. It rejects new work, aborts queued and
 active requests, waits for output consumers, then flushes session state. Each

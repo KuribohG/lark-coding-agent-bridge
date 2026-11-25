@@ -7,7 +7,8 @@ import { agentBackendSpec } from '../agent/backend-spec';
 import { resolveAgentState } from '../agent/state-layout';
 import { ActiveRuns, stopRun } from './active-runs';
 import type { AgentEntry } from './agent-entry';
-import { ConversationEvents, type ConversationCursor, type ConversationStreamEvent } from './conversation-events';
+import { ConversationEvents, type ConversationCursor, type ConversationEvent, type ConversationStreamEvent,
+  type SequencedConversationEvent } from './conversation-events';
 import { RunStopped } from './errors';
 import { FollowupRouter } from './followup';
 import { QuestionBroker } from './questions';
@@ -55,6 +56,11 @@ export interface ConversationRuntimeOptions {
   systemPrompt?: string;
   /** What of a run's state this host shows in its conversation event streams. */
   filterState?: (state: RunState) => RunState;
+  /**
+   * Told every event as it is published to a conversation's stream, whether or not anyone follows that stream.
+   * A host that keeps a record of its conversations takes it from here; a throw is logged and goes no further.
+   */
+  observe?: (identity: ConversationIdentity, event: SequencedConversationEvent) => void;
   /**
    * Let conversations run workflows: `workflowCommand`, workflow turns queued
    * behind the active run, and wakes of the main session when workers report.
@@ -220,7 +226,7 @@ export class ConversationRuntime {
       frontend: {
         accepts: origin => typeof (origin as Partial<ConversationIdentity>).actorId === 'string'
           && typeof (origin as Partial<ConversationIdentity>).conversationId === 'string',
-        reply: async (origin, text) => { this.events.publish(this.scopeKey(origin), { type: 'notice', text }); },
+        reply: async (origin, text) => { this.publish(origin, { type: 'notice', text }); },
         // The origin was authorized when it was recorded, and is authorized again by every turn started for it.
         conversation: origin => ({ scope: { source: 'channel', channelId: options.channelId, ...origin },
           access: { ok: true, reason: 'allowed-user' }, systemPrompt: options.systemPrompt ?? '' }),
@@ -354,8 +360,9 @@ export class ConversationRuntime {
   }
 
   private async publishRun(input: Omit<ConversationInput, 'questions'>, started: StartedBy = {}) {
-    const scope = await this.authorizedScope(input);
-    const publish = this.events.publish.bind(this.events, scope);
+    await this.authorizedScope(input);
+    const identity = { actorId: input.actorId, conversationId: input.conversationId };
+    const publish = (event: ConversationEvent) => { this.publish(identity, event); };
     const filter = this.options.filterState ?? (state => state);
     const output: RunOutputPlugin = {
       id: 'conversation-events',
@@ -391,13 +398,21 @@ export class ConversationRuntime {
     return { ok: true as const, runId, done };
   }
 
+  /** Publishes to the conversation's stream and tells the host's observer. */
+  private publish(identity: ConversationIdentity, event: ConversationEvent): void {
+    const published = this.events.publish(this.scopeKey(identity), event);
+    if (!this.options.observe) return;
+    try { this.options.observe({ actorId: identity.actorId, conversationId: identity.conversationId }, published); }
+    catch (err) { log.fail('conversation', err, { step: 'observe' }); }
+  }
+
   /** A queued turn, run while it holds the conversation's lane; a rejection is told to the conversation. */
   private async runQueued(batch: QueuedInput[], signal: AbortSignal): Promise<void> {
     for (const item of batch) {
       const identity = { actorId: item.actorId, conversationId: item.conversationId };
       const run = await this.publishRun({ ...identity, prompt: item.content, signal }, { entry: item.agentEntry, claimed: true });
       if (run.ok) await run.done;
-      else this.events.publish(this.scopeKey(identity), { type: 'notice', text: run.rejectReason.userVisible });
+      else this.publish(identity, { type: 'notice', text: run.rejectReason.userVisible });
     }
   }
 
@@ -609,7 +624,8 @@ export class ConversationRuntime {
     return this.scopeKey(identity);
   }
 
-  private scopeKey(identity: ConversationIdentity): string {
+  /** The scope a conversation's runs, sessions and workflows are kept under. */
+  scopeKey(identity: ConversationIdentity): string {
     return `channel:${JSON.stringify([this.options.channelId, this.options.namespace, identity.actorId, identity.conversationId])}`;
   }
 

@@ -12,7 +12,7 @@
 | `.\bin\windows\start-web.ps1 -OpenBrowser` | Windows 自定义 Responses provider 的隔离后台聊天；配套 `stop-web.ps1` 停止 |
 | `node bin/lark-channel-bridge.mjs run --web-ui --detach` | 飞书管理控制台；配套 `node bin/lark-channel-bridge.mjs ui --stop` 停止 |
 
-独立聊天需要打开本次启动的完整 token URL；飞书斜杠命令不在 Web 消息框中解析。更多参数见 [Web 聊天](web-chat.md)。
+独立聊天需要打开本次启动的完整 token URL；Web 消息框只支持输入 `/` 时列出的那几个命令（`/help`、`/new`、`/status`、`/stop`、`/model`、`/workflow …`），其余飞书斜杠命令不可用。更多参数见 [Web 聊天](web-chat.md)。
 
 ## 在飞书里发送
 
