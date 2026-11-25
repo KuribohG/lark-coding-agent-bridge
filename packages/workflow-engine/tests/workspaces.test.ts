@@ -1,11 +1,14 @@
-import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { access, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowWorkspaces } from '../src/engine/workspaces';
-import { workspaceCommand } from '../src/engine/workspace-process';
+import { records, workspaceCommand, type CommandOutput } from '../src/engine/workspace-process';
+import { LARGE_PATHS, largeCommit, printed } from './helpers/large-tree';
 import { WorkflowKernel } from '../src/engine/kernel';
 import type { WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceIntegration } from '../src/engine/workspace-types';
 
@@ -313,4 +316,68 @@ describe('managed workflow worktrees with real Git', () => {
     expect(await h.op<WorkspaceChecks>('check', 'long', { workspace: ws.id, commands: commands(40 * 60_000) })).toMatchObject({ passed: true });
     await expect(h.op('check', 'over', { workspace: ws.id, commands: commands(4 * 3_600_000 + 1) })).rejects.toThrow('Expected an integer');
   }, 30_000);
+});
+
+describe('what is held of a workspace command\'s output', () => {
+  const node = (code: string, output?: CommandOutput) => workspaceCommand(process.execPath, ['-e', code], tmpdir(), signal(), 60_000, process.env, undefined, output);
+
+  it('holds the whole output up to a limit, or one end of it, and then lets the command print on', async () => {
+    const flood = "process.stdout.write('START'+'x'.repeat(3e6)+'END');process.stderr.write('e'.repeat(3e6)+'LAST')";
+    await expect(node(flood, { name: 'flood' })).rejects.toThrow('Workspace command output limit reached: flood printed more than 2 MB');
+    const tail = await node(flood, { keep: 'tail', bytes: 1000 });
+    expect([tail.code, tail.stdout.length, tail.stdout.endsWith('xEND'), tail.stderr.length, tail.stderr.endsWith('eLAST')]).toEqual([0, 1000, true, 1000, true]);
+    const head = await node(flood, { keep: 'head', bytes: 1000 });
+    expect([head.code, head.stdout.length, head.stdout.startsWith('STARTx'), head.stderr]).toEqual([0, 1000, true, 'e'.repeat(1000)]);
+    // Output that fits is the same whichever way it is held.
+    for (const output of [undefined, { keep: 'tail' as const }, { keep: 'head' as const }]) expect(await node("console.log('目录');console.error('文件')", output)).toEqual({ code: 0, stdout: '目录\n', stderr: '文件\n' });
+  }, 60_000);
+
+  it('hands a scanning caller every record of a listing however its chunks fall, and holds none of it', async () => {
+    // 2.7 MB of records with multi-byte names, written so that chunks end inside records and inside characters.
+    const listing = "let text='';for(let i=0;i<60000;i++)text+='目录/文件-'+i+'-'+'y'.repeat(20)+'\\0';for(let at=0;at<text.length;at+=7001)process.stdout.write(Buffer.from(text).subarray(at,at+7001));process.stderr.write('note')";
+    const seen: string[] = [];
+    let wrong = 0;
+    const result = await node(listing.replace('text.length', 'Buffer.byteLength(text)'), { scan: records(record => { if (!/^目录\/文件-\d+-y{20}$/.test(record)) wrong++; seen.push(record.split('-')[1]!); }) });
+    expect(result).toEqual({ code: 0, stdout: '', stderr: 'note' });
+    expect([wrong, seen.length, seen[0], seen.at(-1)]).toEqual([0, 60000, '0', '59999']);
+    // A caller that has seen enough stops the command with its own error.
+    await expect(node("setInterval(()=>process.stdout.write('x'.repeat(1e4)+'\\n'),1)", { scan: records(() => { throw new Error('seen enough'); }, '\n') })).rejects.toThrow('seen enough');
+  }, 60_000);
+});
+
+// Windows cannot check out paths as long as the ones that make these listings large.
+describe.skipIf(process.platform === 'win32')('worktrees of a repository with more files than a command may list whole', () => {
+  it('makes a worktree from a large tree and still refuses submodules and filters anywhere in it', async () => {
+    const h = await fixture();
+    const large = largeCommit(h.repo, h.base);
+    expect(printed(h.repo, 'ls-tree', '-r', '-z', large)).toBeGreaterThan(2_000_000);
+    const ws = await h.op<WorkspaceBinding>('create', 'large', { base: large });
+    expect(await git(ws.path, 'rev-parse', 'HEAD')).toBe(large);
+    expect(await exists(join(ws.path, LARGE_PATHS.at(-1)!))).toBe(true);
+    expect(await git(ws.path, 'status', '--porcelain')).toBe('');
+    // Its last entries are screened like its first.
+    await expect(h.op('create', 'filter', { base: largeCommit(h.repo, h.base, { files: { 'zz/.gitattributes': '*.bin filter=lfs\n' } }) })).rejects.toThrow('filters');
+    await expect(h.op('create', 'submodule', { base: largeCommit(h.repo, h.base, { submodule: 'zz/sub' }) })).rejects.toThrow('submodules');
+    // A frozen change records every path it touches, so one that names this many is refused, and the refusal says by what.
+    const member = await h.create('member'); await git(member.path, 'reset', '--hard', large);
+    await expect(h.op('freeze', 'freeze', { workspace: member.id })).rejects.toThrow('Workspace command output limit reached: git diff printed more than 2 MB');
+  }, 120_000);
+
+  it('freezes a change whose diff is larger than a command may print whole, and records the digest of that diff', async () => {
+    const h = await fixture(), ws = await h.create('a');
+    await h.commit(ws, 'large.txt', Array.from({ length: 60_000 }, (_, index) => `line ${index} ${'z'.repeat(40)}`).join('\n') + '\n');
+    const diff = execFileSync('git', ['diff', '--binary', h.base, 'HEAD'], { cwd: ws.path, maxBuffer: 64 << 20 });
+    expect(diff.length).toBeGreaterThan(2_000_000);
+    const change = await h.op<WorkspaceChange>('freeze', 'freeze', { workspace: ws.id });
+    expect(change).toMatchObject({ files: ['large.txt'], diffDigest: createHash('sha256').update(diff).digest('hex') });
+  }, 60_000);
+
+  it('counts the untracked files that keep a checkout from being a baseline without listing them all', async () => {
+    const h = await fixture();
+    await mkdir(join(h.repo, 'stray'));
+    for (let index = 0; index < 9600; index++) writeFileSync(join(h.repo, 'stray', `${'u'.repeat(200)}-${index}`), '');
+    expect(printed(h.repo, 'status', '--porcelain', '--untracked-files=all')).toBeGreaterThan(2_000_000);
+    // Each name is cut to 200 characters in the refusal.
+    await expect(h.create('member')).rejects.toThrow(/uncommitted changes \((\?\? stray\/u{191}, ){5}and 9595 more, in .*repo\)/);
+  }, 120_000);
 });

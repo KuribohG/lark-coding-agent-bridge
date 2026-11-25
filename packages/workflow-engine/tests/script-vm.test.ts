@@ -67,6 +67,24 @@ describe('script interpreter', () => {
       .toEqual([null, 20]);
   });
 
+  it('keeps the lines about failed calls out of the script\'s own progress budget, and bounds them', async () => {
+    const progress = vi.fn();
+    // A batch that fails whole: the script still logs what it made of it and goes on.
+    const result = await run([
+      'const made = await parallel(Array.from({length: 150}, (_, i) => () => { throw new Error("no worktree " + i); }));',
+      'log("made " + made.filter(Boolean).length + "/" + made.length);',
+      'for (let i = 0; i < 98; i++) log("step " + i);',
+      'return made.length;',
+    ].join('\n'), { progress });
+    expect(JSON.parse(result)).toBe(150);
+    const lines = progress.mock.calls.map(([, text]) => text as string);
+    expect(lines.filter(line => line.includes('failed; returning null'))).toHaveLength(100);
+    expect(lines.slice(99, 102)).toEqual(['parallel item 99 failed; returning null: no worktree 99', 'more calls failed; further lines about failed calls are left out', 'made 0/150']);
+    expect(lines).toHaveLength(200);
+    // The script's own lines are bounded as before.
+    await expect(run('for (let i = 0; i < 101; i++) log("step " + i); return null;')).rejects.toThrow('Script progress limit reached');
+  });
+
   it('does not expose host globals or a module loader', async () => {
     const values = JSON.parse(await run('return [typeof process, typeof require, typeof fetch, typeof Date, typeof __bridgeAgent, typeof __bridgeProgress, ({}).constructor.constructor("return typeof process")()];'));
     expect(values).toEqual(Array(7).fill('undefined'));

@@ -10,6 +10,7 @@ import { workspaceCommand } from '../src/engine/workspace-process';
 import { CLONE_REMOTE, WorkflowWorkspaces } from '../src/engine/workspaces';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 import type { LandReport, WorkspaceBinding, WorkspaceLanding } from '../src/engine/workspace-types';
+import { LARGE_PATHS, largeCommit, printed } from './helpers/large-tree';
 
 const closes: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });
@@ -183,6 +184,38 @@ describe('landing members\' work on a shared branch', () => {
     expect(await a.land()).toMatchObject({ status: 'landed', commits: 2 });
     expect(await h.runs()).toHaveLength(1);
   }, 60_000);
+
+  it('lets the checks print as much as they like and reports the end of it', async () => {
+    const h = await fixture();
+    const noisy = (code: number) => node(`process.stdout.write('x'.repeat(3e6)+'last line');process.stderr.write('e'.repeat(3e6)+'last error');process.exitCode=${code}`);
+    await h.configure([noisy(0)], { precheck: [noisy(0)] });
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 1 });
+    await h.configure([noisy(3)]);
+    const b = await h.member('b'); await b.commit('b.txt', 'b\n');
+    const failed = await b.land() as Extract<LandReport, { status: 'check_failed' }>;
+    expect(failed).toMatchObject({ status: 'check_failed', commands: [{ code: 3 }] });
+    const [command] = failed.commands;
+    expect([command!.stdout.length, command!.stdout.endsWith('xlast line'), command!.stderr.endsWith('elast error')]).toEqual([4000, true, true]);
+  }, 60_000);
+
+  // Windows cannot check out paths as long as the ones that make this change large.
+  it.skipIf(process.platform === 'win32')('screens and lands a change that names more paths than a command may list whole', async () => {
+    const h = await fixture();
+    await h.configure([h.logged('', true)], { protect: [{ paths: ['bulk/0'] }] });
+    const large = await h.member('large');
+    await git(large.ws.path, 'reset', '--hard', largeCommit(large.ws.path, h.base));
+    expect(printed(large.ws.path, 'diff', '--name-only', '-z', h.base, 'HEAD')).toBeGreaterThan(2_000_000);
+    // Every path is matched against the protected ones, and the report holds the first of those that are.
+    const rejected = await large.land() as Extract<LandReport, { status: 'rejected' }>;
+    expect(rejected).toMatchObject({ status: 'rejected', reason: expect.stringContaining('150 changed path(s) are protected') });
+    expect(rejected.files).toHaveLength(64);
+    // Behind another landing its commit is picked onto the new head, which prints a line for every file it adds.
+    await h.configure([h.logged('', true)], { protect: [{ paths: ['expected'] }] });
+    const [report] = await h.together(1, () => [large.land()]);
+    expect(report).toMatchObject({ status: 'landed', commits: 1 });
+    expect(await git(h.repo, 'cat-file', '-t', `${await h.head()}:${LARGE_PATHS.at(-1)}`)).toBe('blob');
+  }, 180_000);
 
   it('rejects changes to protected paths except from the worktrees a rule allows', async () => {
     const h = await fixture();

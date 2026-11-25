@@ -43,7 +43,7 @@ const PRELUDE = `(() => {
   // Failures stay visible in status; the log line records why a script value is null.
   const softFailure = (mode, label, error) => {
     if (mode === 'throw') throw error;
-    try { progress('log', label + ' failed; returning null: ' + (error && error.message ? error.message : String(error))); } catch {}
+    try { progress('log', label + ' failed; returning null: ' + (error && error.message ? error.message : String(error)), true); } catch {}
     return null;
   };
   const strictParallel = tasks => Promise.all(tasks.map(task => task()));
@@ -149,6 +149,8 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   let workCalls = 0;
   let workspaceCalls = 0;
   let progressCount = 0;
+  let noteCount = 0;
+  let notesLeftOut = false;
   let pending = 0;
   let hostError: unknown;
   let jobCount = 0;
@@ -222,8 +224,18 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
       if (!input.workspace) throw new Error('Workspace host is unavailable');
       return input.workspace(call);
     });
-    install('__bridgeProgress', (kind, value) => {
-      if (++progressCount > PROGRESS_BASE + answered) throw new Error('Script progress limit reached');
+    install('__bridgeProgress', (kind, value, note) => {
+      // The prelude's own lines about calls that failed are counted apart from the script's: a batch that fails
+      // whole would otherwise spend the script's budget and end it at its next log(). Past their budget they are
+      // left out, and one line says so.
+      if (note) {
+        if (++noteCount > PROGRESS_BASE + answered) {
+          if (!notesLeftOut) input.progress('log', 'more calls failed; further lines about failed calls are left out');
+          notesLeftOut = true;
+          return;
+        }
+        notesLeftOut = false;
+      } else if (++progressCount > PROGRESS_BASE + answered) throw new Error('Script progress limit reached');
       const name = context.getString(kind);
       if (name !== 'phase' && name !== 'log') throw new Error('Invalid progress kind');
       input.progress(name, context.getString(value).slice(0, 1000));

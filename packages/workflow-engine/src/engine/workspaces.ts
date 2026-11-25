@@ -1,12 +1,12 @@
 import Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { access, mkdir, realpath, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
 import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, WORKSPACE_CHECKOUT_SLOTS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
-import { nodeProcesses, workspaceCommand, type CommandResult } from './workspace-process';
+import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
 import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
@@ -146,10 +146,12 @@ export class WorkflowWorkspaces {
   }
   private putWorkspace(workspace: WorkspaceBinding): void { this.save(this.row(workspace.id, workspace.workflowId, 'workspace'), workspace); }
 
-  private async git(cwd: string, args: string[], signal: AbortSignal, allowFailure = false, env?: NodeJS.ProcessEnv): Promise<CommandResult> {
+  private async git(cwd: string, args: string[], signal: AbortSignal, allowFailure = false, env?: NodeJS.ProcessEnv, output?: CommandOutput): Promise<CommandResult> {
     const hooks = join(this.directory, 'empty-hooks'); await mkdir(hooks, { recursive: true, mode: 0o700 });
+    // Git's own options (`-c name=value`) come before the subcommand.
+    const name = `git ${args.find((arg, at) => !arg.startsWith('-') && args[at - 1] !== '-c') ?? ''}`.trim();
     const result = await workspaceCommand('git', ['-c', `core.hooksPath=${hooks}`, '-c', 'core.fsmonitor=false',
-      '-c', 'gc.auto=0', ...args], cwd, signal, 60_000, { ...gitEnv(), ...env }, this.processes);
+      '-c', 'gc.auto=0', ...args], cwd, signal, 60_000, { ...gitEnv(), ...env }, this.processes, { name, ...output });
     if (result.code && !allowFailure) throw new Error(`Git ${args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
     return result;
   }
@@ -184,13 +186,39 @@ export class WorkflowWorkspaces {
     return screen;
   }
   private async screenTree(repo: string, head: string, signal: AbortSignal): Promise<void> {
-    const tree = (await this.git(repo, ['ls-tree', '-r', '-z', head], signal)).stdout;
-    if (tree.split('\0').some(entry => entry.startsWith('160000 '))) throw new Error('Workspace v1 does not support submodules');
-    const attributes = tree.split('\0').map(line => line.slice(line.indexOf('\t') + 1)).filter(path => path === '.gitattributes' || path.endsWith('/.gitattributes'));
+    // The listing grows with the repository, so its entries are screened as Git prints them and none are held.
+    const attributes: string[] = [];
+    await this.git(repo, ['ls-tree', '-r', '-z', head], signal, false, undefined, { scan: records(entry => {
+      if (entry.startsWith('160000 ')) throw new Error('Workspace v1 does not support submodules');
+      const path = entry.slice(entry.indexOf('\t') + 1);
+      if (path === '.gitattributes' || path.endsWith('/.gitattributes')) attributes.push(path);
+    }) });
     for (const path of attributes) {
       const text = (await this.git(repo, ['show', `${head}:${path}`], signal)).stdout;
       if (/\bfilter\s*=/.test(text)) throw new Error('Workspace v1 does not support checkout filters or Git LFS');
     }
+  }
+  /**
+   * What `git status` reports in a checkout: how many entries, and the first few. A directory nobody ignored can hold
+   * more untracked files than this service lists at once, so the entries are counted as Git prints them.
+   */
+  private async status(path: string, signal: AbortSignal, untracked: 'all' | 'no' = 'all'): Promise<{ count: number; first: string[] }> {
+    const first: string[] = [];
+    let count = 0;
+    await this.git(path, ['status', '--porcelain', `--untracked-files=${untracked}`], signal, false, undefined,
+      { scan: records(line => { if (line.trim() && count++ < 5) first.push(line.trim().slice(0, 200)); }, '\n') });
+    return { count, first };
+  }
+  /**
+   * The paths that differ between two commits and match a pattern: how many, and the first of them. A large change
+   * names more paths than this service lists at once, so they are matched as Git prints them.
+   */
+  private async touched(cwd: string, from: string, to: string, patterns: RegExp[], signal: AbortSignal): Promise<{ count: number; files: string[] }> {
+    const files: string[] = [];
+    let count = 0;
+    if (patterns.length) await this.git(cwd, ['diff', '--name-only', '--no-renames', '-z', from, to], signal, false, undefined,
+      { scan: records(file => { if (patterns.some(pattern => pattern.test(file)) && count++ < 64) files.push(file); }) });
+    return { count, files };
   }
   /** The checkout worktrees are made from: the workflow's cwd, or the root of another checkout the script names. */
   private async repository(root: WorkflowRoot, signal: AbortSignal, repo?: unknown): Promise<{ repository: string; commonDir: string }> {
@@ -267,7 +295,7 @@ export class WorkflowWorkspaces {
   }
   async clean(ws: WorkspaceBinding, signal: AbortSignal): Promise<{ headCommit: string; tree: string }> {
     const headCommit = await this.revision(ws.path, undefined, signal);
-    if ((await this.git(ws.path, ['status', '--porcelain', '--untracked-files=all'], signal)).stdout.trim()) throw new Error('Workspace has uncommitted or untracked changes; commit the intended changes before freezing or validating');
+    if ((await this.status(ws.path, signal)).count) throw new Error('Workspace has uncommitted or untracked changes; commit the intended changes before freezing or validating');
     for (const name of ['MERGE_HEAD', 'CHERRY_PICK_HEAD']) {
       if (!(await this.git(ws.path, ['rev-parse', '--verify', name], signal, true)).code) throw new Error('Workspace still has an unfinished Git operation');
     }
@@ -408,9 +436,9 @@ export class WorkflowWorkspaces {
       if (prior.repository) seed = { repository: prior.repository, commonDir: prior.commonDir, baseCommit: prior.baseCommit };
       else {
         const repo = await this.repository(ctx.state.root, ctx.signal, args.repo);
-        const dirty = (await this.git(repo.repository, ['status', '--porcelain', '--untracked-files=all'], ctx.signal)).stdout.split('\n').filter(line => line.trim());
+        const dirty = await this.status(repo.repository, ctx.signal);
         // Whoever is refused is often not who left the files there: it is told which ones stand in the way and where.
-        if (dirty.length) throw new Error(`Authorized checkout has uncommitted changes (${dirty.slice(0, 5).map(line => line.trim().slice(0, 200)).join(', ')}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ''}, in ${repo.repository}); choose a clean committed baseline first`);
+        if (dirty.count) throw new Error(`Authorized checkout has uncommitted changes (${dirty.first.join(', ')}${dirty.count > 5 ? `, and ${dirty.count - 5} more` : ''}, in ${repo.repository}); choose a clean committed baseline first`);
         // A clone reads the source's objects from disk; ones a partial clone would fetch on demand are not there.
         if (isolation.isolation && (await this.git(repo.repository, ['config', '--get-regexp', '^(extensions\\.partialclone|remote\\..*\\.promisor)$'], ctx.signal, true)).stdout.trim()) throw new Error('Clone workspaces do not support partial-clone repositories');
         seed = { ...repo, baseCommit: await this.revision(repo.repository, args.base, ctx.signal) }; this.save(op, seed);
@@ -458,10 +486,12 @@ export class WorkflowWorkspaces {
         const linearBase = integration?.headCommit ?? ws.baseCommit;
         if ((await this.git(ws.path, ['merge-base', '--is-ancestor', linearBase, pinned.headCommit], ctx.signal, true)).code) throw new Error('Repair must descend from the prepared integration');
         if ((await this.git(ws.path, ['rev-list', '--min-parents=2', `${linearBase}..${pinned.headCommit}`], ctx.signal)).stdout.trim()) throw new Error('Workspace candidates must have linear history');
-        await this.git(ws.path, ['diff', '--check', ws.baseCommit, pinned.headCommit], ctx.signal);
-        const diff = (await this.git(ws.path, ['diff', '--binary', ws.baseCommit, pinned.headCommit], ctx.signal)).stdout;
+        await this.git(ws.path, ['diff', '--check', ws.baseCommit, pinned.headCommit], ctx.signal, false, undefined, { keep: 'head' });
+        // The diff is as large as the change; only its digest is recorded, so it is hashed as Git prints it.
+        const diff = createHash('sha256');
+        await this.git(ws.path, ['diff', '--binary', ws.baseCommit, pinned.headCommit], ctx.signal, false, undefined, { scan: chunk => { diff.update(chunk); } });
         const files = (await this.git(ws.path, ['diff', '--name-only', '-z', ws.baseCommit, pinned.headCommit], ctx.signal)).stdout.split('\0').filter(Boolean);
-        const change = this.internal<WorkspaceChange>(op, 'change', 'change', id => ({ id, workspaceId: ws.id, baseCommit: ws.baseCommit, ...pinned, diffDigest: workflowDigest(diff), files }));
+        const change = this.internal<WorkspaceChange>(op, 'change', 'change', id => ({ id, workspaceId: ws.id, baseCommit: ws.baseCommit, ...pinned, diffDigest: diff.digest('hex'), files }));
         if (change.headCommit !== pinned.headCommit) throw new Error('Workspace changed during recovery; use a new freeze key');
         await this.git(ws.repository, ['update-ref', `refs/bridge-workflow/${op.workflow}/changes/${change.id}`, change.headCommit], ctx.signal);
         return change;
@@ -565,7 +595,7 @@ export class WorkflowWorkspaces {
       const ws = this.value<WorkspaceBinding>(change.workspaceId, op.workflow, 'workspace');
       if (ws.commonDir !== repo.commonDir) throw new Error('Integration candidates belong to another repository');
       if ((await this.git(repo.repository, ['merge-base', '--is-ancestor', change.baseCommit, head], ctx.signal, true)).code) throw new Error('Integration lacks the candidate baseline/dependencies');
-      const merged = await this.git(repo.repository, ['merge-tree', '--write-tree', head, change.headCommit], ctx.signal, true);
+      const merged = await this.git(repo.repository, ['merge-tree', '--write-tree', head, change.headCommit], ctx.signal, true, undefined, { keep: 'head' });
       const tree = merged.stdout.split('\n')[0]!;
       if (![0, 1].includes(merged.code) || !SHA.test(tree)) throw new Error('Git merge-tree failed; Git 2.38 or newer is required');
       head = (await this.git(repo.repository, ['commit-tree', tree, '-p', head, ...(change.headCommit === head ? [] : ['-p', change.headCommit]), '-m', `Workflow ${op.id}: candidate ${change.id}`], ctx.signal, false, identity)).stdout.trim();
@@ -610,8 +640,9 @@ export class WorkflowWorkspaces {
   private async run(path: string, commands: WorkspaceCommands, signal: AbortSignal, deadlineAt: number): Promise<WorkspaceChecks['commands']> {
     const results: WorkspaceChecks['commands'] = [];
     for (const command of commands) {
+      // Only the end of a check's output is reported, so only that is held: a build may print as much as it likes.
       const result = await workspaceCommand(command.argv[0]!, command.argv.slice(1), path, signal,
-        Math.max(1, Math.min(command.timeoutMs, deadlineAt - Date.now())), gitEnv(), this.processes);
+        Math.max(1, Math.min(command.timeoutMs, deadlineAt - Date.now())), gitEnv(), this.processes, { keep: 'tail' });
       results.push({ argv: command.argv, code: result.code, stdout: result.stdout.slice(-16000), stderr: result.stderr.slice(-16000) });
       if (result.code) break;
     }
@@ -665,18 +696,17 @@ export class WorkflowWorkspaces {
     if (await ancestor(before.headCommit, targetCommit)) return nothing;
     if (!await ancestor(targetCommit, before.headCommit)) {
       const undo = () => this.git(ws.path, ['rebase', '--abort'], new AbortController().signal, true);
-      const rebased = await this.git(ws.path, [...await this.identity(ws.path, signal), 'rebase', targetCommit], signal, true).catch(async error => { await undo(); throw error; });
+      const rebased = await this.git(ws.path, [...await this.identity(ws.path, signal), 'rebase', targetCommit], signal, true, undefined, { keep: 'tail' }).catch(async error => { await undo(); throw error; });
       if (rebased.code) await undo();
       if (rebased.code) return { status: 'conflict', targetRef, targetCommit, detail: (rebased.stdout + rebased.stderr).slice(-4000) };
     }
     const pinned = await this.clean(ws, signal);
     if (pinned.headCommit === targetCommit) return nothing;
     if (landing.protect) {
-      const changed = (await this.git(ws.path, ['diff', '--name-only', '--no-renames', '-z', targetCommit, pinned.headCommit], signal)).stdout.split('\0').filter(Boolean);
       const barred = landing.protect.filter(rule => !rule.allow.includes(ws.id)).flatMap(rule => rule.paths.map(pathPattern));
-      const files = changed.filter(file => barred.some(pattern => pattern.test(file)));
-      if (files.length) return { status: 'rejected', targetRef, targetCommit, files: files.slice(0, 64),
-        reason: `${files.length} changed path(s) are protected from this worktree; resubmit commits that leave them as they are on the landing branch` };
+      const { count, files } = await this.touched(ws.path, targetCommit, pinned.headCommit, barred, signal);
+      if (count) return { status: 'rejected', targetRef, targetCommit, files,
+        reason: `${count} changed path(s) are protected from this worktree; resubmit commits that leave them as they are on the landing branch` };
     }
     if (landing.precheck) {
       const commands = tail(await this.run(ws.path, landing.precheck, signal, ctx.state.deadlineAt));
@@ -805,10 +835,9 @@ export class WorkflowWorkspaces {
     const halt = (reason: string) => { this.putHead(ws, { targetRef, head: known.head, halt: { head: current, reason } }); return stopped(reason); };
     if (!current) return halt('the landing branch was deleted');
     if ((await this.git(ws.repository, ['merge-base', '--is-ancestor', known.head, current], signal, true)).code) return halt(`the branch no longer contains ${short(known.head)}, so landed work is missing from it`);
-    const changed = (await this.git(ws.repository, ['diff', '--name-only', '--no-renames', '-z', known.head, current], signal)).stdout.split('\0').filter(Boolean);
     const barred = (landing.protect ?? []).flatMap(rule => rule.paths.map(pathPattern));
-    const files = changed.filter(file => barred.some(pattern => pattern.test(file)));
-    if (files.length) return halt(`the outside commits change protected paths (${files.slice(0, 8).join(', ')}${files.length > 8 ? ', …' : ''})`);
+    const hit = await this.touched(ws.repository, known.head, current, barred, signal);
+    if (hit.count) return halt(`the outside commits change protected paths (${hit.files.slice(0, 8).join(', ')}${hit.count > 8 ? ', …' : ''})`);
     await this.park(path, current, signal);
     const commands = [...landing.precheck ?? [], ...landing.commands];
     const results = await this.run(path, commands, signal, deadlineAt);
@@ -857,7 +886,7 @@ export class WorkflowWorkspaces {
       await at(commit);
       const commands = tail(await this.run(path, landing.commands, signal, deadlineAt));
       if (commands.length !== landing.commands.length || commands.some(result => result.code)) return { commands };
-      if ((await this.git(path, ['status', '--porcelain', '--untracked-files=all'], signal)).stdout.trim()) return { commands, reason: 'Checks left uncommitted or untracked files in the worktree' };
+      if ((await this.status(path, signal)).count) return { commands, reason: 'Checks left uncommitted or untracked files in the worktree' };
       if (await this.revision(path, undefined, signal) !== commit) return { commands, reason: 'Checks changed the worktree HEAD' };
       return undefined;
     };
@@ -885,16 +914,17 @@ export class WorkflowWorkspaces {
   private async stack(path: string, head: string, candidate: Candidate, identity: string[], signal: AbortSignal): Promise<string | undefined> {
     // Nothing landed since the member rebased: its commits go on as they are.
     if (candidate.base === head) { await this.git(path, ['reset', '--hard', '--quiet', candidate.head], signal); return undefined; }
-    let picked = await this.git(path, [...identity, 'cherry-pick', '--allow-empty', `${candidate.base}..${candidate.head}`], signal, true);
+    // A pick prints a line for every file its commits add; only the end of that is read, and only when it stops.
+    let picked = await this.git(path, [...identity, 'cherry-pick', '--allow-empty', `${candidate.base}..${candidate.head}`], signal, true, undefined, { keep: 'tail' });
     for (let skipped = 0; picked.code; skipped++) {
       // A commit the branch already holds stops the pick with nothing to commit: skip it. Anything else is a conflict.
       const stopped = !(await this.git(path, ['rev-parse', '--verify', '--quiet', 'CHERRY_PICK_HEAD'], signal, true)).code;
-      const dirty = (await this.git(path, ['status', '--porcelain', '--untracked-files=no'], signal)).stdout.trim();
+      const dirty = (await this.status(path, signal, 'no')).count;
       if (!stopped || dirty || skipped > candidate.commits) {
         await this.git(path, ['cherry-pick', '--abort'], signal, true);
         return (picked.stdout + picked.stderr).slice(-4000);
       }
-      picked = await this.git(path, [...identity, 'cherry-pick', '--skip'], signal, true);
+      picked = await this.git(path, [...identity, 'cherry-pick', '--skip'], signal, true, undefined, { keep: 'tail' });
     }
     return undefined;
   }
@@ -991,7 +1021,7 @@ export class WorkflowWorkspaces {
     const results = tail(await this.run(path, commands, signal, deadlineAt));
     const refusal = (reason: string) => ({ repository: ws.repository, headCommit: head, reason, commands: results });
     if (results.length !== commands.length || results.some(result => result.code)) return refusal('The landing branch fails these commands as it is, so every submission would be blamed for it. Nothing was changed: land the repair under the current checks first, then change them.');
-    if ((await this.git(path, ['status', '--porcelain', '--untracked-files=all'], signal)).stdout.trim()) return refusal('The commands left uncommitted or untracked files in the worktree; every landing would fail for that. Nothing was changed.');
+    if ((await this.status(path, signal)).count) return refusal('The commands left uncommitted or untracked files in the worktree; every landing would fail for that. Nothing was changed.');
     return undefined;
   }
   private async settle(ws: WorkspaceBinding, targetRef: string, action: 'restore' | 'adopt', signal: AbortSignal): Promise<NonNullable<LandingChange['settled']>[number] | undefined> {
