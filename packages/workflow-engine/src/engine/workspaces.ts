@@ -17,6 +17,12 @@ const BUSY = new Set(['queued', 'starting', 'running', 'cancelling', 'waiting_wo
 /** A check command runs foreground work that competes with every other worker on the host: five minutes unless it is asked for more, at most four hours, and never past the workflow deadline. */
 const CHECK_TIMEOUT_DEFAULT_MS = 300_000;
 const CHECK_TIMEOUT_MAX_MS = 4 * 3_600_000;
+/**
+ * Every Git command here runs against a local checkout, but creating a worktree writes a whole checkout's files and
+ * screening or reading it walks the tree, both of which scale with the repository and its filesystem. One hour
+ * bounds a hung Git without failing a large repository on a network filesystem.
+ */
+const GIT_TIMEOUT_MS = 3_600_000;
 // Git registers a new worktree in several steps. Concurrent commands can observe a partial entry.
 const worktreeCommands = new Map<string, Promise<CommandResult>>();
 /** The checkout a clone was made from, as the clone's remote. */
@@ -151,7 +157,7 @@ export class WorkflowWorkspaces {
     // Git's own options (`-c name=value`) come before the subcommand.
     const name = `git ${args.find((arg, at) => !arg.startsWith('-') && args[at - 1] !== '-c') ?? ''}`.trim();
     const result = await workspaceCommand('git', ['-c', `core.hooksPath=${hooks}`, '-c', 'core.fsmonitor=false',
-      '-c', 'gc.auto=0', ...args], cwd, signal, 60_000, { ...gitEnv(), ...env }, this.processes, { name, ...output });
+      '-c', 'gc.auto=0', ...args], cwd, signal, GIT_TIMEOUT_MS, { ...gitEnv(), ...env }, this.processes, { name, ...output });
     if (result.code && !allowFailure) throw new Error(`Git ${args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
     return result;
   }

@@ -61,7 +61,7 @@ export const MAX_WORKSPACE_RECORDS = 16_384;
  * New worktrees whose files are written at once. Git registers a worktree in a few steps, so registration stays
  * serialized per repository; writing the checked-out files is the expensive part and runs in this many slots.
  */
-export const WORKSPACE_CHECKOUT_SLOTS = 16;
+export const WORKSPACE_CHECKOUT_SLOTS = 64;
 
 export const MAILBOX_MAX_MESSAGES = 4096;
 export const MAILBOX_MAX_OPERATIONS = 8192;
