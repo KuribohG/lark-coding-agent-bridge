@@ -191,8 +191,10 @@ team is pinned automatically; `--team-id` adds an additional expected-team
 check. Slack users cannot select a local workspace, executable, permission mode,
 or system prompt.
 
-The channel supports `/help [command]`, `/status`, `/stop`, `/new`, and `/model`
-in text. Slash command names, aliases, argument modes and help text come from the
+The channel supports `/help [command]`, `/status`, `/stop`, `/new`, `/model`
+and `/effort` in text; the last two show or set the thread's model and
+reasoning effort (`/model <model|default> [effort]`, `/effort <level|default>`),
+from its next run on. Slash command names, aliases, argument modes and help text come from the
 shared command catalog in `src/commands/catalog.ts`, and the handlers in
 `src/commands/conversation.ts` need only a `ConversationRuntime`, so any
 runtime-backed front end exposes them; Slack supplies the reply surface through
@@ -307,13 +309,34 @@ the reply to show, or `undefined` when it queued a turn. Workflow turns wait
 behind the conversation's active run, and a worker's report wakes the main
 session on its own; both appear in the event stream like any submitted run.
 Workflow state lives in `workflows.sqlite` in the runtime's state directory.
-These hosts keep no per-conversation model choice, so a workflow runs with the
-engine profile's model. The `web` command enables this; Web accepts the command
+The `web` command enables this; Web accepts the command
 as `POST /api/command` (`{ conversationId, text: "/workflow …" }`).
 
+With `modelChoice` the runtime keeps a model, model service and reasoning effort
+per conversation and engine, in `scope-preferences.json` in its state directory:
+`modelSettings(identity)` says what the next run uses and where each value comes
+from (the conversation, the engine profile, or the engine's own configuration),
+`setModelSettings(identity, patch)` changes the conversation's choice (a value
+sets it, `null` returns it to the default) and refuses a model and effort that
+do not go together, and `modelChoices(identity)` lists the models, model
+services (`modelChoice.providers`) and efforts to choose from. A run that is
+going keeps what it started with; a workflow runs with its conversation's
+choice. `engine(identity, kind)` says whether an engine can be used on this
+machine. Without `modelChoice` every conversation runs with its engine
+profile's settings and `setModelSettings` refuses. The `web` and `slack`
+commands enable it.
+
+`rawThinking` asks engines for the model's own thinking where they otherwise
+keep it back (Claude Code's thinking blocks). It is for a host that folds
+reasoning away until someone asks for it, as the Web page does; shown in line
+it buries the answer, so Lark and Slack leave it off.
+
+Every `run.started` event carries `settings`: the engine, and the model and
+effort where the bridge chose them.
+
 Web also takes the shared conversation commands there: `/help`, `/new`,
-`/status`, `/stop` and `/model` run without starting a run, and the reply comes
-back as `{ reply }` text. `src/channels/web/command-channel.ts` collects what
+`/status`, `/stop`, `/model` and `/effort` run without starting a run, and the
+reply comes back as `{ reply }` text. `src/channels/web/command-channel.ts` collects what
 the shared handler says instead of posting it; the Markdown form goes into the
 conversation's record.
 
@@ -329,8 +352,11 @@ The chat page keeps nothing but its settings and unsent drafts in the browser.
 `src/channels/web/transcript.ts` records every conversation under
 `<state-dir>/web-chat`: `index.json` lists the conversations (title, pinned,
 last activity, the run that is going), and each conversation is an append-only
-JSONL file of items — what the person sent, each run with its blocks, notices
-and questions. The record is fed by the runtime's `observe` hook and by the
+JSONL file of items — what the person sent, each run with its blocks and what
+it was started with (engine, model, effort), notices and questions. A run's
+blocks are in the order things happened: text, tool calls, and each stretch of
+the model's reasoning where it came (the runtime keeps reasoning as one text
+apart from the blocks; the record notes where each addition arrived). The record is fed by the runtime's `observe` hook and by the
 `POST` handlers, so a conversation reads the same from any browser and after a
 restart. A run that was going when the service stopped is shown as interrupted.
 Long tool input and output are clipped in the record; the agent's own session
@@ -340,11 +366,15 @@ The page reads through these routes, all behind the same token:
 
 | Route | Returns |
 |---|---|
-| `GET /api/meta` | Version, workspace, default and available engines, display settings, whether workflows are on, the slash commands |
+| `GET /api/meta` | Version, the page's build, workspace, default and available engines, display settings, whether workflows are on, the slash commands |
 | `GET /api/conversations` | The conversations, pinned first, then by last activity |
 | `GET /api/stream[?conversationId=…&epoch=…&since=…&tail=…]` | NDJSON, open until the client disconnects: the conversation list whenever it changes, and the items of the one conversation the page shows |
 | `GET /api/items?conversationId=…&before=…[&limit=…]` | An older page of that conversation's items |
-| `GET /api/state?conversationId=…` | Engine, active run, working directory, model and effort |
+| `GET /api/state[?conversationId=…]` | Engine, active run, working directory; the model, model service and effort of the next run, where each comes from (`sources`), and what the conversation chose itself (`overrides`). Without a conversation: what a new one would begin with |
+| `GET /api/models?agent=…[&conversationId=…&refresh=1]` | The models, model services and efforts to choose from for an engine, and what a conversation that chose nothing runs with |
+| `GET /api/engines` | Each engine with whether it can be used on this machine, and why not |
+| `POST /api/engine` | `{ conversationId, agent }`; refused with 409 while a run is going |
+| `POST /api/model` | `{ conversationId[, agent], model?, provider?, effort? }`: a string chooses, `null` returns to the default, an absent key is left alone. Answers like `GET /api/state`; 400 with the reason when the choice cannot be used |
 | `GET /api/workflows?conversationId=…`, `GET /api/workflows/…` | The conversation's workflows, then the read-only [dashboard API](workflow-dashboard.md) for one of them; 404 unless workflows are on |
 | `POST /api/conversation`, `POST /api/conversation/delete` | Rename or pin (`{ conversationId, title?, pinned? }`); delete, refused with 409 while a run is going |
 
@@ -353,13 +383,21 @@ a browser allows few connections to a host. Within a conversation every change
 has a revision. The stream opens with `{ type: 'open', epoch, reset }`, sends
 the items the client is missing, then `ready`, then live changes: a whole
 `item` when one appears or settles, and for a run that is going a `run` patch
-holding only the blocks from the first changed one. A patch names the revision
+holding only the blocks from the first changed one — and, when that block is
+text or reasoning that grew at its end, only what was added (`keep` says how
+much of it the client already has). A patch names the revision
 it builds on; a client that does not hold that revision reconnects with its
 cursor (`epoch` and `since`) and is sent the items again. `epoch` changes when
 the service restarts or the record is rewritten, and the client then starts
 from the tail. `messageId` on `POST /api/send` becomes the key of the recorded
 message, so the page can show it before the server confirms it and a retry is
-not recorded twice.
+not recorded twice. `open` also names the build of the page the server serves;
+a page that holds another build offers to reload.
+
+What the person last chose in the page — the engine, and each engine's model
+and effort — is kept in `<state-dir>/web-chat/defaults.json`. A conversation is
+given it when it begins (its first message, command or choice) and keeps its
+own from then on, so a later choice elsewhere does not change it.
 
 The page itself is a React app in `web/chat`, built by Vite into one
 self-contained HTML file that tsup inlines into the bundle, like the console.

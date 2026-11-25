@@ -1,4 +1,4 @@
-import type { Conversation, ConversationState, Meta, TranscriptItem } from './types';
+import type { Conversation, ConversationState, EngineInfo, Meta, ModelChoices, TranscriptItem } from './types';
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -48,8 +48,17 @@ export class Api {
   }
 
   meta = () => this.request<Meta>('api/meta');
-  state = (conversationId: string, signal?: AbortSignal) =>
-    this.request<ConversationState>(`api/state?conversationId=${encodeURIComponent(conversationId)}`, undefined, signal);
+  /** Without a conversation: what one that has not been started yet would begin with. */
+  state = (conversationId?: string, signal?: AbortSignal) =>
+    this.request<ConversationState>(`api/state${conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''}`, undefined, signal);
+  models = (conversationId: string | undefined, agent: string, refresh = false, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ agent, ...(conversationId ? { conversationId } : {}), ...(refresh ? { refresh: '1' } : {}) });
+    return this.request<ModelChoices>(`api/models?${query}`, undefined, signal);
+  };
+  engines = (signal?: AbortSignal) => this.request<{ engines: EngineInfo[] }>('api/engines', undefined, signal);
+  /** A string chooses, `null` goes back to the default, an absent key leaves it as it is. */
+  setModel = (conversationId: string, change: { agent?: string; model?: string | null; provider?: string | null; effort?: string | null }) =>
+    this.request<ConversationState>('api/model', { conversationId, ...change });
   items = (conversationId: string, before: number, limit = 60) =>
     this.request<{ items: TranscriptItem[]; more: boolean }>(`api/items?conversationId=${encodeURIComponent(conversationId)}&before=${before}&limit=${limit}`);
   send = (conversationId: string, text: string, messageId: string) =>

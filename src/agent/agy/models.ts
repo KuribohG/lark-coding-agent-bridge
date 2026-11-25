@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { stripVTControlCharacters } from 'node:util';
-import type { ProfileConfig } from '../../config/profile-schema';
+import type { AgentExecutionProfile } from '../../config/profile-schema';
 import { spawnProcess, mergeProcessEnv } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
 import { buildAgentEnvironment } from '../launch-env';
@@ -22,7 +22,7 @@ export function parseAgyModels(text: string): ModelOption[] {
   return [...models.values()];
 }
 
-export async function readAgyModels(profile: ProfileConfig): Promise<ModelEnvironment> {
+export async function readAgyModels(profile: AgentExecutionProfile): Promise<ModelEnvironment> {
   const binary = profile.agy?.binaryPath ?? 'agy';
   const env = mergeProcessEnv(process.env, buildAgentEnvironment({}, profile.agy?.env, process.env, profile.agy?.unsetEnv));
   const key = createHash('sha256').update(JSON.stringify([binary, env])).digest('hex');

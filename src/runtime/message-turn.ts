@@ -70,6 +70,7 @@ export interface PreparedMessageTurn {
     deadlineAt?: number;
     userQuestions?: boolean;
     answerIncludesInterimText?: boolean;
+    rawThinking?: boolean;
     context1m?: boolean;
     additionalDirs?: readonly string[];
     /** Trusted per-run bindings (e.g. the conversation this turn belongs to). */
@@ -191,6 +192,7 @@ export async function startMessageTurn<M, T extends MessageTurn<M>>(
     ...(prepared.runOptions?.answerIncludesInterimText !== undefined
       ? { answerIncludesInterimText: prepared.runOptions.answerIncludesInterimText }
       : {}),
+    ...(prepared.runOptions?.rawThinking ? { rawThinking: true } : {}),
     ...(prepared.runOptions?.context1m !== undefined ? { context1m: prepared.runOptions.context1m } : {}),
     ...(prepared.runOptions?.additionalDirs ? { additionalDirs: prepared.runOptions.additionalDirs } : {}),
     host: turn.host,

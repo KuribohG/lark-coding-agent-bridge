@@ -90,18 +90,34 @@ describe('Web chat transcripts', () => {
     expect(page.events.map(event => event.type)).toEqual(['open', 'item', 'ready']);
     expect(page.events[0]).toMatchObject({ reset: true, epoch: h.transcripts.epoch });
 
-    h.observe('c1', { type: 'run.started', runId: 'r1' });
-    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([text('Looking', true)], { reasoning: { content: 'First, ', active: true } }) });
-    // Several states within one flush reach the followers as the latest of them.
-    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([text('Looking.'), tool('t1', 'running')], { reasoning: { content: 'First, the files.', active: false } }) });
+    const thought = (content: string, active = false) => ({ reasoning: { content, active } });
+    h.observe('c1', { type: 'run.started', runId: 'r1', settings: { agent: 'claude', model: 'm1', effort: 'high' } });
+    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([], thought('First, ', true)) });
     await h.settled('c1');
     expect(h.transcripts.get('c1')).toMatchObject({ activeRunId: 'r1' });
-    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([text('Looking.'), tool('t1', 'done', 'ok'), text('Done', true)], { reasoning: { content: 'First, the files.', active: false } }) });
+    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([], thought('First, the files.', true)) });
+    await h.settled('c1');
+    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([text('Looking', true)], thought('First, the files.')) });
+    // Several states within one flush reach the followers as the latest of them.
+    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([text('Looking.'), tool('t1', 'running')], thought('First, the files.')) });
+    await h.settled('c1');
+    // What the run thinks after a tool call stands after it, though only the first of these two states says so.
+    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([text('Looking.'), tool('t1', 'done', 'ok')], thought('First, the files.Then the answer.', true)) });
+    h.observe('c1', { type: 'run.state', runId: 'r1', state: state([text('Looking.'), tool('t1', 'done', 'ok'), text('Done', true)], thought('First, the files.Then the answer.')) });
     const items = await h.settled('c1');
 
     const patches = page.events.filter(event => event.type === 'run');
-    expect(patches.map(patch => [patch.from, patch.blocks.length, patch.reasoningFrom])).toEqual([[0, 2, 0], [1, 2, 'First, the files.'.length]]);
-    expect(patches[1]!.state.reasoning.content).toBe('');
+    expect(patches.map(patch => [patch.from, patch.blocks.length, patch.keep])).toEqual([[0, 1, undefined], [0, 1, 'First, '.length], [0, 3, undefined], [2, 3, undefined]]);
+    // Streamed reasoning and text are sent as what was added.
+    expect(patches[1]!.blocks[0]).toEqual({ kind: 'reasoning', content: 'the files.', active: true });
+    expect(patches.every(patch => patch.state.reasoning.content === '')).toBe(true);
+    expect(patches[0]).toMatchObject({ settings: { agent: 'claude', model: 'm1', effort: 'high' } });
+    const run = items.at(-1) as Extract<TranscriptItem, { kind: 'run' }>;
+    expect(run.settings).toEqual({ agent: 'claude', model: 'm1', effort: 'high' });
+    expect(run.state.blocks).toEqual([
+      { kind: 'reasoning', content: 'First, the files.' }, text('Looking.'), tool('t1', 'done', 'ok'),
+      { kind: 'reasoning', content: 'Then the answer.' }, text('Done', true),
+    ]);
     expect(page.missed()).toBe(0);
     expect(page.view().items).toEqual(items);
     expect(page.view().rev).toBe(items.at(-1)!.rev);
@@ -171,6 +187,26 @@ describe('Web chat transcripts', () => {
     const output = (items[0] as { state: RunState }).state.blocks[0] as { tool: { output: string } };
     expect(output.tool.output.length).toBeLessThan(9_000);
     expect(output.tool.output).toContain('省略');
+  });
+
+  it('bounds a long stretch of reasoning so that it still reaches its followers as what was added', async () => {
+    const h = await store();
+    const page = follower();
+    const stop = await h.transcripts.follow('c1', {}, page.listener);
+    const thinking = (length: number) => ({ type: 'run.state' as const, runId: 'r1', state: state([], { reasoning: { content: 'x'.repeat(length), active: true } }) });
+    h.observe('c1', { type: 'run.started', runId: 'r1' });
+    for (const length of [20_000, 30_500, 31_000, 31_500, 40_000]) { h.observe('c1', thinking(length)); await h.settled('c1'); }
+    const patches = page.events.filter(event => event.type === 'run');
+    const sizes = patches.map(patch => (patch.blocks[0] as { content: string }).content.length);
+    // Past the bound a stretch is cut in its middle; until the cut moves, only its end is sent.
+    expect(patches.map(patch => patch.keep !== undefined)).toEqual([false, false, true, true, false]);
+    expect(sizes.slice(2, 4)).toEqual([500, 500]);
+    expect(Math.max(sizes[1]!, sizes[4]!)).toBeLessThan(24_100);
+    const held = (page.view().items.at(-1) as Extract<TranscriptItem, { kind: 'run' }>).state.blocks[0] as { content: string };
+    expect(held.content).toMatch(/^x{12000}\n… 省略 \d+ 个字符 …\nx+$/);
+    expect(page.view().items).toEqual(await h.settled('c1'));
+    expect(page.missed()).toBe(0);
+    stop();
   });
 
   it('renames, pins and removes a conversation, telling whoever watches the list and whoever follows it', async () => {
@@ -244,11 +280,14 @@ describe('the page\'s view of a conversation', () => {
     const run: PageEvent = { type: 'item', item: { kind: 'run', key: 'r1', runId: 'r1', ord: 0, rev: 4, at: 1,
       state: { blocks: [{ kind: 'text', content: 'a', streaming: true }], reasoning: { content: '', active: false }, footer: 'streaming', terminal: 'running' } } };
     const view = applyEvent(emptyTranscript, run);
-    const patch: PageEvent = { type: 'run', key: 'r1', runId: 'r1', at: 1, rev: 9, base: 7, from: 0, blocks: [], reasoningFrom: 0,
+    const patch: PageEvent = { type: 'run', key: 'r1', runId: 'r1', at: 1, rev: 9, base: 7, from: 0, blocks: [],
       state: { reasoning: { content: '', active: false }, footer: null, terminal: 'done' } };
     expect(missedPatch(view, patch)).toBe(true);
     expect(applyEvent(view, patch)).toBe(view);
     expect(missedPatch(view, { ...patch, base: 4 })).toBe(false);
     expect(applyEvent(view, { ...patch, base: 4 }).items[0]).toMatchObject({ rev: 9, state: { blocks: [], terminal: 'done' } });
+    // A block that grew is sent as what was added to it.
+    const grown = applyEvent(view, { ...patch, base: 4, keep: 1, blocks: [{ kind: 'text', content: 'bc', streaming: true }, { kind: 'reasoning', content: 'why' }] });
+    expect(grown.items[0]).toMatchObject({ state: { blocks: [{ kind: 'text', content: 'abc', streaming: true }, { kind: 'reasoning', content: 'why' }] } });
   });
 });

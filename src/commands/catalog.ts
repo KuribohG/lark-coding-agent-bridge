@@ -41,8 +41,8 @@ export const commandDefinitions = [
     '`/config reload` — 立即重载配置文件并报告生效情况（文件修改平时自动加载）',
   ] },
   { name: 'model', aliases: ['provider'], access: 'user', pending: 'preserve', arguments: 'verbatim', channels: ['lark', 'slack', 'web'], channelHelp: {
-    slack: ['`/model` — show the current engine'],
-    web: ['`/model` — show the current engine'],
+    slack: ['`/model [model|default] [effort]` — show or set this thread\'s model and effort'],
+    web: ['`/model [model|default] [effort]` — show or set this conversation\'s model and effort'],
   }, help: [
     '`/model [模型名|default] [强度] [任务]` — 当前话题/聊天的模型和强度；带任务时切换后立即执行',
     '`/provider` — 打开 Provider 与模型切换卡片',
@@ -50,7 +50,10 @@ export const commandDefinitions = [
   { name: 'agent', access: 'user', pending: 'preserve', arguments: 'verbatim', help: [
     '`/agent [claude|codex|…|default] [模型名|default] [强度] [任务]` — 当前话题/聊天的执行引擎，各引擎上下文独立；带任务时切换后立即执行',
   ] },
-  { name: 'effort', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/effort [强度|default]` — 当前话题/聊天的思考强度；全局默认用 `/config run`'] },
+  { name: 'effort', access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack', 'web'], channelHelp: {
+    slack: ['`/effort [level|default]` — show or set this thread\'s reasoning effort'],
+    web: ['`/effort [level|default]` — show or set this conversation\'s reasoning effort'],
+  }, help: ['`/effort [强度|default]` — 当前话题/聊天的思考强度；全局默认用 `/config run`'] },
   { name: 'status', access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack', 'web'], channelHelp: {
     slack: ['`/status` — show engine and run state'],
     web: ['`/status` — show engine and run state'],

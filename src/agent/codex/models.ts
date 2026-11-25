@@ -2,12 +2,12 @@ import { resolveAgentState } from '../state-layout';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parse } from 'smol-toml';
-import type { ProfileConfig } from '../../config/profile-schema';
+import type { AgentExecutionProfile } from '../../config/profile-schema';
 import { readOptional } from '../model-files';
 import { parseEffort, REASONING_EFFORTS, type ReasoningEffort, type ModelSettings, type ModelEnvironment } from '../model-settings';
 import { supportedModels, validateModelId, type ModelOption } from '../models';
 
-export async function readCodexModels(profile: ProfileConfig, profileDir: string): Promise<ModelEnvironment> {
+export async function readCodexModels(profile: AgentExecutionProfile, profileDir: string): Promise<ModelEnvironment> {
   const fallback = { defaults: {}, models: supportedModels('codex') };
   const codex = profile.codex;
   const codexHome = resolveAgentState(profile, 'codex', { profileDir }).home!;

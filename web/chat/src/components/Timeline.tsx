@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, LoaderCircle } from 'lucide-react';
 import { cn } from '@shared/cn';
 import { Button } from '@shared/ui/button';
@@ -29,6 +29,19 @@ export function Timeline({ onRetry }: { onRetry(text: string): void }) {
   }, []);
 
   useEffect(() => { pinned.current = true; setAway(false); }, [conversationId]);
+
+  // The runs that used something else than the run before them, which the conversation marks.
+  const switched = useMemo(() => {
+    const keys = new Set<string>();
+    let before: string | undefined;
+    for (const item of view.items) {
+      if (item.kind !== 'run' || !item.settings) continue;
+      const used = JSON.stringify([item.settings.agent, item.settings.provider, item.settings.model, item.settings.effort]);
+      if (before !== undefined && used !== before) keys.add(item.key);
+      before = used;
+    }
+    return keys;
+  }, [view.items]);
 
   const firstOrd = view.items[0]?.ord;
   const lastKey = view.items.at(-1)?.key;
@@ -96,7 +109,7 @@ export function Timeline({ onRetry }: { onRetry(text: string): void }) {
             {view.items.map(item => {
               switch (item.kind) {
                 case 'user': return <UserMessage key={item.key} item={item} onRetry={onRetry} />;
-                case 'run': return <RunMessage key={item.key} item={item} />;
+                case 'run': return <RunMessage key={item.key} item={item} switched={switched.has(item.key)} />;
                 case 'notice': return <Notice key={item.key} item={item} />;
                 case 'question': return <QuestionCard key={item.key} item={item} />;
               }

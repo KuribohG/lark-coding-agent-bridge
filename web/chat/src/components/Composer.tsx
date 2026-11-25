@@ -1,13 +1,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowUp, Check, ChevronsUpDown, Cpu, Folder, Square } from 'lucide-react';
+import { ArrowUp, Folder, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@shared/cn';
-import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from '@shared/ui/menu';
 import { Tooltip } from '@shared/ui/tooltip';
 import { commandHints, matchCommands } from '@/lib/commands';
 import { baseName, modKey } from '@/lib/format';
 import { useSettings } from '@/lib/settings';
 import { useSession, useSessionApi } from '@/lib/use-session';
+import { EnginePicker } from './EnginePicker';
 
 export interface ComposerHandle {
   fill(text: string): void;
@@ -49,7 +49,16 @@ export const Composer = forwardRef<ComposerHandle, { centered?: boolean }>(funct
   const matches = useMemo(() => menuClosed ? [] : matchCommands(hints, text), [hints, text, menuClosed]);
   const highlighted = Math.min(menuAt, Math.max(0, matches.length - 1));
 
-  useEffect(() => { setText(drafts.get(draftKey) ?? ''); field.current?.focus(); }, [draftKey]);
+  const shownKey = useRef(draftKey);
+  useEffect(() => {
+    const from = shownKey.current;
+    shownKey.current = draftKey;
+    // The empty page became a conversation under the person's hands (they chose a model for it, say): what they
+    // were typing stays, and so does the focus.
+    if (from === 'new' && conversationId && session.beganHere(conversationId)) { keepDraft('new', ''); return; }
+    setText(drafts.get(draftKey) ?? '');
+    field.current?.focus();
+  }, [draftKey, conversationId, session]);
   useEffect(() => { keepDraft(draftKey, text); }, [text, draftKey]);
   useLayoutEffect(() => {
     const node = field.current;
@@ -105,7 +114,6 @@ export const Composer = forwardRef<ComposerHandle, { centered?: boolean }>(funct
   };
 
   const offline = link === 'offline' || link === 'unauthorized';
-  const agentLabel = meta?.agents.find(agent => agent.value === (engine?.agent ?? meta.agent))?.label ?? engine?.agent ?? meta?.agent ?? '';
   const cwd = engine?.cwd ?? meta?.workspace ?? '';
 
   return (
@@ -131,27 +139,7 @@ export const Composer = forwardRef<ComposerHandle, { centered?: boolean }>(funct
             onChange={event => change(event.target.value)} onKeyDown={onKeyDown}
             className="block max-h-80 w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[15px] leading-[1.6] outline-none placeholder:text-subtle" />
           <div className="flex items-center gap-1 px-2 pb-2 pt-1">
-            <Menu>
-              <Tooltip label={running ? '运行中不能切换引擎' : '切换执行引擎'} side="top">
-                <MenuTrigger disabled={running || !meta}
-                  className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12.5px] text-muted-foreground outline-none hover:bg-hover hover:text-foreground disabled:opacity-60 disabled:hover:bg-transparent data-[state=open]:bg-hover">
-                  <Cpu className="size-3.5" />
-                  <span className="max-w-60 truncate">{agentLabel}{engine?.model ? ` · ${engine.model}` : ''}</span>
-                  <ChevronsUpDown className="size-3 opacity-60" />
-                </MenuTrigger>
-              </Tooltip>
-              <MenuContent align="start" side="top">
-                <MenuLabel>执行引擎</MenuLabel>
-                {meta?.agents.map(agent => (
-                  <MenuItem key={agent.value} onSelect={() => {
-                    if (agent.value !== (engine?.agent ?? meta.agent)) session.setEngine(agent.value).catch(error => toast.error(error instanceof Error ? error.message : String(error)));
-                  }}>
-                    <span className="flex-1">{agent.label}</span>
-                    {agent.value === (engine?.agent ?? meta.agent) && <Check className="!text-primary" />}
-                  </MenuItem>
-                ))}
-              </MenuContent>
-            </Menu>
+            <EnginePicker />
             {cwd && (
               <Tooltip label={cwd} side="top">
                 <span className="flex h-7 min-w-0 items-center gap-1.5 rounded-lg px-2 text-[12.5px] text-muted-foreground">

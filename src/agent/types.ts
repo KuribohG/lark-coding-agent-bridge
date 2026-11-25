@@ -203,6 +203,11 @@ export interface AgentRunOptions {
   userQuestions?: boolean;
   /** Deliver text written before tool calls as part of the final answer (backends without a commentary channel). */
   answerIncludesInterimText?: boolean;
+  /**
+   * Report the model's own thinking as `thinking` events where the backend otherwise keeps it back. For a host
+   * that folds reasoning away until someone asks for it: shown in line, it buries the answer.
+   */
+  rawThinking?: boolean;
   /** Run under a detached run host so a bridge restart can reattach; ignored by adapters without host support. */
   host?: import('./run-host').RunHostBinding;
 }

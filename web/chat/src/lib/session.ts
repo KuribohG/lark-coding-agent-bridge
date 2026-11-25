@@ -16,6 +16,8 @@ export interface SessionState {
   view: TranscriptView;
   /** Engine, directory and model of the open conversation. */
   engine?: ConversationState;
+  /** The page the server serves now, by name; it differs from this page's once the server has been updated. */
+  serverBuild?: string;
   /** A run the server accepted that has not appeared in the conversation yet. */
   starting?: string;
   loadingOlder: boolean;
@@ -48,6 +50,7 @@ export class Session {
   private readonly listeners = new Set<() => void>();
   private connection?: AbortController;
   private notifying = false;
+  private readonly begun = new Set<string>();
 
   constructor(readonly api: Api, private readonly route: Route) {}
 
@@ -128,6 +131,7 @@ export class Session {
         this.set({ conversations: this.state.conversations.map(known => known.id === event.conversation.id ? event.conversation : known) });
         return;
       default: {
+        if (event.type === 'open' && event.build && event.build !== this.state.serverBuild) this.set({ serverBuild: event.build });
         if (missedPatch(this.state.view, event)) {
           // The view fell out of step with the server; forget the cursor and take the conversation again.
           this.set({ view: { ...this.state.view, epoch: undefined } });
@@ -142,11 +146,28 @@ export class Session {
   }
 
   private async refreshEngine(): Promise<void> {
-    const id = this.state.conversationId ?? `draft-${uuid()}`;
+    const id = this.state.conversationId;
     try {
       const engine = await this.api.state(id);
-      if ((this.state.conversationId ?? id) === id) this.set({ engine });
-    } catch { /* the header simply shows less */ }
+      if (this.state.conversationId === id) this.set({ engine });
+    } catch { /* the composer simply shows less */ }
+  }
+
+  /** The open conversation's ID; one that has not been started is created, to carry what is being chosen for it. */
+  private conversation(): string {
+    const { conversationId } = this.state;
+    if (conversationId) return conversationId;
+    const created = uuid();
+    this.begun.add(created);
+    this.route.go(created, true);
+    this.set({ conversationId: created, view: { ...emptyTranscript, ready: true } });
+    this.connect();
+    return created;
+  }
+
+  /** Whether the conversation was made on this page out of the empty one: the person is still where they were. */
+  beganHere(id: string): boolean {
+    return this.begun.has(id);
   }
 
   /** The run going in the open conversation, by what the conversation shows or what the list says. */
@@ -162,13 +183,7 @@ export class Session {
   async send(raw: string): Promise<void> {
     const text = raw.trim();
     if (!text) return;
-    let id = this.state.conversationId;
-    if (!id) {
-      id = uuid();
-      this.route.go(id, true);
-      this.set({ conversationId: id, view: { ...emptyTranscript, ready: true } });
-      this.connect();
-    }
+    const id = this.conversation();
     const messageId = uuid();
     const command = text.startsWith('/');
     const runId = command ? undefined : this.runningId();
@@ -214,16 +229,15 @@ export class Session {
   }
 
   async setEngine(agent: string): Promise<void> {
-    const id = this.state.conversationId;
-    if (!id) {
-      // A conversation that does not exist yet has no engine to change; it is created to carry the choice.
-      const created = uuid();
-      this.route.go(created, true);
-      this.set({ conversationId: created, view: { ...emptyTranscript, ready: true } });
-      this.connect();
-    }
-    await this.api.setEngine(this.state.conversationId!, agent);
+    await this.api.setEngine(this.conversation(), agent);
     await this.refreshEngine();
+  }
+
+  /** Chooses the model, model service or effort of the open conversation's engine; `null` goes back to the default. */
+  async setModel(change: { model?: string | null; provider?: string | null; effort?: string | null }): Promise<void> {
+    const id = this.conversation();
+    const engine = await this.api.setModel(id, { agent: this.state.engine?.agent, ...change });
+    if (this.state.conversationId === id) this.set({ engine: { ...engine, activeRunId: this.state.engine?.activeRunId } });
   }
 
   async rename(id: string, title: string): Promise<void> { await this.api.update(id, { title }); }

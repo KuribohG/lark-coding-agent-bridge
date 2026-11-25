@@ -3,7 +3,15 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sendRunInput } from '../agent/execution';
 import type { AgentInput, AgentInputReceipt, AgentQuestion, AgentQuestionMode, AgentQuestionAnswer } from '../agent/types';
-import { agentBackendSpec } from '../agent/backend-spec';
+import { AGENT_KINDS, agentBackendSpec } from '../agent/backend-spec';
+import { readModelEnvironment } from '../agent/model-environment';
+import { availableEfforts, parseEffort, resolveModelSettings, type ModelEnvironment, type ModelSettings,
+  type ResolvedModelSettings } from '../agent/model-settings';
+import { validateModelId, type ModelOption } from '../agent/models';
+import { modelServiceName } from '../model-service/config';
+import { NATIVE_MODEL_PROVIDER, type ModelProviderOption, type ModelProviderRegistry } from '../model-provider/provider';
+import { ScopePreferencesStore } from '../session/scope-preferences';
+import { checkRuntimeAgentAvailability } from './agent-runtime';
 import { resolveAgentState } from '../agent/state-layout';
 import { ActiveRuns, stopRun } from './active-runs';
 import type { AgentEntry } from './agent-entry';
@@ -75,6 +83,14 @@ export interface ConversationRuntimeOptions {
   questionSinks?: boolean;
   /** Let the agent ask the host blocking questions; the host answers them with answerQuestion. */
   userQuestions?: boolean;
+  /** Ask engines for the model's own thinking, for a host that shows it folded away. */
+  rawThinking?: boolean;
+  /**
+   * Let each conversation choose its model and effort (`modelSettings`, `setModelSettings`, `modelChoices`).
+   * `providers` is where the models of the configured model services are listed from. Without this every
+   * conversation runs with its engine profile's settings.
+   */
+  modelChoice?: { providers?: ModelProviderRegistry };
   /** The execution controller's profile directory, where default agent homes such as Codex's live. */
   profileDir?: string;
   /** Native history readers; replaceable for tests. */
@@ -128,6 +144,38 @@ export interface ConversationStatus {
   activeRunId?: string;
 }
 
+/** What a conversation's next run of one engine uses, and which part of that the conversation chose itself. */
+export interface ConversationModelSettings extends ResolvedModelSettings {
+  agentKind: AgentKind;
+  /** The conversation's own choices; whatever is absent comes from the engine's profile or the CLI's own configuration. */
+  overrides: ModelSettings;
+}
+
+/** What a conversation can choose from for one engine. */
+export interface ConversationModelChoices {
+  agentKind: AgentKind;
+  /** Suggestions, not an allowlist: any model ID the engine accepts can be set. */
+  models: ModelOption[];
+  providers: ModelProviderOption[];
+  efforts: string[];
+  /** What a conversation that chose nothing runs with. */
+  defaults: ResolvedModelSettings;
+}
+
+/** A change of a conversation's choices: a value sets it, `null` returns it to the default, an absent key leaves it. */
+export interface ConversationModelPatch {
+  model?: string | null;
+  provider?: string | null;
+  reasoningEffort?: string | null;
+}
+
+export interface ConversationEngine {
+  agentKind: AgentKind;
+  available: boolean;
+  /** Why it cannot be used, in words for the person. */
+  reason?: string;
+}
+
 type TurnExecution = RunExecution;
 
 /** How the runtime itself started a turn; absent for a person's message. */
@@ -164,6 +212,8 @@ export class ConversationRuntime {
   private readonly queue?: PendingQueue<QueuedInput>;
   private readonly turns?: ConversationTurns;
   private readonly workflows?: WorkflowHost<ConversationIdentity>;
+  private readonly preferences?: ScopePreferencesStore;
+  private readonly engineChecks = new Map<AgentKind, { at: number; result: Promise<ConversationEngine> }>();
   private closed = false;
 
   constructor(private readonly options: ConversationRuntimeOptions) {
@@ -173,6 +223,7 @@ export class ConversationRuntime {
     this.sessions = new SessionStore(join(options.stateDir, 'sessions.json'));
     this.catalog = new SessionCatalog(join(options.stateDir, 'sessions.catalog.json'));
     this.workspaces = new WorkspaceStore(join(options.stateDir, 'workspaces.json'));
+    if (options.modelChoice) this.preferences = new ScopePreferencesStore(join(options.stateDir, 'scope-preferences.json'));
     const executor = new RunExecutor({
       resolveAgent: (scope, agentKind) => this.execution.get(scope, agentKind),
       resolveModelProvider: (agentKind, model) => this.execution.resolveModelProvider(agentKind, model),
@@ -212,8 +263,10 @@ export class ConversationRuntime {
       steer: (scope, messageId, text) => followups.deliver({ scope, messageId, activeRuns: this.active, internal: true, prepare: async () => text }),
       settings: {
         profile: options.namespace, profileFor,
-        // These hosts keep no per-conversation model choice: a workflow runs with the engine profile's.
+        // A workflow runs with its conversation's choice where the host keeps one, otherwise with the engine profile's.
         modelSettings: async (scope, agentKind, patch) => {
+          const origin = this.workflows?.origins.get(scope);
+          if (this.preferences && origin) return this.resolveModel(scope, agentKind, origin, patch);
           const { model, modelProvider, reasoningEffort } = profileFor(agentKind, scope).preferences;
           return {
             model, reasoningEffort, ...patch, modelSource: 'profile', providerSource: 'profile', effortSource: 'profile',
@@ -243,7 +296,7 @@ export class ConversationRuntime {
   }
 
   async load(): Promise<void> {
-    await Promise.all([this.sessions.load(), this.catalog.load(), this.workspaces.load()]);
+    await Promise.all([this.sessions.load(), this.catalog.load(), this.workspaces.load(), this.preferences?.load()]);
     await this.workflows?.start();
   }
 
@@ -293,6 +346,7 @@ export class ConversationRuntime {
           runOptions: {
             env: input.env,
             userQuestions: input.questions ? true : this.options.userQuestions,
+            ...(this.options.rawThinking ? { rawThinking: true } : {}),
             deadlineAt: input.deadlineAt,
             ...(input.context1m !== undefined ? { context1m: input.context1m } : {}),
             ...(input.additionalDirs ? { additionalDirs: input.additionalDirs } : {}),
@@ -344,7 +398,8 @@ export class ConversationRuntime {
       stores: this.stores,
       profileFor: (kind: AgentKind) =>
         profileForAgentKind(this.options.configForAgent?.(kind, { actorId, conversationId }) ?? this.options.config, kind),
-      // No per-conversation model store: startTurn applies the profile defaults.
+      // Without a per-conversation model store, startTurn applies the profile defaults.
+      ...(this.preferences ? { resolveModelSettings: (scope: string, kind: AgentKind) => this.resolveModel(scope, kind, { actorId, conversationId }) } : {}),
       memory: this.turnMemory,
     };
   }
@@ -367,7 +422,11 @@ export class ConversationRuntime {
     const output: RunOutputPlugin = {
       id: 'conversation-events',
       render: async context => {
-        publish({ type: 'run.started', runId: context.runId });
+        const chosen = context.handle.modelSettings;
+        publish({ type: 'run.started', runId: context.runId, settings: {
+          agent: this.execution.kindFor(context.scope),
+          ...(chosen?.model ? { model: chosen.model } : {}), ...(chosen?.provider ? { provider: chosen.provider } : {}),
+          ...(chosen?.reasoningEffort ? { effort: chosen.reasoningEffort } : {}) } });
         let previous: string | undefined;
         await processAgentStream(context.handle, context.events, context.scope, context.idleTimeoutMs, () => {}, async current => {
           const state = structuredClone(filter(current));
@@ -575,6 +634,117 @@ export class ConversationRuntime {
     const scope = await this.authorizedScope(identity);
     if (this.active.get(scope)) throw new Error('cannot switch execution engine while a run is active');
     await this.execution.setScopeKind(scope, kind);
+  }
+
+  /** Whether conversations of this runtime choose their own model and effort. */
+  get choosesModels(): boolean {
+    return this.preferences !== undefined;
+  }
+
+  /**
+   * What the conversation's next run of an engine (its current one unless named) uses. `assume` answers for
+   * choices the conversation has not made: what it would run with if it had.
+   */
+  async modelSettings(identity: ConversationIdentity, agentKind?: AgentKind, assume?: ModelSettings): Promise<ConversationModelSettings> {
+    const scope = await this.authorizedScope(identity);
+    const kind = agentKind ?? this.execution.kindFor(scope);
+    const overrides = assume ?? this.preferences?.get(kind, scope) ?? {};
+    const resolved = resolveModelSettings(this.profileModel(kind, identity), overrides, await this.modelEnvironment(kind, identity));
+    return { ...resolved, agentKind: kind, overrides };
+  }
+
+  /** Changes the conversation's choices for an engine; a run that is going keeps what it started with. */
+  async setModelSettings(identity: ConversationIdentity, patch: ConversationModelPatch, agentKind?: AgentKind): Promise<ConversationModelSettings> {
+    const scope = await this.authorizedScope(identity);
+    if (!this.preferences) throw new Error('This host does not keep a model choice per conversation');
+    const kind = agentKind ?? this.execution.kindFor(scope);
+    const providers = this.options.modelChoice?.providers?.options(kind) ?? [];
+    const change: ModelSettings = {};
+    if (patch.model !== undefined) {
+      const model = patch.model === null || patch.model === 'default' ? undefined : validateModelId(patch.model);
+      // `service/model` names both; they are kept apart, so a later change of model alone keeps the service.
+      const service = model ? providers.find(option => model.startsWith(`${option.id}/`)) : undefined;
+      change.model = service ? model!.slice(service.id.length + 1) : model;
+      if (service) change.provider = service.id;
+      else if (!model) change.provider = undefined;
+    }
+    if (patch.provider !== undefined) {
+      const provider = patch.provider === null || patch.provider === 'default' ? undefined : modelServiceName(patch.provider);
+      if (provider && provider !== NATIVE_MODEL_PROVIDER && !providers.some(option => option.id === provider)) {
+        throw new Error(`模型服务「${provider}」不存在，或不支持 ${kind}。`);
+      }
+      if (change.provider && provider && change.provider !== provider) throw new Error(`模型 ${patch.model} 属于模型服务「${change.provider}」，与所选的「${provider}」不一致。`);
+      if (provider || !change.provider) change.provider = provider;
+    }
+    if (patch.reasoningEffort !== undefined) change.reasoningEffort = parseEffort(patch.reasoningEffort ?? undefined, kind);
+    const overrides = { ...this.preferences.get(kind, scope), ...change };
+    // Refuses a model and effort that do not go together before anything is saved.
+    const resolved = resolveModelSettings(this.profileModel(kind, identity), overrides, await this.modelEnvironment(kind, identity));
+    await this.preferences.update(kind, scope, change);
+    return { ...resolved, agentKind: kind, overrides: this.preferences.get(kind, scope) };
+  }
+
+  /** Drops what the conversation chose, for every engine; for a host that is deleting the conversation. */
+  async forgetModelSettings(identity: ConversationIdentity): Promise<void> {
+    const scope = await this.authorizedScope(identity);
+    if (!this.preferences) return;
+    for (const kind of AGENT_KINDS) {
+      const chosen = this.preferences.get(kind, scope);
+      if (chosen.model || chosen.provider || chosen.reasoningEffort) {
+        await this.preferences.update(kind, scope, { model: undefined, provider: undefined, reasoningEffort: undefined });
+      }
+    }
+  }
+
+  /** The models, model services and efforts to choose from for an engine; `refresh` asks the services again. */
+  async modelChoices(identity: ConversationIdentity, agentKind?: AgentKind, options: { refresh?: boolean } = {}): Promise<ConversationModelChoices> {
+    const scope = await this.authorizedScope(identity);
+    const kind = agentKind ?? this.execution.kindFor(scope);
+    const environment = await this.modelEnvironment(kind, identity, options.refresh);
+    return {
+      agentKind: kind, models: environment.models, providers: this.options.modelChoice?.providers?.options(kind) ?? [],
+      efforts: availableEfforts(kind), defaults: resolveModelSettings(this.profileModel(kind, identity), {}, environment),
+    };
+  }
+
+  /** Whether an engine can be used here; asked of the engine itself, and remembered for a minute. */
+  async engine(identity: ConversationIdentity, agentKind: AgentKind): Promise<ConversationEngine> {
+    const scope = await this.authorizedScope(identity);
+    const known = this.engineChecks.get(agentKind);
+    if (known && Date.now() - known.at < 60_000) return known.result;
+    const result = (async (): Promise<ConversationEngine> => {
+      try {
+        const availability = await checkRuntimeAgentAvailability(this.execution.get(scope, agentKind));
+        return availability.ok ? { agentKind, available: true } : { agentKind, available: false, reason: availability.error.message };
+      } catch (error) {
+        return { agentKind, available: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+    })();
+    this.engineChecks.set(agentKind, { at: Date.now(), result });
+    return result;
+  }
+
+  private profileModel(kind: AgentKind, identity: ConversationIdentity): ModelSettings {
+    const { model, modelProvider, reasoningEffort } = this.profileConfigFor(kind, identity).preferences;
+    return { model, ...(modelProvider ? { provider: modelProvider } : {}), reasoningEffort };
+  }
+
+  private profileConfigFor(kind: AgentKind, identity: ConversationIdentity): RunProfileConfig {
+    return profileForAgentKind(this.options.configForAgent?.(kind, { actorId: identity.actorId, conversationId: identity.conversationId })
+      ?? this.options.config, kind);
+  }
+
+  private async modelEnvironment(kind: AgentKind, identity: ConversationIdentity, refresh = false): Promise<ModelEnvironment> {
+    const [native, services] = await Promise.all([
+      readModelEnvironment(this.profileConfigFor(kind, identity), this.options.profileDir ?? this.options.stateDir),
+      this.options.modelChoice?.providers?.modelOptions(kind, refresh) ?? [],
+    ]);
+    return { ...native, models: [...native.models, ...services] };
+  }
+
+  private async resolveModel(scope: string, kind: AgentKind, identity: ConversationIdentity, patch?: Partial<ModelSettings>): Promise<ResolvedModelSettings> {
+    return resolveModelSettings(this.profileModel(kind, identity), { ...this.preferences?.get(kind, scope), ...patch },
+      await this.modelEnvironment(kind, identity));
   }
 
   async status(identity: ConversationIdentity): Promise<ConversationStatus> {

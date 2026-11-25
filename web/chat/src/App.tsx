@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { KeyRound, WifiOff } from 'lucide-react';
+import { KeyRound, RefreshCw, WifiOff } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import { Button } from '@shared/ui/button';
 import { Dialog } from '@shared/ui/dialog';
@@ -44,6 +44,7 @@ export function App() {
   const fatal = useSession(state => state.fatal);
   const blank = useSession(state => !state.conversationId || (state.view.ready && state.view.items.length === 0));
   const gone = useSession(state => state.view.gone);
+  const outdated = useSession(state => Boolean(state.meta?.build && state.serverBuild && state.meta.build !== state.serverBuild));
   const [panel, setPanel] = useState(false);
   const [palette, setPalette] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -95,6 +96,12 @@ export function App() {
           {link === 'offline' && (
             <div className="flex items-center justify-center gap-2 border-b bg-warning-soft px-4 py-1.5 text-[12.5px]" role="status">
               <WifiOff className="size-3.5 text-warning" />连不上服务，正在重试。运行中的任务不受影响，恢复后会接着显示。
+            </div>
+          )}
+          {outdated && link !== 'offline' && (
+            <div className="flex items-center justify-center gap-3 border-b bg-info-soft px-4 py-1.5 text-[12.5px]" role="status">
+              <span className="inline-flex items-center gap-2"><RefreshCw className="size-3.5 text-info" />服务已更新，这个页面还是旧版本。</span>
+              <Button size="sm" onClick={() => location.reload()}>刷新</Button>
             </div>
           )}
           {blank ? (

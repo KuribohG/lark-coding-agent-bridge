@@ -68,6 +68,8 @@ export interface SubmitRunInput {
   userQuestions?: boolean;
   /** Text written before tool calls belongs to the delivered answer. */
   answerIncludesInterimText?: boolean;
+  /** The caller shows the model's own thinking and wants all of it. */
+  rawThinking?: boolean;
   /** Keep the native process alive across bridge restarts under this run host. */
   host?: RunHostBinding;
   nowait?: boolean;
@@ -389,6 +391,7 @@ export class RunExecutor {
       stopGraceMs: input.stopGraceMs,
       userQuestions: input.userQuestions,
       answerIncludesInterimText: input.answerIncludesInterimText,
+      ...(input.rawThinking ? { rawThinking: true } : {}),
       host: input.host,
     });
     let prepared: PreparedAgentRun;

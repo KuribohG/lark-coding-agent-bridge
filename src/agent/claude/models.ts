@@ -1,11 +1,11 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ProfileConfig } from '../../config/profile-schema';
+import type { AgentExecutionProfile } from '../../config/profile-schema';
 import { readOptional } from '../model-files';
 import { parseEffort, type ModelEnvironment } from '../model-settings';
 import { supportedModels, validateModelId } from '../models';
 
-export async function readClaudeModels(profile: ProfileConfig): Promise<ModelEnvironment> {
+export async function readClaudeModels(profile: AgentExecutionProfile): Promise<ModelEnvironment> {
   const fallback = { defaults: {}, models: supportedModels('claude') };
     const configDir = profile.claude?.configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
     const text = await readOptional(join(configDir, 'settings.json'));

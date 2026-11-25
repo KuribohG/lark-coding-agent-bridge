@@ -68,7 +68,7 @@ export class ClaudeRunTranslator {
   private messageId?: string;
   private lastMessageUsage?: ClaudeUsage;
 
-  constructor(private readonly answerIncludesInterimText = false) {}
+  constructor(private readonly answerIncludesInterimText = false, private readonly rawThinking = false) {}
 
   *flushProgress(): Generator<AgentEvent> {
     if (this.answerIncludesInterimText) {
@@ -92,7 +92,7 @@ export class ClaudeRunTranslator {
       const id = event.message?.id;
       if (id && this.messageId && id !== this.messageId) yield* this.flushProgress();
       this.messageId = id ?? this.messageId;
-      const events = [...translateEvent(event)];
+      const events = [...translateEvent(event, { thinking: this.rawThinking })];
       if (events.some(e => e.type === 'tool_use')) {
         yield* this.flushProgress();
         if (this.answerIncludesInterimText) {
@@ -152,7 +152,7 @@ export function isTaskNotificationResult(raw: unknown): boolean {
 
 export function* translateEvent(
   raw: unknown,
-  options: { lastMessageUsage?: ClaudeUsage } = {},
+  options: { lastMessageUsage?: ClaudeUsage; thinking?: boolean } = {},
 ): Generator<AgentEvent> {
   if (!raw || typeof raw !== 'object') return;
   const evt = raw as ClaudeRawEvent;
@@ -175,9 +175,16 @@ export function* translateEvent(
   if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
     for (const block of evt.message.content) {
       // Thinking blocks carry the raw chain of thought. Codex only surfaces
-      // provider-supplied reasoning summaries, so drop them here to keep the
-      // two harnesses aligned on what reaches the CoT and other displays.
-      if (block.type === 'thinking') continue;
+      // provider-supplied reasoning summaries, so they are dropped unless the
+      // host asked for them: that keeps the two harnesses aligned on what
+      // reaches the CoT and other displays that show reasoning in line.
+      if (block.type === 'thinking') {
+        // A block arrives whole; the blank line keeps it apart from the next one.
+        if (options.thinking && typeof block.thinking === 'string' && block.thinking.trim()) {
+          yield { type: 'thinking', delta: `${block.thinking.trimEnd()}\n\n` };
+        }
+        continue;
+      }
       if (block.type === 'text' && typeof block.text === 'string' && block.text) {
         yield { type: 'text', delta: block.text };
       } else if (block.type === 'tool_use' && block.id && block.name) {

@@ -18,6 +18,7 @@ import type {
 import { configureLogger, closeLogger } from '../../core/logger';
 import { openExecution } from '../../runtime/execution-host';
 import { normalizeModelServices } from '../../model-service/config';
+import { ModelProviderRegistry } from '../../model-provider/provider';
 import {
   selectStandaloneAgent,
   selectStandaloneProfile,
@@ -52,11 +53,12 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
   const configForAgent = (kind: AgentKind): RunProfileConfig =>
     standaloneProfile(doc, profile, kind, workspace, options, defaultAgentKind);
 
+  const modelServices = normalizeModelServices(doc?.model_services);
   const { execution } = await openExecution({
     profileConfig,
     appPaths: { profileDir: stateDir },
     systemPrompt: WEB_SYSTEM_PROMPT,
-    modelServices: normalizeModelServices(doc?.model_services),
+    modelServices,
   });
 
   const host = new ChannelHost();
@@ -68,6 +70,7 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
     namespace: 'web',
     systemPrompt: WEB_SYSTEM_PROMPT,
     workflows: true,
+    modelChoice: { providers: new ModelProviderRegistry(modelServices) },
     port,
     stateFile: options.stateFile ? resolve(options.stateFile) : undefined,
     display: doc ? resolveChannels(doc, profile).web : undefined,

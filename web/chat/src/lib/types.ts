@@ -12,7 +12,17 @@ export interface ToolEntry {
 
 export type Block =
   | { kind: 'text'; content: string; streaming: boolean }
-  | { kind: 'tool'; tool: ToolEntry };
+  | { kind: 'tool'; tool: ToolEntry }
+  /** A stretch of the model's own reasoning, where it came in the run. */
+  | { kind: 'reasoning'; content: string; active?: boolean };
+
+/** What a run was started with; the model and effort are absent where the engine chose them itself. */
+export interface RunSettings {
+  agent: string;
+  model?: string;
+  provider?: string;
+  effort?: string;
+}
 
 export interface RunState {
   blocks: Block[];
@@ -49,6 +59,7 @@ export type UserItem = ItemBase & {
 };
 export type RunItem = ItemBase & {
   kind: 'run'; runId: string; state: RunState; result?: string; error?: string; finishedAt?: number; lost?: boolean;
+  settings?: RunSettings;
 };
 export type NoticeItem = ItemBase & { kind: 'notice'; text: string; source: 'workflow' | 'command' | 'bridge' };
 export type QuestionItem = ItemBase & {
@@ -68,11 +79,14 @@ export interface Conversation {
 }
 
 export type PageEvent =
-  | { type: 'open'; epoch: string; reset: boolean }
+  | { type: 'open'; epoch: string; reset: boolean; build?: string }
   | { type: 'item'; item: TranscriptItem }
   | {
-      type: 'run'; key: string; rev: number; base: number; from: number; blocks: Block[]; reasoningFrom: number;
+      type: 'run'; key: string; rev: number; base: number; from: number; blocks: Block[];
+      /** The first of `blocks` continues the one held at `from`: its content follows that one's first `keep` characters. */
+      keep?: number;
       runId: string; at: number; state: Omit<RunState, 'blocks'>; result?: string; error?: string; finishedAt?: number; lost?: boolean;
+      settings?: RunSettings;
     }
   | { type: 'ready'; rev: number; first?: number; more?: boolean }
   | { type: 'conversation'; conversation: Conversation }
@@ -83,6 +97,8 @@ export type PageEvent =
 export interface Meta {
   version: string;
   commit: string;
+  /** Names the page the server serves; a page that holds another one is out of date. */
+  build?: string;
   workspace: string;
   agent: string;
   agents: Array<{ value: string; label: string }>;
@@ -91,10 +107,46 @@ export interface Meta {
   commands: Array<{ name: string; aliases: string[]; help: string[] }>;
 }
 
+/** Where a setting of the next run comes from: this conversation, the server's configuration, the engine, or the model. */
+export type SettingSource = 'scope' | 'profile' | 'cli' | 'model';
+
 export interface ConversationState {
   agent: string;
   activeRunId?: string;
   cwd: string;
+  /** What the next run uses; absent where the engine decides for itself. */
   model?: string;
+  provider?: string;
   effort?: string;
+  sources?: { model: SettingSource; provider: SettingSource; effort: SettingSource };
+  /** What this conversation chose itself. */
+  overrides?: { model?: string; provider?: string; effort?: string };
+  notice?: string;
+}
+
+export interface ModelOption {
+  /** A model ID, or `service/model` for a model of a configured model service. */
+  value: string;
+  label: string;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  contextWindow?: number;
+}
+
+/** What a conversation can choose from for one engine. */
+export interface ModelChoices {
+  agent: string;
+  models: ModelOption[];
+  providers: Array<{ id: string; label: string; defaultModel?: string }>;
+  efforts: string[];
+  /** What a conversation that chose nothing runs with. */
+  defaults: { model?: string; provider?: string; effort?: string };
+}
+
+export interface EngineInfo {
+  value: string;
+  label: string;
+  available: boolean;
+  /** Why it cannot be used. */
+  reason?: string;
 }

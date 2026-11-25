@@ -124,7 +124,7 @@ lark-channel-bridge run --config /absolute/private/config.toml --profiles fronte
 | 某个 bot 单独指定模型 | `[profiles.work.run] model = "模型ID"` | 名为 work 的 profile |
 | 禁用无输出超时 | `[defaults.run] idle_timeout_minutes = 0` | 新运行；0 表示不启用该 watchdog |
 | Web 是否显示工具 | `[channels.web] show_tools = true` | 独立聊天页 |
-| Web 是否显示推理 | `[channels.web] show_reasoning = false` | 仅改变展示，不改变模型思考强度 |
+| Web 是否显示推理 | `[channels.web] show_reasoning = false` | 仅改变展示，不改变模型思考强度。开启时页面把模型的思考原文折叠显示在过程里（Claude Code 的思考块只在 Web 转发，飞书和 Slack 不显示） |
 | 飞书过程显示 | `[channels.lark] progress = "brief"` | 飞书；可选 off / brief / detailed |
 | 飞书消息合并窗口 | `[channels.lark.profiles.work] message_debounce_ms = 250` | 该 profile；0–5000ms，0 表示不等待 |
 | 飞书代理 | `[channels.lark.network] proxy = "env"` | 默认读取 HTTP(S)_PROXY；也可填 `direct` 或 HTTP(S) 代理地址，修改后重新连接 |

@@ -271,7 +271,7 @@ describe('Slack channel plugin', () => {
     await h.transport.emit(channelEvent({
       type: 'message', ts: '550.002', thread_ts: '550.001', text: '/model',
     }));
-    expect(h.api.posts.at(-1)?.text).toContain('using *claude*');
+    expect(h.api.posts.at(-1)?.text).toContain('*Engine:* claude');
 
     await h.transport.emit(channelEvent({
       type: 'message', ts: '550.003', thread_ts: '550.001', text: '/stop',

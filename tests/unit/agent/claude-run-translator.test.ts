@@ -149,6 +149,16 @@ describe('Claude chat answer with interim text', () => {
     ]);
   });
 
+  it('reports the model\'s thinking only to a host that asked for it, and never a subagent\'s', () => {
+    const thinking = (parent?: string) => ({ type: 'assistant', ...(parent ? { parent_tool_use_id: parent } : {}),
+      message: { id: 'm', content: [{ type: 'thinking', thinking: 'weighing it\n' }, { type: 'thinking', thinking: '  ' }] } });
+    expect([...new ClaudeRunTranslator().translate(thinking())]).toEqual([]);
+    const t = new ClaudeRunTranslator(false, true);
+    // Each block is reported whole, set apart from the next; an empty one is not reported.
+    expect([...t.translate(thinking())]).toEqual([{ type: 'thinking', delta: 'weighing it\n\n' }]);
+    expect([...t.translate(thinking('toolu_1'))]).toEqual([]);
+  });
+
   it('does not change failed runs: released text stays progress and nothing becomes an answer', () => {
     const t = new ClaudeRunTranslator(true);
     [...t.translate(assistant('a', 'first'))];

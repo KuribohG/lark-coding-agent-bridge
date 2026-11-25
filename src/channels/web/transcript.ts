@@ -35,7 +35,8 @@ interface ItemBase {
 export type TranscriptItem = ItemBase & (
   | { kind: 'user'; text: string; via: 'message' | 'input' | 'command' }
   | {
-      kind: 'run'; runId: string; state: RunState; result?: string; error?: string; finishedAt?: number;
+      kind: 'run'; runId: string; state: WebRunState; result?: string; error?: string; finishedAt?: number;
+      settings?: RunSettings;
       /** The server stopped while this run was going, so how it ended is not known. */
       lost?: boolean;
     }
@@ -48,24 +49,37 @@ export type TranscriptItem = ItemBase & (
     }
 );
 
+/**
+ * What a run shows, in the order it happened: what the agent said and did, and what it thought in between. The
+ * runtime keeps a run's reasoning as one text apart from its blocks; here each stretch of it stands where it came.
+ */
+export type WebBlock = Block | { kind: 'reasoning'; content: string; active?: boolean };
+export type WebRunState = Omit<RunState, 'blocks'> & { blocks: WebBlock[] };
+/** What a run was started with: its engine, and the model and effort where the bridge chose them. */
+export interface RunSettings { agent: string; model?: string; provider?: string; effort?: string }
+
 type RunItem = Extract<TranscriptItem, { kind: 'run' }>;
 type QuestionItem = Extract<TranscriptItem, { kind: 'question' }>;
 type Unplaced<T> = T extends unknown ? Omit<T, 'ord' | 'rev' | 'at'> & { at?: number } : never;
 /** An item before it has its place in a conversation. */
 type Draft = Unplaced<TranscriptItem>;
 
-/** A run's state without its blocks; `reasoningFrom` says how much of the reasoning the follower already has. */
-type RunHead = Omit<RunItem, 'state' | 'kind' | 'key' | 'ord' | 'rev'> & { state: Omit<RunState, 'blocks'> };
+/** A run without its blocks. */
+type RunHead = Omit<RunItem, 'state' | 'kind' | 'key' | 'ord' | 'rev'> & { state: Omit<WebRunState, 'blocks'> };
 
 export type TranscriptEvent =
-  /** First on every connection. With `reset` the follower drops what it holds: the items that follow are the conversation's tail. */
-  | { type: 'open'; epoch: string; reset: boolean }
+  /**
+   * First on every connection. With `reset` the follower drops what it holds: the items that follow are the
+   * conversation's tail. `build` names the server's build, so a page from another one can tell it is out of date.
+   */
+  | { type: 'open'; epoch: string; reset: boolean; build?: string }
   | { type: 'item'; item: TranscriptItem }
   /**
-   * A going run changed. Its blocks before `from` are as the follower has them and `blocks` replace the rest;
-   * the reasoning is what follows its first `reasoningFrom` characters.
+   * A going run changed. Its blocks before `from` are as the follower has them and `blocks` replace the rest.
+   * With `keep`, the first of `blocks` continues the one the follower has there: its content is what follows the
+   * first `keep` characters of that one.
    */
-  | ({ type: 'run'; key: string; rev: number; base: number; from: number; blocks: Block[]; reasoningFrom: number } & RunHead)
+  | ({ type: 'run'; key: string; rev: number; base: number; from: number; blocks: WebBlock[]; keep?: number } & RunHead)
   /** The connection has caught up. After a reset, `more` says whether older items exist before the position `first`. */
   | { type: 'ready'; rev: number; first?: number; more?: boolean }
   | { type: 'conversation'; conversation: WebConversation }
@@ -79,9 +93,13 @@ export interface TranscriptCursor {
 }
 
 interface LiveRun {
-  /** Each block as it was last sent, serialized. */
+  /** Each block as it was last sent, and serialized. */
+  blocks: WebBlock[];
   sent: string[];
-  reasoning: string;
+  /** The run's reasoning as the stretches it came in; `at` is how many blocks the run had when one began. */
+  thoughts: Array<{ at: number; content: string }>;
+  /** How much of the run's reasoning `thoughts` holds. */
+  thought: number;
   pending?: RunState;
   timer?: NodeJS.Timeout;
   savedAt: number;
@@ -111,7 +129,7 @@ const MAX_TITLE = 60;
 const MAX_PREVIEW = 120;
 const MAX_TOOL_OUTPUT = 8_000;
 const MAX_TOOL_INPUT = 4_000;
-const MAX_REASONING = 48_000;
+const MAX_REASONING = 24_000;
 const DEFAULT_TAIL = 60;
 const MAX_PAGE = 200;
 /** A going run reaches its followers at most this often. */
@@ -134,17 +152,60 @@ const clipText = (text: string, max: number): string => {
   return `${text.slice(0, head)}\n… 省略 ${text.length - max} 个字符 …\n${text.slice(-tail)}`;
 };
 
+/**
+ * Bounds text that is still growing at its end. What is left out changes in steps, so between two steps the
+ * bounded text still only grows at its end, and a follower is sent what was added instead of all of it again.
+ */
+const clipGrowing = (text: string, max: number): string => {
+  if (text.length <= max) return text;
+  const head = Math.floor(max / 2);
+  const step = Math.floor(max / 4);
+  const start = head + Math.ceil((text.length - max) / step) * step;
+  return `${text.slice(0, head)}\n… 省略 ${start - head} 个字符 …\n${text.slice(start)}`;
+};
+
 const oneLine = (text: string, max: number): string => {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
-/** Bounds what a run keeps of each tool call, so a long run stays showable. */
-function clipState(state: RunState): RunState {
+/** Notes how much the run has thought since its last state, and where in the run that was. */
+function takeThoughts(live: LiveRun, state: RunState): void {
+  const { content } = state.reasoning;
+  const more = content.slice(live.thought);
+  live.thought = content.length;
+  if (!more) return;
+  const at = state.blocks.length;
+  const last = live.thoughts.at(-1);
+  if (last && last.at === at) last.content += more;
+  else live.thoughts.push({ at, content: more });
+}
+
+/** The run's blocks with each stretch of reasoning where it came. */
+function weave(state: RunState, thoughts: LiveRun['thoughts']): WebRunState {
+  if (thoughts.length === 0) return state;
+  const blocks: WebBlock[] = [];
+  let next = 0;
+  for (let index = 0; index <= state.blocks.length; index++) {
+    const last = index === state.blocks.length;
+    while (next < thoughts.length && (last || thoughts[next]!.at <= index)) {
+      const { content } = thoughts[next++]!;
+      if (content.trim()) blocks.push({ kind: 'reasoning', content });
+    }
+    if (!last) blocks.push(state.blocks[index]!);
+  }
+  const end = blocks.at(-1);
+  if (state.reasoning.active && end?.kind === 'reasoning') end.active = true;
+  return { ...state, blocks, reasoning: { content: '', active: state.reasoning.active } };
+}
+
+/** Bounds what a run keeps of each tool call and each stretch of reasoning, so a long run stays showable. */
+function clipState(state: WebRunState): WebRunState {
   return {
     ...state,
     reasoning: { ...state.reasoning, content: clipText(state.reasoning.content, MAX_REASONING) },
     blocks: state.blocks.map(block => {
+      if (block.kind === 'reasoning') return block.content.length > MAX_REASONING ? { ...block, content: clipGrowing(block.content, MAX_REASONING) } : block;
       if (block.kind !== 'tool') return block;
       const { tool } = block;
       let input = tool.input;
@@ -157,18 +218,19 @@ function clipState(state: RunState): RunState {
   };
 }
 
-function settledState(state: RunState, terminal: RunState['terminal']): RunState {
+function settledState(state: WebRunState, terminal: RunState['terminal']): WebRunState {
   return {
     ...state,
-    blocks: state.blocks.map(block => block.kind === 'text' && block.streaming ? { ...block, streaming: false }
-      : block.kind === 'tool' && block.tool.status === 'running' ? { kind: 'tool', tool: { ...block.tool, status: 'error' } } : block),
+    blocks: state.blocks.map((block): WebBlock => block.kind === 'text' && block.streaming ? { ...block, streaming: false }
+      : block.kind === 'tool' && block.tool.status === 'running' ? { kind: 'tool', tool: { ...block.tool, status: 'error' } }
+      : block.kind === 'reasoning' && block.active ? { kind: 'reasoning', content: block.content } : block),
     reasoning: { ...state.reasoning, active: false },
     footer: null,
     terminal: state.terminal === 'running' ? terminal : state.terminal,
   };
 }
 
-function answerText(state: RunState): string {
+function answerText(state: WebRunState): string {
   if (state.finalText?.trim()) return state.finalText;
   for (let index = state.blocks.length - 1; index >= 0; index--) {
     const block = state.blocks[index]!;
@@ -197,7 +259,8 @@ export class WebTranscripts {
   private indexWrite: Promise<void> = Promise.resolve();
   private closed = false;
 
-  constructor(private readonly dir: string, private readonly now: () => number = Date.now) {}
+  /** `build` names this server's build to the pages that follow it. */
+  constructor(private readonly dir: string, private readonly now: () => number = Date.now, private readonly build?: string) {}
 
   async load(): Promise<void> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
@@ -313,7 +376,7 @@ export class WebTranscripts {
     return this.enqueue(id, async () => {
       const loaded = await this.transcript(id);
       const resumed = cursor.epoch === this.epoch && cursor.since !== undefined && cursor.since <= loaded.rev;
-      deliver(listener, { type: 'open', epoch: this.epoch, reset: !resumed });
+      deliver(listener, { type: 'open', epoch: this.epoch, reset: !resumed, ...(this.build ? { build: this.build } : {}) });
       if (resumed) {
         for (const item of loaded.items) if (item.rev > cursor.since!) deliver(listener, { type: 'item', item });
         deliver(listener, { type: 'ready', rev: loaded.rev });
@@ -492,9 +555,9 @@ export class WebTranscripts {
     switch (event.type) {
       case 'run.started': {
         if (loaded.byKey.has(event.runId)) return;
-        this.put(loaded, { kind: 'run', key: event.runId, runId: event.runId,
+        this.put(loaded, { kind: 'run', key: event.runId, runId: event.runId, ...(event.settings ? { settings: event.settings } : {}),
           state: { blocks: [], reasoning: { content: '', active: false }, footer: 'thinking', terminal: 'running' } });
-        loaded.live.set(event.runId, { sent: [], reasoning: '', savedAt: this.now(), unsaved: false });
+        loaded.live.set(event.runId, { blocks: [], sent: [], thoughts: [], thought: 0, savedAt: this.now(), unsaved: false });
         this.active.set(loaded.id, event.runId);
         this.indexChanged(loaded.id);
         return;
@@ -503,6 +566,8 @@ export class WebTranscripts {
         const live = loaded.live.get(event.runId);
         // A state without its start belongs to a run this record never took up.
         if (!live) return;
+        // Every state is looked at, not only the ones sent on: where a thought came is known only as it comes.
+        takeThoughts(live, event.state);
         live.pending = event.state;
         if (event.state.terminal !== 'running') {
           if (live.timer) { clearTimeout(live.timer); live.timer = undefined; }
@@ -558,22 +623,27 @@ export class WebTranscripts {
     const pending = live.pending;
     live.pending = undefined;
     if (!pending || item?.kind !== 'run') return;
-    const state = clipState(pending);
+    const state = clipState(weave(pending, live.thoughts));
     const serialized = state.blocks.map(block => JSON.stringify(block));
     let from = 0;
     while (from < serialized.length && from < live.sent.length && serialized[from] === live.sent[from]) from++;
-    const reasoning = state.reasoning.content;
-    const reasoningFrom = reasoning.startsWith(live.reasoning) ? live.reasoning.length : 0;
+    // Text and reasoning grow at their end as they stream; only what was added is sent.
+    const had = live.blocks[from];
+    const has = state.blocks[from];
+    const keep = had && has && had.kind !== 'tool' && has.kind === had.kind && has.content.length > had.content.length
+      && has.content.startsWith(had.content) ? had.content.length : 0;
+    live.blocks = state.blocks;
     live.sent = serialized;
-    live.reasoning = reasoning;
     const base = item.rev;
     const due = this.now() - live.savedAt >= RUN_SAVE_MS;
     const stored = this.put(loaded, { ...item, state }, { quiet: true, save: due }) as RunItem;
     live.unsaved = !due;
     if (due) live.savedAt = this.now();
     const { blocks, ...head } = state;
-    const event: TranscriptEvent = { type: 'run', key, rev: stored.rev, base, from, blocks: blocks.slice(from), reasoningFrom,
-      runId: stored.runId, at: stored.at, state: { ...head, reasoning: { ...head.reasoning, content: reasoning.slice(reasoningFrom) } } };
+    const changed = blocks.slice(from);
+    if (keep && has && has.kind !== 'tool') changed[0] = { ...has, content: has.content.slice(keep) };
+    const event: TranscriptEvent = { type: 'run', key, rev: stored.rev, base, from, blocks: changed, ...(keep ? { keep } : {}),
+      runId: stored.runId, at: stored.at, ...(stored.settings ? { settings: stored.settings } : {}), state: head };
     for (const listener of [...loaded.listeners]) deliver(listener, event);
   }
 

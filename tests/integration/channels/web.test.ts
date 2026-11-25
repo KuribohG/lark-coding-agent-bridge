@@ -7,6 +7,8 @@ import { createConversationRuntime, type ConversationRuntime } from '../../../sr
 import type { ConversationStreamEvent } from '../../../src/runtime/conversation-events';
 import { createWebRunOutput, type WebRunEvent } from '../../../src/channels/web/output';
 import { createWebPlugin } from '../../../src/channels/web/server';
+import { createWebCommandChannel } from '../../../src/channels/web/command-channel';
+import { handleConversationCommand } from '../../../src/commands/conversation';
 import { ChannelHost } from '../../../src/channels/plugin';
 import type {
   AgentExecutionProfile,
@@ -354,6 +356,73 @@ describe('channel-independent conversations', () => {
     await run(h.runtime);
     expect(h.claude.runOptions.at(-1)?.sessionId).toBe('session-one');
   });
+
+  it('lets a conversation choose its model and effort, by method or by command, and runs with them', async () => {
+    const tmp = await createTmpProfile('bridge-web-model-'); cleanups.push(tmp.cleanup);
+    const agent = new FakeAgentAdapter({ id: 'claude', events });
+    const base = { ...config(tmp.workspace), preferences: { maxConcurrentRuns: 1, model: 'profile-model', reasoningEffort: 'high' as const } };
+    const options = { execution: new FixedExecutionController(agent, base), config: base, namespace: 'test', channelId: 'web',
+      stateDir: tmp.profile, authorize: async () => true, modelChoice: {}, rawThinking: true };
+    const runtime = await createConversationRuntime(options);
+    let closed = false; cleanups.push(async () => { if (!closed) await runtime.close(); });
+    const other = { ...identity, conversationId: 'two' };
+    expect(runtime.choosesModels).toBe(true);
+    expect(await runtime.modelSettings(identity)).toMatchObject({ agentKind: 'claude', model: 'profile-model', modelSource: 'profile',
+      reasoningEffort: 'high', effortSource: 'profile', overrides: {} });
+    expect(await runtime.setModelSettings(identity, { model: 'm-2', reasoningEffort: 'low' })).toMatchObject({ model: 'm-2', modelSource: 'scope',
+      reasoningEffort: 'low', effortSource: 'scope', overrides: { model: 'm-2', reasoningEffort: 'low' } });
+    // A refused change leaves what was chosen as it was.
+    await expect(runtime.setModelSettings(identity, { reasoningEffort: 'bogus' })).rejects.toThrow('不支持的思考强度');
+    await expect(runtime.setModelSettings(identity, { model: 'has space' })).rejects.toThrow('模型名');
+    await expect(runtime.setModelSettings(identity, { provider: 'nowhere' })).rejects.toThrow('nowhere');
+    expect((await runtime.modelSettings(identity)).overrides).toEqual({ model: 'm-2', reasoningEffort: 'low' });
+    expect(await runtime.modelChoices(identity)).toMatchObject({ agentKind: 'claude', providers: [], defaults: { model: 'profile-model', reasoningEffort: 'high' } });
+    expect((await runtime.modelChoices(identity)).efforts).toContain('low');
+    expect(await runtime.engine(identity, 'claude')).toEqual({ agentKind: 'claude', available: true });
+    expect(await runtime.engine(identity, 'pi')).toMatchObject({ agentKind: 'pi', available: false });
+
+    const started: unknown[] = [];
+    const stop = await runtime.subscribe(identity, {}, event => { if (event.type === 'run.started') started.push(event.settings); });
+    const finished = async (who: typeof identity) => {
+      const submitted = await runtime.submit({ ...who, prompt: 'hello' });
+      if (!submitted.ok) throw Error('expected started');
+      await vi.waitFor(async () => expect((await runtime.status(who)).activeRunId).toBeUndefined());
+    };
+    await finished(identity);
+    expect(agent.runOptions[0]).toMatchObject({ model: 'm-2', reasoningEffort: 'low', rawThinking: true });
+    expect(started).toEqual([{ agent: 'claude', model: 'm-2', effort: 'low' }]);
+    // Another conversation has chosen nothing.
+    agent.setEvents(events);
+    await finished(other);
+    expect(agent.runOptions[1]).toMatchObject({ model: 'profile-model', reasoningEffort: 'high' });
+    stop();
+
+    const say = async (text: string) => {
+      const web = createWebCommandChannel();
+      expect(await handleConversationCommand(text, { runtime, identity, channel: web.channel, surface: 'web',
+        message: { messageId: 'm', chatId: identity.conversationId, chatType: 'p2p', senderId: identity.actorId, content: text } })).toBe(true);
+      return web.reply() ?? '';
+    };
+    expect(await say('/model')).toContain('Model: m-2 (chosen here)');
+    expect(await say('/model m-3 medium')).toContain('Model: m-3 (chosen here)\nEffort: medium (chosen here)');
+    expect(await say('/effort default')).toContain('Effort: high (configured default)');
+    expect(await say('/effort bogus')).toContain('不支持的思考强度');
+    expect(await say('/model default')).toContain('Model: profile-model (configured default)');
+    expect(await say('/model a b c')).toContain('Usage:');
+    await runtime.setModelSettings(identity, { model: 'kept' });
+
+    // The choice is the conversation's, not the process's.
+    await runtime.close(); closed = true;
+    const reopened = await createConversationRuntime(options); cleanups.push(() => reopened.close());
+    expect((await reopened.modelSettings(identity)).overrides).toEqual({ model: 'kept' });
+    expect((await reopened.modelSettings(other)).overrides).toEqual({});
+
+    // A host that keeps no choice says so instead of pretending.
+    const h = await harness();
+    expect(h.runtime.choosesModels).toBe(false);
+    expect(await h.runtime.modelSettings(identity)).toMatchObject({ agentKind: 'claude', overrides: {} });
+    await expect(h.runtime.setModelSettings(identity, { model: 'm-2' })).rejects.toThrow('does not keep a model choice');
+  });
 });
 
 describe('standalone Web plugin', () => {
@@ -458,8 +527,8 @@ describe('standalone Web plugin', () => {
       method: 'POST', headers, body: JSON.stringify({ conversationId: 'browser', text }),
     });
     expect(await (await post('/status')).json()).toEqual({ reply: 'Engine: claude\nState: idle' });
-    expect(await (await post('/model')).json())
-      .toEqual({ reply: 'This thread is using claude. Engine switching is available through the API in this version.' });
+    // What the model is depends on the machine's own engine configuration; that it is reported does not.
+    expect(((await (await post('/model')).json()) as { reply: string }).reply).toMatch(/^Engine: claude\nModel: .+\nEffort: .+\n\nUsage: \/model /);
     expect(((await (await post('/help')).json()) as { reply: string }).reply).toContain('Bridge commands');
 
     const again = await follow(`&stream=${first[0]!.stream}&after=${first.at(-1)!.sequence}`, event => event.type === 'stream.opened');
@@ -611,5 +680,74 @@ describe('standalone Web plugin', () => {
     await response.text();
     expect(h.pi.runs).toHaveLength(1);
     expect(h.claude.runs).toHaveLength(0);
+  });
+
+  it('lets the page choose engine, model and effort, and begins a new conversation with what was last chosen', async () => {
+    const h = await switchableHarness(); await h.runtime.close();
+    const host = new ChannelHost(); cleanups.push(() => host.close());
+    const stateDir = join(h.tmp.root, 'choice-server');
+    const web = await host.connect(createWebPlugin({ ...h.options, stateDir }));
+    const url = new URL(web.url);
+    const headers = { 'x-ui-token': new URLSearchParams(url.hash.slice(1)).get('token')! };
+    const get = async (path: string) => (await fetch(`${url.origin}${path}`, { headers })).json() as Promise<Record<string, unknown>>;
+    const post = (path: string, body: object) => fetch(`${url.origin}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+    const idle = (id: string) => vi.waitFor(async () => expect(await get(`/api/state?conversationId=${id}`)).not.toHaveProperty('activeRunId'));
+
+    expect((await fetch(`${url.origin}/api/models?agent=claude`)).status).toBe(401);
+    expect(await get('/api/meta')).toMatchObject({ build: expect.stringMatching(/^[0-9a-f]{12}$/) });
+    // A page that has not started a conversation asks what one would begin with.
+    expect(await get('/api/state')).toMatchObject({ agent: 'claude', overrides: {}, sources: { model: expect.any(String), effort: expect.any(String) } });
+    const choices = await get('/api/models?agent=claude') as { efforts: string[]; models: unknown[] };
+    expect(choices).toMatchObject({ agent: 'claude', providers: [] });
+    expect(choices.efforts).toContain('low');
+    expect(Array.isArray(choices.models)).toBe(true);
+    expect((await fetch(`${url.origin}/api/models?agent=nope`, { headers })).status).toBe(400);
+    expect(((await get('/api/engines')).engines as Array<{ value: string; available: boolean }>).map(engine => [engine.value, engine.available]))
+      .toEqual(AGENT_KINDS.map(kind => [kind, true]));
+
+    const chosen = await post('/api/model', { conversationId: 'a', model: 'm-9', effort: 'low' });
+    expect(chosen.status).toBe(200);
+    expect(await chosen.json()).toMatchObject({ agent: 'claude', model: 'm-9', effort: 'low', overrides: { model: 'm-9', effort: 'low' },
+      sources: { model: 'scope', effort: 'scope' } });
+    const refused = await post('/api/model', { conversationId: 'a', effort: 'nope' });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: expect.stringContaining('不支持的思考强度') });
+    expect((await post('/api/model', { conversationId: 'a', model: 7 })).status).toBe(400);
+    expect((await post('/api/engine', { conversationId: 'a', agent: 'pi' })).status).toBe(200);
+    expect(await get('/api/state?conversationId=a')).toMatchObject({ agent: 'pi', overrides: {} });
+
+    // The next conversation begins with the engine last chosen, and with each engine's last model and effort.
+    expect(await get('/api/state')).toMatchObject({ agent: 'pi' });
+    expect(await get('/api/state?conversationId=b')).toMatchObject({ agent: 'pi' });
+    expect((await post('/api/send', { conversationId: 'b', text: 'hello' })).status).toBe(200);
+    await idle('b');
+    expect(h.pi.runs).toHaveLength(1);
+    expect(h.claude.runs).toHaveLength(0);
+    expect((await post('/api/engine', { conversationId: 'b', agent: 'claude' })).status).toBe(200);
+    expect(await get('/api/state?conversationId=b')).toMatchObject({ agent: 'claude', model: 'm-9', effort: 'low', overrides: { model: 'm-9', effort: 'low' } });
+
+    // A choice made by command is a choice like one made in the page; null goes back to the default.
+    expect(await (await post('/api/command', { conversationId: 'b', text: '/effort high' })).json()).toMatchObject({ reply: expect.stringContaining('Effort: high (chosen here)') });
+    expect(await get('/api/state?conversationId=b')).toMatchObject({ effort: 'high', overrides: { model: 'm-9', effort: 'high' } });
+    expect(await (await post('/api/model', { conversationId: 'b', model: null })).json()).toMatchObject({ overrides: { effort: 'high' }, sources: { effort: 'scope' } });
+    h.claude.setEvents(events);
+    expect((await post('/api/send', { conversationId: 'b', text: 'again' })).status).toBe(200);
+    await idle('b');
+    expect(h.claude.runOptions.at(-1)).toMatchObject({ reasoningEffort: 'high', rawThinking: true });
+    expect(h.claude.runOptions.at(-1)?.model).toBeUndefined();
+    // What the first conversation chose is still its own.
+    expect(await get('/api/state?conversationId=a')).toMatchObject({ agent: 'pi' });
+    expect(JSON.parse(await readFile(join(stateDir, 'web-chat', 'defaults.json'), 'utf8'))).toEqual({ agent: 'claude', settings: { claude: { reasoningEffort: 'high' } } });
+
+    // The record says what each run used.
+    const items = (await get('/api/items?conversationId=b&before=100')).items as Array<{ kind: string; settings?: unknown }>;
+    expect(items.filter(item => item.kind === 'run').map(item => item.settings)).toEqual([{ agent: 'pi' }, { agent: 'claude', effort: 'high' }]);
+
+    // A deleted conversation leaves no choice behind for one that takes its name.
+    expect(await (await post('/api/conversation/delete', { conversationId: 'b' })).json()).toEqual({ deleted: true });
+    const chosenFor = Object.keys(JSON.parse(await readFile(join(stateDir, 'scope-preferences.json'), 'utf8')) as object)
+      .map(key => (JSON.parse(key) as [string, string])[1]);
+    expect(chosenFor.some(scope => scope.includes('"a"'))).toBe(true);
+    expect(chosenFor.some(scope => scope.includes('"b"'))).toBe(false);
   });
 });

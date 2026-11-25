@@ -50,14 +50,15 @@ export function applyEvent(view: TranscriptView, event: PageEvent): TranscriptVi
       const known = view.items.find(item => item.key === event.key);
       // A patch only fits the state it was made from; anything else is put right by the next full item.
       if (known?.kind !== 'run' || known.rev !== event.base) return view;
-      const { type: _type, key: _key, base: _base, from, blocks, reasoningFrom, state, ...rest } = event;
+      const { type: _type, key: _key, base: _base, from, keep, blocks, state, ...rest } = event;
+      const had = known.state.blocks[from];
+      const first = blocks[0];
+      // Streamed text and reasoning arrive as what was added to the block already held.
+      const changed = keep && had && first && had.kind !== 'tool' && first.kind === had.kind
+        ? [{ ...first, content: had.content.slice(0, keep) + first.content }, ...blocks.slice(1)] : blocks;
       const item: RunItem = {
         ...known, ...rest, kind: 'run', key: known.key, ord: known.ord,
-        state: {
-          ...state,
-          blocks: [...known.state.blocks.slice(0, from), ...blocks],
-          reasoning: { ...state.reasoning, content: known.state.reasoning.content.slice(0, reasoningFrom) + state.reasoning.content },
-        },
+        state: { ...state, blocks: [...known.state.blocks.slice(0, from), ...changed] },
       };
       return { ...view, rev: Math.max(view.rev, event.rev), items: place(view.items, item) };
     }

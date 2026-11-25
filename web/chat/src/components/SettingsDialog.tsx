@@ -53,8 +53,14 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             { value: 'mod', label: `${modKey} + Enter` },
           ]} />
         </Field>
-        <Field title="工具调用" hint="每一步的命令和输出是否直接展开">
-          <Choice label="工具调用" value={settings.expandTools ? 'open' : 'closed'} onChange={value => setSettings({ expandTools: value === 'open' })} options={[
+        <Field title="过程" hint="agent 的思考和工具调用。运行结束后，较长的过程是否收成一行">
+          <Choice label="过程" value={settings.foldSteps ? 'fold' : 'open'} onChange={value => setSettings({ foldSteps: value === 'fold' })} options={[
+            { value: 'fold', label: '结束后收起' },
+            { value: 'open', label: '始终列出' },
+          ]} />
+        </Field>
+        <Field title="步骤详情" hint="每一步的思考内容、命令和输出是否直接展开">
+          <Choice label="步骤详情" value={settings.expandTools ? 'open' : 'closed'} onChange={value => setSettings({ expandTools: value === 'open' })} options={[
             { value: 'closed', label: '点击展开' },
             { value: 'open', label: '默认展开' },
           ]} />

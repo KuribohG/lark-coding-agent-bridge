@@ -5,7 +5,8 @@ import type { RunState } from './run-state';
 
 /** What happens in one conversation, as a front end that is not the bridge's own UI sees it. */
 export type ConversationEvent =
-  | { type: 'run.started'; runId: string }
+  /** `settings` is what the run was started with: its engine, and the model and effort where the bridge chose them. */
+  | { type: 'run.started'; runId: string; settings?: { agent: string; model?: string; provider?: string; effort?: string } }
   /** A full snapshot; it replaces every earlier state of the same run. */
   | { type: 'run.state'; runId: string; state: RunState }
   | { type: 'run.question'; runId: string; id: string; mode: AgentQuestionMode; questions: readonly AgentQuestion[] }

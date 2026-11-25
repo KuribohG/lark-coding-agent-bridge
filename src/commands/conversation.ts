@@ -1,8 +1,10 @@
 import type {
   ConversationIdentity,
+  ConversationModelSettings,
   ConversationRuntime,
   ConversationStatus,
 } from '../runtime/conversation';
+import { REASONING_EFFORTS } from '../agent/model-settings';
 import {
   commandDefinitionsFor,
   commandHelpLines,
@@ -70,14 +72,36 @@ const handlers = {
     const stopped = await host.runtime.stop(host.identity, status.activeRunId);
     await reply(host, stopped ? 'Stopping the active run.' : 'The run is no longer active.');
   },
-  model: async (_args, host) => {
-    const status = await host.runtime.status(host.identity);
-    await reply(
-      host,
-      `This thread is using **${status.agentKind}**. Engine switching is available through the API in this version.`,
-    );
+  model: async (args, host) => {
+    const [model, effort, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+    if (!model) {
+      await reply(host, `${modelText(await host.runtime.modelSettings(host.identity))}\n\n${MODEL_USAGE}`);
+      return;
+    }
+    if (rest.length > 0 || (effort !== undefined && effort !== 'default' && !(REASONING_EFFORTS as readonly string[]).includes(effort))) {
+      await reply(host, MODEL_USAGE);
+      return;
+    }
+    const settings = await host.runtime.setModelSettings(host.identity, { model: model === 'default' ? null : model,
+      ...(effort === undefined ? {} : { reasoningEffort: effort === 'default' ? null : effort }) });
+    await reply(host, `From the next run:\n${modelText(settings)}`);
+  },
+  effort: async (args, host) => {
+    const [effort, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+    if (!effort) {
+      await reply(host, `${modelText(await host.runtime.modelSettings(host.identity))}\n\n${MODEL_USAGE}`);
+      return;
+    }
+    if (rest.length > 0) {
+      await reply(host, MODEL_USAGE);
+      return;
+    }
+    const settings = await host.runtime.setModelSettings(host.identity, { reasoningEffort: effort === 'default' ? null : effort });
+    await reply(host, `From the next run:\n${modelText(settings)}`);
   },
 } satisfies Record<string, ConversationCommandHandler>;
+
+const MODEL_USAGE = 'Usage: `/model <model|default> [effort]`, `/effort <level|default>`. A change applies from the next run.';
 
 /**
  * Fails fast when the shared catalogue and this surface's handlers drift
@@ -144,6 +168,18 @@ function commandSummary(definition: CommandDefinition, surface: CommandChannelId
     `**${definition.name}**`,
     ...(aliases ? [aliases, ''] : []),
     ...commandHelpLines('', [definition], surface).map(line => line.replace(/^- /, '• ')),
+  ].join('\n');
+}
+
+const SOURCE = { scope: 'chosen here', profile: 'configured default', cli: 'engine default', model: 'model default' } as const;
+
+function modelText(settings: ConversationModelSettings): string {
+  const model = settings.provider && settings.model ? `${settings.provider} · ${settings.model}` : settings.model ?? settings.provider;
+  return [
+    `**Engine:** ${settings.agentKind}`,
+    `**Model:** ${model ?? 'the engine\'s own'} (${SOURCE[settings.modelSource]})`,
+    `**Effort:** ${settings.reasoningEffort ?? 'the engine\'s own'} (${SOURCE[settings.effortSource]})`,
+    ...(settings.notice ? [settings.notice] : []),
   ].join('\n');
 }
 

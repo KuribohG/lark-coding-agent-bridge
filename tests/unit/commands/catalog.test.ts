@@ -53,7 +53,7 @@ describe('shared slash command parser', () => {
 describe('channel-scoped command catalog', () => {
   it('exposes only the commands Slack implements', () => {
     expect(commandDefinitionsFor('slack').map(definition => definition.name))
-      .toEqual(['new', 'model', 'status', 'stop', 'help']);
+      .toEqual(['new', 'model', 'effort', 'status', 'stop', 'help']);
   });
 
   it('keeps every Lark command in the default channel', () => {
@@ -65,7 +65,8 @@ describe('channel-scoped command catalog', () => {
     const lines = commandHelpLines('', commandDefinitionsFor('slack'), 'slack');
     expect(lines).toEqual([
       "- `/new` — forget this thread's native session",
-      '- `/model` — show the current engine',
+      "- `/model [model|default] [effort]` — show or set this thread's model and effort",
+      "- `/effort [level|default]` — show or set this thread's reasoning effort",
       '- `/status` — show engine and run state',
       '- `/stop` — stop the active run',
       '- `/help [command]` — list commands or show details for one',

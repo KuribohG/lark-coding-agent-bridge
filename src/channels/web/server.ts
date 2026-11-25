@@ -1,5 +1,5 @@
 import { WEB_DISPLAY_DEFAULTS, type WebDisplayConfig } from '../../config/channel-display';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   assertConversationCommandsSupported,
   handleConversationCommand,
@@ -21,7 +21,11 @@ import { acquireHostLock } from '../../runtime/host-lock';
 import { AGENT_OPTIONS, isAgentKind } from '../../agent/backends';
 import { DashboardApi } from '@kuribohg/agent-workflows';
 import { getBuildInfo } from '../../build-info';
+import { REASONING_EFFORTS } from '../../agent/model-settings';
 import { recordable, WebTranscripts, type TranscriptEvent, type WebConversation } from './transcript';
+import { WebDefaults } from './defaults';
+import type { ConversationModelPatch } from '../../runtime/conversation';
+import type { AgentKind } from '../../config/profile-schema';
 
 export interface WebChannelOptions extends Omit<WebChatRuntimeOptions, 'authorize'> {
   port?: number;
@@ -49,10 +53,14 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
   if (!lock) throw new Error('Web state directory is already in use or cannot be locked');
   let runtime: WebChatRuntime;
   const shown = { ...WEB_DISPLAY_DEFAULTS, ...options.display };
-  const transcripts = new WebTranscripts(join(options.stateDir, 'web-chat'));
+  const transcripts = new WebTranscripts(join(options.stateDir, 'web-chat'), Date.now, PAGE_BUILD);
+  const defaults = new WebDefaults(join(options.stateDir, 'web-chat', 'defaults.json'));
   try {
     await transcripts.load();
+    await defaults.load();
     runtime = await createWebChatRuntime({ ...options, authorize: async identity => identity.actorId === 'local',
+      // The page folds reasoning away, so it can be given all of it; and every conversation chooses its own model.
+      rawThinking: options.rawThinking ?? shown.show_reasoning, modelChoice: options.modelChoice ?? {},
       filterState: state => filterWebState(state, shown),
       observe: (identity, event) => { if (identity.actorId === 'local') transcripts.observe(identity.conversationId, event); } });
   }
@@ -61,7 +69,7 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
   let closing = false;
   // The page's workflow panel reads this host's own store through the dashboard's read-only views.
   const workflows = options.workflows ? new DashboardApi([{ name: WORKFLOW_SOURCE, path: join(options.stateDir, 'workflows.sqlite') }]) : undefined;
-  const site: Site = { runtime, transcripts, workflows, token, display: shown, options };
+  const site: Site = { runtime, transcripts, defaults, begun: new Set(), workflows, token, display: shown, options };
   const server = createServer((req, res) => {
     handle(req, res, site, closing).catch(() => {
       if (!res.headersSent) sendJson(res, 500, { error: 'request failed' });
@@ -118,12 +126,18 @@ async function forgetAddress(file: string): Promise<void> {
   } catch { /* already gone, or not ours to read */ }
 }
 
+/** Names the page this server serves. A page that is open when the server is updated learns from it that it is the old one. */
+const PAGE_BUILD = createHash('sha256').update(html).digest('hex').slice(0, 12);
+
 /** The name the page's workflow panel knows this host's store by. */
 const WORKFLOW_SOURCE = 'chat';
 
 interface Site {
   runtime: WebChatRuntime;
   transcripts: WebTranscripts;
+  defaults: WebDefaults;
+  /** Conversations given the person's last choices that have nothing said in them yet. */
+  begun: Set<string>;
   workflows?: DashboardApi;
   token: string;
   display: WebDisplayConfig;
@@ -155,7 +169,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, site: Site, clo
   }
   if (req.method === 'GET' && url.pathname === '/api/events') { await streamEvents(req, res, url, runtime); return; }
   if (req.method !== 'POST' || !['/api/chat', '/api/send', '/api/command', '/api/stop', '/api/input', '/api/answer', '/api/engine',
-    '/api/conversation', '/api/conversation/delete'].includes(url.pathname)) {
+    '/api/model', '/api/conversation', '/api/conversation/delete'].includes(url.pathname)) {
     sendJson(res, 404, { error: 'not found' }); return;
   }
   try {
@@ -179,23 +193,48 @@ async function handle(req: IncomingMessage, res: ServerResponse, site: Site, clo
     if (url.pathname === '/api/conversation/delete') {
       if (!transcripts.get(id)) throw new HttpError(404, 'no such conversation');
       if ((await runtime.status(identity)).activeRunId || !await transcripts.remove(id)) throw new HttpError(409, '任务还在运行，先停止它再删除对话。');
-      // The agent's own session goes with the conversation; a new conversation never continues it.
+      // The agent's own session and what was chosen for it go with the conversation; a new one never continues it.
       await runtime.reset(identity);
+      await runtime.forgetModelSettings(identity);
+      site.begun.delete(id);
       sendJson(res, 200, { deleted: true });
       return;
     }
     if (url.pathname === '/api/engine') {
       const agent = required('agent');
       if (!isAgentKind(agent)) throw new HttpError(400, 'invalid agent');
+      await begin(site, identity);
       try {
         await runtime.setAgentKind(identity, agent);
       } catch (error) {
         if (error instanceof Error && /run is active/.test(error.message)) {
-          throw new HttpError(409, error.message);
+          throw new HttpError(409, '任务还在运行，等它结束或先停止，再切换引擎。');
         }
         throw error;
       }
+      await site.defaults.remember({ agent });
       sendJson(res, 200, { agent: await runtime.agentKind(identity), defaultAgent: runtime.defaultAgentKind });
+      return;
+    }
+    if (url.pathname === '/api/model') {
+      const agent = data.agent === undefined ? undefined : required('agent');
+      if (agent !== undefined && !isAgentKind(agent)) throw new HttpError(400, 'invalid agent');
+      // A string chooses, null (or nothing in the string) goes back to the default, an absent key leaves it.
+      const choice = (key: string): string | null | undefined => {
+        const value = data[key];
+        if (value === undefined) return undefined;
+        if (value !== null && (typeof value !== 'string' || value.length > 200)) throw new HttpError(400, `invalid ${key}`);
+        return value?.trim() || null;
+      };
+      const patch: ConversationModelPatch = {};
+      const [model, provider, effort] = [choice('model'), choice('provider'), choice('effort')];
+      if (model !== undefined) patch.model = model;
+      if (provider !== undefined) patch.provider = provider;
+      if (effort !== undefined) patch.reasoningEffort = effort;
+      await begin(site, identity);
+      const settings = await runtime.setModelSettings(identity, patch, agent);
+      await site.defaults.remember({ settings: [settings.agentKind, settings.overrides] });
+      sendJson(res, 200, await conversationState(site, identity, settings.agentKind));
       return;
     }
     if (url.pathname === '/api/stop') {
@@ -219,6 +258,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, site: Site, clo
       // The commands are shared with every ConversationRuntime-backed front
       // end; this channel collects the handler's replies for this response.
       const web = createWebCommandChannel();
+      await begin(site, identity);
+      const chosen = async () => { const { agentKind, overrides } = await runtime.modelSettings(identity); return { agentKind, overrides }; };
+      const before = await chosen();
       await transcripts.addUser(id, prompt, 'command', messageId(data));
       const handled = await handleConversationCommand(prompt, {
         runtime,
@@ -238,6 +280,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, site: Site, clo
           : Promise.resolve(undefined),
       });
       if (!handled) throw new HttpError(400, 'unknown command');
+      // A model or effort chosen by command is a choice like one made in the page.
+      const after = await chosen();
+      if (JSON.stringify(after) !== JSON.stringify(before)) await site.defaults.remember({ settings: [after.agentKind, after.overrides] });
       const reply = web.reply();
       const shown = web.markdown();
       if (shown !== undefined) await transcripts.addNotice(id, shown, 'command');
@@ -245,6 +290,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, site: Site, clo
       return;
     }
     if (url.pathname === '/api/send') {
+      await begin(site, identity);
       await transcripts.addUser(id, prompt, 'message', messageId(data));
       const run = await runtime.submit({ ...identity, prompt });
       if (run.ok) sendJson(res, 200, { runId: run.runId });
@@ -296,10 +342,10 @@ async function read(req: IncomingMessage, res: ServerResponse, url: URL, site: S
     if (path === '/api/meta') {
       const build = getBuildInfo();
       sendJson(res, 200, {
-        version: build.version, commit: build.commit,
+        version: build.version, commit: build.commit, build: PAGE_BUILD,
         workspace: options.config.workspaces.default,
         agent: runtime.defaultAgentKind, agents: AGENT_OPTIONS,
-        display, workflows: Boolean(site.workflows),
+        display, workflows: Boolean(site.workflows), efforts: REASONING_EFFORTS,
         commands: commandDefinitionsFor('web').map(definition => ({ name: definition.name, aliases: definition.aliases ?? [],
           help: commandHelpLines('', [definition], 'web').map(line => line.replace(/^- /, '')) })),
       });
@@ -315,15 +361,29 @@ async function read(req: IncomingMessage, res: ServerResponse, url: URL, site: S
       return true;
     }
     if (path === '/api/state') {
-      const identity = { actorId: 'local', conversationId: boundedValue(url.searchParams.get('conversationId'), 'conversationId') };
-      const status = await runtime.status(identity);
-      const preferences = (options.configForAgent?.(status.agentKind, identity) ?? options.config).preferences;
+      sendJson(res, 200, await conversationState(site, pageIdentity(url)));
+      return true;
+    }
+    if (path === '/api/models') {
+      const identity = pageIdentity(url);
+      const named = url.searchParams.get('agent');
+      if (named !== null && !isAgentKind(named)) throw new HttpError(400, 'invalid agent');
+      const choices = await runtime.modelChoices(identity, named ?? await shownAgent(site, identity), { refresh: url.searchParams.get('refresh') === '1' });
       sendJson(res, 200, {
-        agent: status.agentKind, ...(status.activeRunId ? { activeRunId: status.activeRunId } : {}),
-        cwd: await runtime.workingDirectory(identity) ?? options.config.workspaces.default,
-        ...(preferences.model ? { model: preferences.model } : {}),
-        ...(preferences.reasoningEffort ? { effort: preferences.reasoningEffort } : {}),
+        agent: choices.agentKind, models: choices.models, providers: choices.providers, efforts: choices.efforts,
+        defaults: { ...(choices.defaults.model ? { model: choices.defaults.model } : {}),
+          ...(choices.defaults.provider ? { provider: choices.defaults.provider } : {}),
+          ...(choices.defaults.reasoningEffort ? { effort: choices.defaults.reasoningEffort } : {}) },
       });
+      return true;
+    }
+    if (path === '/api/engines') {
+      const identity = pageIdentity(url);
+      const engines = await Promise.all(AGENT_OPTIONS.map(async option => {
+        const { available, reason } = await runtime.engine(identity, option.value);
+        return { ...option, available, ...(reason ? { reason } : {}) };
+      }));
+      sendJson(res, 200, { engines });
       return true;
     }
     if (path === '/api/workflows' || path.startsWith('/api/workflows/')) {
@@ -350,6 +410,65 @@ async function read(req: IncomingMessage, res: ServerResponse, url: URL, site: S
     return true;
   }
   return false;
+}
+
+/** The conversation a read is about; a page that has not started one yet names none. */
+function pageIdentity(url: URL): { actorId: string; conversationId: string } {
+  const id = url.searchParams.get('conversationId');
+  return { actorId: 'local', conversationId: id === null ? `draft-${randomUUID()}` : boundedValue(id, 'conversationId') };
+}
+
+/** Whether nothing has been said or chosen in the conversation: it will begin with the person's last choices. */
+function untouched(site: Site, id: string): boolean {
+  return !site.transcripts.get(id) && !site.begun.has(id);
+}
+
+/** The engine the conversation's next run uses. */
+async function shownAgent(site: Site, identity: { actorId: string; conversationId: string }): Promise<AgentKind> {
+  return (untouched(site, identity.conversationId) ? site.defaults.get().agent : undefined) ?? site.runtime.agentKind(identity);
+}
+
+/**
+ * Gives a conversation that is being started what the person last chose in the page: the engine, and for every
+ * engine its model and effort. A choice that no longer means anything is left out; the conversation still starts.
+ */
+async function begin(site: Site, identity: { actorId: string; conversationId: string }): Promise<void> {
+  const { runtime } = site;
+  const id = identity.conversationId;
+  if (!untouched(site, id)) return;
+  site.begun.add(id);
+  // Only the ones still waiting for their first message are of any use.
+  if (site.begun.size > 2_000) for (const known of [...site.begun].slice(0, 1_000)) site.begun.delete(known);
+  const { agent, settings } = site.defaults.get();
+  for (const [kind, chosen] of Object.entries(settings) as Array<[AgentKind, NonNullable<typeof settings[AgentKind]>]>) {
+    await runtime.setModelSettings(identity, { model: chosen.model ?? null, provider: chosen.provider ?? null,
+      reasoningEffort: chosen.reasoningEffort ?? null }, kind).catch(() => {});
+  }
+  if (agent && agent !== await runtime.agentKind(identity)) await runtime.setAgentKind(identity, agent).catch(() => {});
+}
+
+/** What the page shows of a conversation beside its messages: the engine, where it works, and what its next run uses. */
+async function conversationState(site: Site, identity: { actorId: string; conversationId: string }, agentKind?: AgentKind) {
+  const { runtime, options } = site;
+  const status = await runtime.status(identity);
+  const fresh = untouched(site, identity.conversationId);
+  const agent = agentKind ?? await shownAgent(site, identity);
+  let settings;
+  // A conversation that has not begun is shown as it will begin.
+  try { settings = await runtime.modelSettings(identity, agent, fresh ? site.defaults.get().settings[agent] ?? {} : undefined); }
+  catch { settings = await runtime.modelSettings(identity, agent, {}); }
+  const { overrides } = settings;
+  return {
+    agent, ...(status.activeRunId ? { activeRunId: status.activeRunId } : {}),
+    cwd: await runtime.workingDirectory(identity) ?? options.config.workspaces.default,
+    ...(settings.model ? { model: settings.model } : {}),
+    ...(settings.provider ? { provider: settings.provider } : {}),
+    ...(settings.reasoningEffort ? { effort: settings.reasoningEffort } : {}),
+    sources: { model: settings.modelSource, provider: settings.providerSource, effort: settings.effortSource },
+    overrides: { ...(overrides.model ? { model: overrides.model } : {}), ...(overrides.provider ? { provider: overrides.provider } : {}),
+      ...(overrides.reasoningEffort ? { effort: overrides.reasoningEffort } : {}) },
+    ...(settings.notice ? { notice: settings.notice } : {}),
+  };
 }
 
 /** A slow reader is disconnected rather than buffered without bound; it reconnects with its cursor. */

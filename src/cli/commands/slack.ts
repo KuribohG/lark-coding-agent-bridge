@@ -11,6 +11,7 @@ import { createSlackPlugin } from '../../channels/slack';
 import { SLACK_SYSTEM_PROMPT } from '../../channels/slack/config';
 import { openExecution } from '../../runtime/execution-host';
 import { normalizeModelServices } from '../../model-service/config';
+import { ModelProviderRegistry } from '../../model-provider/provider';
 import type { AgentKind, RunProfileConfig } from '../../config/profile-schema';
 import {
   selectStandaloneAgent,
@@ -51,11 +52,12 @@ export async function runSlack(options: RunSlackOptions): Promise<void> {
   const profileConfig = standaloneProfile(doc, profile, defaultAgentKind, workspace, options);
   const configForAgent = (kind: AgentKind): RunProfileConfig =>
     standaloneProfile(doc, profile, kind, workspace, options, defaultAgentKind);
+  const modelServices = normalizeModelServices(doc?.model_services);
   const { execution } = await openExecution({
     profileConfig,
     appPaths: { profileDir: stateDir },
     systemPrompt: SLACK_SYSTEM_PROMPT,
-    modelServices: normalizeModelServices(doc?.model_services),
+    modelServices,
   });
 
   const secretProfile = options.profile
@@ -92,6 +94,8 @@ export async function runSlack(options: RunSlackOptions): Promise<void> {
     namespace,
     systemPrompt: SLACK_SYSTEM_PROMPT,
     workflows: true,
+    // `/model` and `/effort` choose for one thread.
+    modelChoice: { providers: new ModelProviderRegistry(modelServices) },
     botToken,
     appToken,
     teamId: options.teamId,

@@ -338,7 +338,7 @@ export class ClaudeAdapter implements AgentAdapter {
       runId: opts.runId,
       ...(hosted ? { detachOnShutdown: true } : {}),
       events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, ledger, this.backgroundWaitMs,
-        this.backgroundDrainGraceMs, () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText),
+        this.backgroundDrainGraceMs, () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText, opts.rawThinking),
       async sendInput({ text, messageId }) {
         return await input.steer(text, messageId) === 'accepted'
           ? { status: 'accepted', messageId, scope: 'active-session' }
@@ -399,6 +399,7 @@ async function* createEventStream(
   isInterrupted: () => boolean,
   deadlineAt?: number,
   answerIncludesInterimText?: boolean,
+  rawThinking?: boolean,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
   // event (ENOENT etc.) fires in the next tick, so also check getError().
@@ -414,7 +415,7 @@ async function* createEventStream(
 
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
   let sawStdout = false;
-  const translator = new ClaudeRunTranslator(answerIncludesInterimText);
+  const translator = new ClaudeRunTranslator(answerIncludesInterimText, rawThinking);
   let silentExitTimer: ReturnType<typeof setTimeout> | undefined;
   const closeSilentStdout = (): void => {
     silentExitTimer = setTimeout(() => {

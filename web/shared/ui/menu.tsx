@@ -28,7 +28,3 @@ export function MenuItem({ className, danger, icon, children, ...props }: Compon
 export function MenuSeparator() {
   return <Primitive.Separator className="mx-1 my-1 h-px bg-border" />;
 }
-
-export function MenuLabel({ children }: { children: ReactNode }) {
-  return <Primitive.Label className="px-2.5 pb-1 pt-1.5 text-[11.5px] font-medium text-subtle">{children}</Primitive.Label>;
-}

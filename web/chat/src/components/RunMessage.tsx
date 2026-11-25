@@ -1,26 +1,35 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Ban, Brain, ChevronRight, CircleAlert, Clock, Hourglass, RefreshCw } from 'lucide-react';
-import { cn } from '@shared/cn';
+import { memo, useMemo } from 'react';
+import { ArrowRightLeft, Ban, CircleAlert, Clock, Hourglass, RefreshCw } from 'lucide-react';
 import { clock, duration } from '@/lib/format';
-import type { Block, RunItem, RunState, ToolEntry } from '@/lib/types';
+import type { RunItem, RunSettings, RunState } from '@/lib/types';
+import { useSession } from '@/lib/use-session';
 import { CopyButton, Markdown } from './Markdown';
-import { ToolCalls } from './ToolCalls';
+import { Steps, type Step } from './Steps';
 
-type Segment = { kind: 'text'; key: string; content: string; streaming: boolean } | { kind: 'tools'; key: string; tools: ToolEntry[] };
+type Segment = { kind: 'text'; key: string; content: string; streaming: boolean } | { kind: 'steps'; key: string; steps: Step[] };
 
-/** Text as it was written, with each stretch of consecutive tool calls taken together. */
-function segments(blocks: Block[]): Segment[] {
+/** Text as it was written, with what the agent thought and did between two texts taken together. */
+function segments(state: RunState): Segment[] {
   const out: Segment[] = [];
-  blocks.forEach((block, index) => {
+  const step = (made: Step) => {
+    const last = out.at(-1);
+    if (last?.kind === 'steps') last.steps.push(made);
+    else out.push({ kind: 'steps', key: `s${made.key}`, steps: [made] });
+  };
+  // A run recorded before reasoning was kept where it came has all of it in one piece, shown first.
+  if (state.reasoning.content.trim()) step({ kind: 'reasoning', key: 'r', content: state.reasoning.content, active: state.reasoning.active });
+  state.blocks.forEach((block, index) => {
     if (block.kind === 'text') {
       if (block.content.trim() || block.streaming) out.push({ kind: 'text', key: `t${index}`, content: block.content, streaming: block.streaming });
-      return;
-    }
-    const last = out.at(-1);
-    if (last?.kind === 'tools') last.tools.push(block.tool);
-    else out.push({ kind: 'tools', key: `g${index}`, tools: [block.tool] });
+    } else if (block.kind === 'tool') step({ kind: 'tool', key: block.tool.id, tool: block.tool });
+    else if (block.content.trim()) step({ kind: 'reasoning', key: `r${index}`, content: block.content, active: Boolean(block.active) });
   });
   return out;
+}
+
+/** The engine, model and effort a run used, as a person would say it. */
+function settingsLabel(settings: RunSettings, agents: Array<{ value: string; label: string }> = []): string {
+  return [agents.find(agent => agent.value === settings.agent)?.label ?? settings.agent, settings.model, settings.effort].filter(Boolean).join(' · ');
 }
 
 /** Everything the run said, for copying. */
@@ -28,31 +37,6 @@ function answerOf(state: RunState): string {
   const parts = state.blocks.flatMap(block => block.kind === 'text' && block.content.trim() ? [block.content.trim()] : []);
   if (state.finalText?.trim() && !parts.includes(state.finalText.trim())) parts.push(state.finalText.trim());
   return parts.join('\n\n');
-}
-
-function Reasoning({ content, active }: { content: string; active: boolean }) {
-  const [open, setOpen] = useState(false);
-  const tail = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (active && !open && tail.current) tail.current.scrollTop = tail.current.scrollHeight; }, [content, active, open]);
-  return (
-    <div className="my-2">
-      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}
-        className="group/think -ml-1.5 flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[13px] text-muted-foreground hover:bg-hover hover:text-foreground">
-        <Brain className="size-3.5" />
-        <span className={cn(active && 'text-shimmer')}>{active ? '正在思考' : '思考过程'}</span>
-        <ChevronRight className={cn('size-3.5 text-subtle transition-transform', open && 'rotate-90')} />
-      </button>
-      {open ? (
-        <div className="mt-1 whitespace-pre-wrap border-l-2 border-border-strong py-0.5 pl-3.5 text-[13.5px] leading-[1.7] text-muted-foreground animate-fade-in">
-          {content}
-        </div>
-      ) : active && (
-        <div ref={tail} className="mt-1 max-h-[3.4em] overflow-hidden whitespace-pre-wrap border-l-2 border-border py-0.5 pl-3.5 text-[13px] leading-[1.7] text-subtle [mask-image:linear-gradient(to_bottom,transparent,black_70%)]">
-          {content.slice(-400)}
-        </div>
-      )}
-    </div>
-  );
 }
 
 function Working({ state }: { state: RunState }) {
@@ -108,27 +92,39 @@ function Ending({ item }: { item: RunItem }) {
   return null;
 }
 
-/** One run of the agent: what it thought, did and said, as far as it has got. */
-export const RunMessage = memo(function RunMessage({ item }: { item: RunItem }) {
+/**
+ * One run of the agent: what it thought, did and said, as far as it has got. `switched` marks a run that used
+ * another engine, model or effort than the one before it.
+ */
+export const RunMessage = memo(function RunMessage({ item, switched }: { item: RunItem; switched?: boolean }) {
   const { state } = item;
+  const agents = useSession(session => session.meta?.agents);
   const live = item.finishedAt === undefined && state.terminal === 'running';
-  const parts = useMemo(() => segments(state.blocks), [state.blocks]);
+  const parts = useMemo(() => segments(state), [state]);
   const texts = state.blocks.flatMap(block => block.kind === 'text' ? [block.content.trim()] : []);
   const closing = state.finalText?.trim() && !texts.includes(state.finalText.trim()) ? state.finalText : undefined;
   const last = parts.at(-1);
   const writing = last?.kind === 'text' && last.streaming;
-  // A tool that is still going says so on its own line.
-  const toolGoing = last?.kind === 'tools' && last.tools.some(tool => tool.status === 'running');
-  const empty = parts.length === 0 && !closing && !state.reasoning.content;
+  // A step that is still going says so on its own line.
+  const stepGoing = last?.kind === 'steps' && last.steps.some(step => step.kind === 'tool' ? step.tool.status === 'running' : step.active);
+  const empty = parts.length === 0 && !closing;
+  const used = item.settings && settingsLabel(item.settings, agents);
   return (
     <article className="group/run pb-2 pt-1 animate-rise" aria-busy={live}>
-      {state.reasoning.content && <Reasoning content={state.reasoning.content} active={state.reasoning.active && live} />}
+      {switched && used && (
+        <div className="my-1 flex items-center gap-2 text-[12px] text-subtle" role="note">
+          <span className="h-px flex-1 bg-border" />
+          <ArrowRightLeft className="size-3" />
+          <span>改用 {used}</span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
+      )}
       {parts.map((part, index) => part.kind === 'text'
         ? <Markdown key={part.key} text={part.content} streaming={part.streaming && live} className="my-2" />
-        : <ToolCalls key={part.key} tools={part.tools} live={live && index === parts.length - 1} />)}
+        : <Steps key={part.key} steps={part.steps} live={live && index === parts.length - 1} />)}
       {closing && <Markdown text={closing} className="my-2" />}
       {state.retry && live && <Retry retry={state.retry} />}
-      {live && !writing && !toolGoing && !state.retry && !(state.reasoning.active && state.reasoning.content) && <Working state={state} />}
+      {live && !writing && !stepGoing && !state.retry && <Working state={state} />}
       {!live && <Ending item={item} />}
       {!live && empty && state.terminal === 'done' && <p className="py-1 text-[13px] text-subtle">这次运行没有输出内容。</p>}
       {!live && !empty && (
@@ -138,6 +134,7 @@ export const RunMessage = memo(function RunMessage({ item }: { item: RunItem }) 
             <Clock className="size-3" />
             {clock(item.at)}
             {item.finishedAt !== undefined && item.finishedAt - item.at >= 1000 && <> · 用时 {duration(item.finishedAt - item.at)}</>}
+            {used && <> · {used}</>}
           </span>
         </div>
       )}

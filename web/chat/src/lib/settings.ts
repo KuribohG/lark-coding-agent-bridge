@@ -4,13 +4,15 @@ export interface Settings {
   theme: 'system' | 'light' | 'dark';
   /** `enter`: Enter sends and Shift+Enter breaks the line. `mod`: Ctrl/⌘+Enter sends. */
   sendKey: 'enter' | 'mod';
-  /** Show each tool call's input and output without a click. */
+  /** Show what each step thought, ran and got back without a click. */
   expandTools: boolean;
+  /** Fold a long stretch of steps into one line once its run is over. */
+  foldSteps: boolean;
   sidebar: boolean;
 }
 
 const KEY = 'bridge:settings';
-const DEFAULTS: Settings = { theme: 'system', sendKey: 'enter', expandTools: false, sidebar: true };
+const DEFAULTS: Settings = { theme: 'system', sendKey: 'enter', expandTools: false, foldSteps: true, sidebar: true };
 
 function read(): Settings {
   try { return { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings>) }; }
