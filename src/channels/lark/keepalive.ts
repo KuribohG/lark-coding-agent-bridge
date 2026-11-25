@@ -1,6 +1,7 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { log, reportMetric } from '../../core/logger';
-import { larkFetch } from '../../lark-auth/network';
+import type { LarkNetworkConfig } from '../../config/lark-network';
+import { LarkNetwork, larkFetch } from '../../lark-auth/network';
 
 /**
  * App-level keepalive loop. Defense-in-depth against silent SDK / network
@@ -38,6 +39,11 @@ export interface KeepaliveDeps {
   channel: LarkChannel;
   /** HTTP probe target, typically `https://open.feishu.cn` or lark equivalent. */
   domain: string;
+  /**
+   * One-shot reachability probe. A probe must use a fresh transport so a stale
+   * channel/proxy connection pool cannot permanently hide network recovery.
+   */
+  probe?: () => Promise<boolean>;
   request?: typeof fetch;
   /** Force-reconnect callback. Bridge uses `controls.restart`. */
   forceReconnect: () => Promise<void>;
@@ -90,7 +96,14 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
 
     // (4) Probe whether the network can even reach Feishu. If not, it's not
     //     a WS-level problem and force-reconnect won't help.
-    const reachable = await httpProbe(domain, deps.request ?? larkFetch);
+    let reachable = false;
+    try {
+      reachable = await (deps.probe
+        ? deps.probe()
+        : httpProbe(domain, deps.request ?? larkFetch));
+    } catch {
+      // A probe failure is an outage signal, not a keepalive failure.
+    }
     if (!reachable) {
       networkDownTicks++;
       // Rate-limit log: first hit + every NETWORK_DOWN_LOG_EVERY ticks.
@@ -139,6 +152,19 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
       clearInterval(timer);
     },
   };
+}
+
+/** Probe through a disposable transport, then release it regardless of outcome. */
+export async function probeLarkEndpoint(
+  domain: string,
+  config: LarkNetworkConfig = {},
+): Promise<boolean> {
+  const network = new LarkNetwork(config);
+  try {
+    return await httpProbe(domain, network.request);
+  } finally {
+    await network.close().catch(() => {});
+  }
 }
 
 async function httpProbe(domain: string, request: typeof fetch): Promise<boolean> {

@@ -9,12 +9,13 @@ import pkg from '../../../package.json';
 import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
 import { getAutostartProfiles, loadRootConfig } from '../../config/profile-store';
 import type { RootConfig } from '../../config/profile-schema';
-import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
+import { configureLogger, gcOldLogs, log } from '../../core/logger';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
 import { startUiServer } from '../../ui/server';
 import { liveConsole, readUiSidecar, removeUiSidecar, writeUiSidecar } from '../../ui/sidecar';
 import type { UiServerHandle } from '../../ui/types';
 import { Supervisor } from '../../runtime/supervisor';
+import { installProcessErrorGuards } from '../process-error-guards';
 import { acquireHostLock } from '../../runtime/host-lock';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
 import { cleanupTmpFiles } from '../../runtime/registry';
@@ -32,19 +33,7 @@ import { createBuiltinPlugins } from '../../plugins/defaults';
 // prefer v4 avoids that whole class of issue.
 dns.setDefaultResultOrder('ipv4first');
 
-// Process-level safety net: never let a stray SDK call / axios timeout
-// take the whole bot down. Most outbound calls (channel.send / rawClient.*)
-// are async; if any callsite misses a try/catch (or fires an update after
-// its enclosing scope returned), the rejection bubbles to here. Log and
-// keep the bot alive — losing a single reply is better than crashing.
-process.on('unhandledRejection', (reason) => {
-  log.fail('process', reason, { kind: 'unhandledRejection' });
-  reportError(reason, { kind: 'unhandledRejection' });
-});
-process.on('uncaughtException', (err) => {
-  log.fail('process', err, { kind: 'uncaughtException' });
-  reportError(err, { kind: 'uncaughtException' });
-});
+installProcessErrorGuards();
 
 // SIGHUP = reload config (`config reload`) for detached/service processes.
 // Installed before any profile registers, so a signal during startup is never

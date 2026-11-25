@@ -31,7 +31,7 @@ import { connectionLogHandlers } from './connection-log';
 import { CotClient, type CotPublisher } from './cot';
 import { FollowupRouter } from '../../runtime/followup';
 import { intakeMessage } from './intake';
-import { startKeepalive } from './keepalive';
+import { probeLarkEndpoint, startKeepalive } from './keepalive';
 import { startKnownChatsRefresh } from './lark-info';
 import { PendingQueue, type PendingMessage } from './pending-queue';
 import { UserQuestions } from './question-cards';
@@ -289,7 +289,9 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const keepalive = startKeepalive({
     channel,
     domain: probeDomain,
-    request: larkAuth.request,
+    // Never probe through the same long-lived dispatcher as the channel: a
+    // timed-out proxy/socket can otherwise make recovery invisible forever.
+    probe: () => probeLarkEndpoint(probeDomain, cfg.channels?.lark?.network),
     // Recovery reconnects with the running config; file edits apply via reload.
     forceReconnect: () => controls.restart({ config: 'running' }),
   });
