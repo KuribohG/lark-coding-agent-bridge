@@ -121,7 +121,8 @@ const MEMBER_INSTRUCTIONS = [
     + 'Commit first, and put the key of the item in the commit message: a problem later found in that code is then reported with your item as its origin and comes back to you. '
     + 'submit_work rebases your commits onto the tip of the landing branch, checks them in one batch with the commits of other members that are waiting, advances the branch and, given claimId and generation, '
     + 'completes the item with result (the landed commit when omitted). It returns {status:"landed",headCommit,commits,item} and leaves your worktree at the tip of the branch, with what others have landed: start the next item there. '
-    + 'The call blocks until the batch has been checked; if your command times out, repeat it with the same operationId to rejoin the same landing. Only submit_work advances the landing branch: never commit, update-ref or push to it.',
+    + 'The call blocks until the batch has been checked; if your command times out, repeat it with the same operationId to rejoin the same landing. Only submit_work advances the landing branch: never commit, update-ref or push to it. '
+    + 'The batch is checked in a worktree of the queue\'s own (a train-… directory that git worktree list shows): never run a command in it, not even git status, which locks its index and stops the landing for everyone.',
   'When a landing is turned back the claim stays yours while you repair: submit again with a new operationId, or use release_claim or fail_work when you cannot. '
     + '{status:"conflict",targetCommit,detail}: your commits conflict with what has landed. Rebase onto targetCommit, resolve the conflict and submit again. '
     + 'Do not merge by hand a file that a command generates (a registry, a manifest, an index): take its version from targetCommit, run the command again and commit what it writes. '

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { callWorkflow, WorkflowRuntime } from '../src';
 import { WorkflowKernel } from '../src/engine/kernel';
 import { workspaceCommand } from '../src/engine/workspace-process';
-import { CLONE_REMOTE, WorkflowWorkspaces } from '../src/engine/workspaces';
+import { CLONE_REMOTE, WorkflowWorkspaces, type TrainTiming } from '../src/engine/workspaces';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 import type { LandReport, WorkspaceBinding, WorkspaceLanding } from '../src/engine/workspace-types';
 import { LARGE_PATHS, largeCommit, printed } from './helpers/large-tree';
@@ -22,7 +22,7 @@ async function git(cwd: string, ...argv: string[]) {
 }
 const node = (code: string) => ({ argv: [process.execPath, '-e', code] });
 
-async function fixture() {
+async function fixture(timing: Partial<TrainTiming> = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-landing-'));
   closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const repo = join(dir, 'repo'); await mkdir(repo);
@@ -35,7 +35,7 @@ async function fixture() {
   closes.push(() => kernel.close());
   await kernel.call({ kind: 'main', scopeId: 'scope', allowStart: true }, 'run_script', { operationId: 'start', goal: 'test', plan: 'test landing', script: 'return null;' });
   const state = kernel.state('scope')!;
-  const manager = new WorkflowWorkspaces(join(dir, 'workspaces.sqlite'), join(dir, 'worktrees'));
+  const manager = new WorkflowWorkspaces(join(dir, 'workspaces.sqlite'), join(dir, 'worktrees'), undefined, timing);
   closes.push(() => manager.close());
   const ctx = { state, signal: signal() };
   const op = <T>(kind: string, key: string, args: object = {}) => manager.perform(ctx, { kind, key, ...args }) as Promise<T>;
@@ -381,10 +381,96 @@ describe('a landing branch that only the queue moves', () => {
     await vi.waitFor(() => expect([...trains.values()][0]!.queue).toHaveLength(1), { timeout: 20_000, interval: 20 });
     const bad = await outside(h, landing.targetRef, 'bad.txt');
     await writeFile(gate, '');
-    await expect(held).rejects.toThrow('moved from outside the landing queue');
+    // The train that was checking runs again and looks at the branch first: its submission is told the same.
+    expect(await held).toMatchObject({ status: 'halted', targetCommit: bad });
     expect(await waiting).toMatchObject({ status: 'halted', targetCommit: bad });
     // It had rebased onto the last landed commit and stays there.
     expect(await git(b.ws.path, 'rev-parse', 'HEAD~1')).toBe(landed);
+  }, 60_000);
+});
+
+describe('a train that fails for a reason of its own', () => {
+  /** A landing with one submission landed, so the train's worktree exists; returns that worktree's own Git directory. */
+  const started = async (h: Awaited<ReturnType<typeof fixture>>) => {
+    const landing = await h.configure([h.logged()]);
+    const first = await h.member('first'); await first.commit('first.txt', 'x\n');
+    expect(await first.land()).toMatchObject({ status: 'landed' });
+    return { landing, own: await git((await h.runs())[0]!, 'rev-parse', '--absolute-git-dir') };
+  };
+  const retrying = async (h: Awaited<ReturnType<typeof fixture>>) => (await h.manager.configure(h.ctx, {})).landing.branches[0]!.retrying;
+
+  it('keeps the submissions and runs again when another process holds a lock in its worktree', async () => {
+    const h = await fixture({ retryDelaysMs: [20, 20, 20, 20, 20, 20, 20, 20, 20, 20] }); const { landing, own } = await started(h);
+    // What `git status` in the train's worktree does while it scans the tree.
+    await writeFile(join(own, 'index.lock'), '');
+    const members = await Promise.all(['a', 'b', 'c'].map(name => h.member(name)));
+    await Promise.all(members.map((member, index) => member.commit(`file-${index}.txt`, 'x\n')));
+    const landings = members.map(member => member.land());
+    await vi.waitFor(async () => expect((await retrying(h))?.failures).toBeGreaterThanOrEqual(2), { timeout: 20_000, interval: 10 });
+    expect((await retrying(h))!.reason).toContain('index.lock');
+    await rm(join(own, 'index.lock'));
+    const reports = await Promise.all(landings);
+    expect(reports.map(report => report.status)).toEqual(['landed', 'landed', 'landed']);
+    // The main agent hears of it once, with what to tell the members.
+    const notices = reports.map(report => report.notice).filter(Boolean);
+    expect(notices.length).toBeGreaterThan(0);
+    expect(notices[0]).toContain('重跑');
+    expect(notices[0]).toContain('成员不应在列车工作树里运行任何命令');
+    expect(await retrying(h)).toBeUndefined();
+    expect(await git(h.repo, 'rev-list', '--count', `${h.base}..${landing.targetRef}`)).toBe('4');
+    const next = await h.member('next'); await next.commit('next.txt', 'x\n');
+    expect((await next.land()).notice).toBeUndefined();
+  }, 60_000);
+
+  it('removes a lock that a stopped process left behind, and only from its own worktree', async () => {
+    const h = await fixture({ retryDelaysMs: [20, 20], staleLockMs: 60_000 }); const { own } = await started(h);
+    const lock = join(own, 'index.lock'), old = new Date(Date.now() - 3_600_000);
+    await writeFile(lock, ''); await utimes(lock, old, old);
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    const report = await a.land();
+    expect(report).toMatchObject({ status: 'landed', commits: 1 });
+    expect(report.notice).toContain('引擎已清除遗留的 index.lock');
+    await expect(readFile(lock)).rejects.toThrow();
+    // A lock in the directory the repository's worktrees share may be held for any of them: it is waited out, never removed.
+    const shared = join(h.repo, '.git', `${report.targetRef}.lock`);
+    await writeFile(shared, ''); await utimes(shared, old, old);
+    const b = await h.member('b'); await b.commit('b.txt', 'b\n');
+    await expect(b.land()).rejects.toThrow('failed 3 times in a row');
+    expect(await readFile(shared, 'utf8')).toBe('');
+    await rm(shared);
+    expect(await b.land()).toMatchObject({ status: 'landed', commits: 1 });
+  }, 60_000);
+
+  it('writes the index of its worktree anew when it cannot be read', async () => {
+    const h = await fixture({ retryDelaysMs: [10, 10, 10] }); const { own } = await started(h);
+    await writeFile(join(own, 'index'), 'cut short');
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    const report = await a.land();
+    expect(report).toMatchObject({ status: 'landed', commits: 1 });
+    expect(report.notice).toContain('index（无法读取，已重建）');
+    expect(await git((await h.runs())[0]!, 'status', '--porcelain')).toBe('');
+  }, 60_000);
+
+  it('hands the failure back once it has run out of attempts, and says whose fault it is', async () => {
+    const h = await fixture({ retryDelaysMs: [10, 10] }); const { own } = await started(h);
+    await writeFile(join(own, 'index.lock'), '');
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    const before = (await h.runs()).length;
+    await expect(a.land()).rejects.toThrow(/failed 3 times in a row for a reason of its own[^]*index\.lock[^]*Nothing is wrong with your commits/);
+    expect(await h.runs()).toHaveLength(before);
+    // The lock is still young: it may belong to a process that runs, so it stays.
+    await rm(join(own, 'index.lock'));
+    const report = await a.land();
+    expect(report).toMatchObject({ status: 'landed', commits: 1 });
+    expect(report.notice).toContain('把这一批提交退回给了成员');
+  }, 60_000);
+
+  it('does not run a check again that ran out of time', async () => {
+    const h = await fixture({ retryDelaysMs: [10, 10] });
+    await h.configure([{ ...h.logged('setTimeout(()=>{},60000)'), timeoutMs: 300 }]);
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    await expect(a.land()).rejects.toThrow('timed out');
+    expect(await h.runs()).toHaveLength(1);
   }, 60_000);
 });
 

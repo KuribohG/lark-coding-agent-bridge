@@ -1,10 +1,10 @@
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
-import { access, mkdir, realpath, rm } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
-import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, WORKSPACE_CHECKOUT_SLOTS } from './limits';
+import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_RETRY_DELAYS_MS, TRAIN_STALE_LOCK_MS, WORKSPACE_CHECKOUT_SLOTS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
@@ -61,7 +61,20 @@ class Slots {
 const checkoutSlots = new Slots(WORKSPACE_CHECKOUT_SLOTS);
 
 /** A submission waiting for a train: the member's commits `base..head`, already rebased onto the branch as it was then. */
-interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits: number; ctx: WorkspaceContext; resolve(report: LandReport): void; reject(error: unknown): void }
+interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits: number; ctx: WorkspaceContext; resolve(report: LandReport): void; reject(error: unknown): void;
+  /** Its member has its answer; a train that runs again leaves it out. */
+  settled?: boolean }
+/** A Git command that failed. In a train's worktree that is the train's trouble, not that of the submissions it carries. */
+class GitFailure extends Error {}
+/** The landing branch moved while a train's checks ran, so what they passed on is no longer what would land. */
+class BranchMoved extends Error {}
+/** A train that failed for a reason of its own and runs again with the same submissions. */
+interface TrainTrouble { failures: number; since: number; reason: string; repeated: boolean; mended?: string }
+interface Train { queue: Candidate[]; running: boolean; trouble?: TrainTrouble }
+/** How long a train waits before it runs again, and when a lock nobody releases counts as abandoned. */
+export interface TrainTiming { retryDelaysMs: readonly number[]; staleLockMs: number }
+/** What Git says when the index of a worktree cannot be read at all. */
+const INDEX_UNREADABLE = /index file smaller than expected|index file corrupt|bad index file sha1 signature|bad signature 0x|bad index version/;
 type CheckFailure = { commands: WorkspaceChecks['commands']; reason?: string };
 
 /**
@@ -84,7 +97,7 @@ export class WorkflowWorkspaces {
   private readonly pending = new Set<Promise<unknown>>();
   private readonly activeKeys = new Set<string>();
   /** Submissions waiting to land, for each workflow and repository; one train at a time runs on each. */
-  private readonly trains = new Map<string, { queue: Candidate[]; running: boolean }>();
+  private readonly trains = new Map<string, Train>();
   /** Stops the trains when the service closes. */
   private readonly stopping = new AbortController();
   /** The last piece of work that uses each train's worktree; a train and a trial of new checks take turns there. */
@@ -96,8 +109,10 @@ export class WorkflowWorkspaces {
   /** Commits whose tree this service already screened for submodules and checkout filters, one check per commit. */
   private readonly supported = new Map<string, Promise<void>>();
   private closed = false;
+  private readonly timing: TrainTiming;
 
-  constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses) {
+  constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}) {
+    this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, ...timing };
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
@@ -158,7 +173,7 @@ export class WorkflowWorkspaces {
     const name = `git ${args.find((arg, at) => !arg.startsWith('-') && args[at - 1] !== '-c') ?? ''}`.trim();
     const result = await workspaceCommand('git', ['-c', `core.hooksPath=${hooks}`, '-c', 'core.fsmonitor=false',
       '-c', 'gc.auto=0', ...args], cwd, signal, GIT_TIMEOUT_MS, { ...gitEnv(), ...env }, this.processes, { name, ...output });
-    if (result.code && !allowFailure) throw new Error(`Git ${args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
+    if (result.code && !allowFailure) throw new GitFailure(`Git ${args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
     return result;
   }
   private async worktree(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir'>, args: string[], signal: AbortSignal, allowFailure = false): Promise<CommandResult> {
@@ -740,12 +755,12 @@ export class WorkflowWorkspaces {
   /** Queues a submission for the next train of its workflow and repository; settles when a train has dealt with it. */
   private board(change: Omit<Candidate, 'resolve' | 'reject'>): Promise<LandReport> {
     const key = `${change.ws.workflowId}:${change.ws.commonDir}`, { signal } = change.ctx;
-    const train = this.trains.get(key) ?? { queue: [], running: false }, { queue } = train;
+    const train: Train = this.trains.get(key) ?? { queue: [], running: false }, { queue } = train;
     this.trains.set(key, train);
     return new Promise<LandReport>((resolve, reject) => {
       // A member whose turn ended leaves the queue; once on a train its work lands or fails with the rest.
       const leave = () => { const at = queue.indexOf(candidate); if (at >= 0) { queue.splice(at, 1); reject(signal.reason); } };
-      const settled = <T>(settle: (value: T) => void) => (value: T) => { signal.removeEventListener('abort', leave); settle(value); };
+      const settled = <T>(settle: (value: T) => void) => (value: T) => { candidate.settled = true; signal.removeEventListener('abort', leave); settle(value); };
       const candidate: Candidate = { ...change, resolve: settled(resolve), reject: settled(reject) };
       signal.addEventListener('abort', leave, { once: true });
       queue.push(candidate);
@@ -756,8 +771,9 @@ export class WorkflowWorkspaces {
       }
     });
   }
-  private async drive(key: string, train: { queue: Candidate[]; running: boolean }): Promise<void> {
+  private async drive(key: string, train: Train): Promise<void> {
     while (train.queue.length && !this.closed) {
+      let wait: number | undefined;
       // The landing is read once the worktree is free: a change the main agent made meanwhile applies to this train.
       await this.exclusive(key, async () => {
         if (!train.queue.length) return;
@@ -765,13 +781,88 @@ export class WorkflowWorkspaces {
         const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
         try {
           if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
-          train.queue.unshift(...await this.round(landing, batch));
-        } catch (error) { for (const candidate of batch) candidate.reject(error); }
+          if (train.trouble) await this.mend(batch[0]!.ws, train.trouble).catch(() => undefined);
+          train.queue.unshift(...await this.round(landing, batch, train.trouble));
+          train.trouble = undefined;
+        } catch (error) {
+          // A train that failed for a reason of its own runs again: its submissions did nothing wrong, and handing
+          // them back would send every member through its rebase, its precheck and the queue once more.
+          const left = batch.filter(candidate => !candidate.settled);
+          wait = this.closed ? undefined : this.retryDelay(train, error);
+          if (wait !== undefined) { train.queue.unshift(...left); return; }
+          let failure = error;
+          if (train.trouble && error instanceof GitFailure) {
+            this.say(key, this.troubled(batch[0]!.ws, train.trouble, false));
+            failure = new Error(`The landing train failed ${train.trouble.failures + 1} times in a row for a reason of its own and gave this batch up: ${error.message.trim()}\n`
+              + 'Nothing is wrong with your commits and they are untouched. Do not run Git in the train\'s worktree and do not remove its lock files; submit again later.');
+          }
+          train.trouble = undefined;
+          for (const candidate of left) candidate.reject(failure);
+        }
       });
+      // The worktree is free while the train waits, so the main agent can settle the branch or change the checks.
+      if (wait) await this.pause(wait);
     }
     for (const candidate of train.queue.splice(0)) candidate.reject(this.stopping.signal.reason);
     train.running = false;
     if (this.trains.get(key) === train) this.trains.delete(key);
+  }
+  /**
+   * How long the train waits before it runs again with the same submissions, or nothing when they get the failure.
+   * Only a failure of the train itself is waited out: a Git command that failed in its worktree, which is a lock
+   * another process holds there or a file system that hiccuped, and a branch that moved while the checks ran, which
+   * the next run looks at before anything else. A check that fails or runs out of time is the submissions' answer.
+   */
+  private retryDelay(train: Train, error: unknown): number | undefined {
+    const delays = this.timing.retryDelaysMs, failures = (train.trouble?.failures ?? 0) + 1;
+    if (!(error instanceof GitFailure || error instanceof BranchMoved) || failures > delays.length) return undefined;
+    const reason = error.message.slice(0, 600);
+    train.trouble = { failures, since: train.trouble?.since ?? Date.now(), reason, repeated: train.trouble?.reason === reason,
+      ...(train.trouble?.mended ? { mended: train.trouble.mended } : {}) };
+    return error instanceof BranchMoved ? 0 : delays[failures - 1]!;
+  }
+  /** What the main agent hears about a train that failed for a reason of its own; it travels with the next reports. */
+  private troubled(ws: WorkspaceBinding, trouble: TrainTrouble, recovered: boolean): string {
+    const minutes = Math.max(1, Math.round((Date.now() - trouble.since) / 60_000));
+    return `落地列车（${ws.repository}）自身出错，${recovered ? `重跑 ${trouble.failures} 次后恢复（约 ${minutes} 分钟），这期间的提交留在队列里没有退回` : `连续 ${trouble.failures + 1} 次失败（约 ${minutes} 分钟）后把这一批提交退回给了成员`}：${trouble.reason.split('\n')[0]!.slice(0, 300)}。`
+      + (/\.lock'/.test(trouble.reason) ? `这是列车工作树 ${this.trainPath(ws)} 的 Git 锁被别的进程占着：有人在里面运行了 git（git status 也会锁住索引）。成员不应在列车工作树里运行任何命令。` : '')
+      + (trouble.mended ? `引擎已清除遗留的 ${trouble.mended}。` : '');
+  }
+  /** Adds to what the main agent has yet to hear about a train's branch. */
+  private say(key: string, notice: string): void {
+    const prior = this.unsaid.get(key);
+    this.unsaid.set(key, prior && prior !== notice ? `${prior}\n${notice}` : notice);
+  }
+  private pause(ms: number): Promise<void> {
+    const { signal } = this.stopping;
+    return new Promise(resolve => {
+      const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+      const timer = setTimeout(done, ms);
+      signal.addEventListener('abort', done, { once: true });
+      if (signal.aborted) done();
+    });
+  }
+  /**
+   * Clears what a process that is gone left in the train's own Git directory, before the train runs again. Whatever
+   * the engine runs in that worktree takes turns, so a lock found there belongs to someone else: a member that ran
+   * Git in it (`git status` locks the index while it scans the tree). One that still runs releases the lock and the
+   * train only has to wait; one that was stopped leaves the lock for good, and a lock that old is removed. An index
+   * that cannot be read twice in a row is dropped, and the reset every train starts with writes it anew.
+   */
+  private async mend(ws: WorkspaceBinding, trouble: TrainTrouble): Promise<void> {
+    const lock = /Unable to create '(.+?\.lock)'/.exec(trouble.reason)?.[1];
+    const unreadable = trouble.repeated && INDEX_UNREADABLE.test(trouble.reason);
+    if (!lock && !unreadable) return;
+    const { signal } = this.stopping;
+    const named = (await this.git(this.trainPath(ws), ['rev-parse', '--absolute-git-dir'], signal, true)).stdout.trim();
+    const own = named ? await realpath(named).catch(() => undefined) : undefined;
+    // Only the worktree's own directory: a lock in the repository's shared one may be held for a member's worktree.
+    if (!own || basename(dirname(own)) !== 'worktrees') return;
+    if (lock && await realpath(dirname(lock)).catch(() => undefined) === own) {
+      const file = join(own, basename(lock)), age = await stat(file).then(found => Date.now() - found.mtimeMs, () => undefined);
+      if (age !== undefined && age >= this.timing.staleLockMs) { await rm(file, { force: true }); trouble.mended = `${basename(lock)}（${Math.round(age / 60_000)} 分钟未变）`; }
+    }
+    if (unreadable) { await rm(join(own, 'index'), { force: true }); trouble.mended = 'index（无法读取，已重建）'; }
   }
 
   /** Runs `work` once everything queued before it for the same train's worktree has finished. */
@@ -821,7 +912,7 @@ export class WorkflowWorkspaces {
     if (!known) { if (head) this.putHead(ws, { targetRef, head }); return { head }; }
     if (known.head === head) { if (known.halt) this.putHead(ws, { targetRef, head }); return { head }; }
     const verdict = await this.vet(landing, ws, await this.trainWorktree(ws, signal), known, head, deadlineAt, signal);
-    if (!verdict.halt) this.unsaid.set(this.trainKey(ws), verdict.notice);
+    if (!verdict.halt) this.say(this.trainKey(ws), verdict.notice);
     return { head, ...verdict };
   }
   private halted(targetRef: string, verdict: { head: string | null; halt?: string; notice?: string }): LandReport {
@@ -864,7 +955,7 @@ export class WorkflowWorkspaces {
    * head is a conflict; one that only fails to apply on top of this train's cargo is tried first on the next train.
    * Returns the submissions to queue again.
    */
-  private async round(landing: WorkspaceLanding, batch: Candidate[]): Promise<Candidate[]> {
+  private async round(landing: WorkspaceLanding, batch: Candidate[], trouble?: TrainTrouble): Promise<Candidate[]> {
     const { signal } = this.stopping, { targetRef } = landing, { ws } = batch[0]!;
     const path = await this.trainWorktree(ws, signal);
     const deadlineAt = Math.max(...batch.map(candidate => candidate.ctx.state.deadlineAt));
@@ -872,7 +963,8 @@ export class WorkflowWorkspaces {
     const verdict = await this.inspect(landing, ws, deadlineAt);
     if (verdict.halt) { for (const candidate of batch) candidate.resolve(this.halted(targetRef, verdict)); return []; }
     const expected = verdict.head, key = this.trainKey(ws);
-    const notice = this.unsaid.get(key);
+    // A train that got here after failing for a reason of its own says so; the main agent can tell the members.
+    const notice = [this.unsaid.get(key), trouble && !(trouble.reason.startsWith('Landing branch was moved')) ? this.troubled(ws, trouble, true) : undefined].filter(Boolean).join('\n') || undefined;
     let said = false;
     const told = <T extends LandReport>(report: T): T => { if (!notice) return report; said = true; return { ...report, notice }; };
     const start = expected ?? batch[0]!.base;
@@ -904,7 +996,8 @@ export class WorkflowWorkspaces {
     }
     const head = heads[good]!;
     if (good) {
-      if (await this.refHead(ws.repository, targetRef, signal) !== expected) throw new Error('Landing branch was moved from outside the landing queue; submit again');
+      // The next run looks at the branch first: it vouches for what was added and stacks these submissions on it, or halts.
+      if (await this.refHead(ws.repository, targetRef, signal) !== expected) throw new BranchMoved('Landing branch was moved from outside the landing queue; submit again');
       await this.notCheckedOut(ws, targetRef, signal);
       const landed = stack.slice(0, good), from = landed.slice(0, 16).map(candidate => candidate.ws.id.slice(0, 8)).join(',');
       await this.advance(ws, targetRef, head, expected, `bridge-workflow: landed ${good} submission(s), ${landed.reduce((total, candidate) => total + candidate.commits, 0)} commit(s) from ${from}${good > 16 ? ',…' : ''}`, signal);
@@ -1051,8 +1144,10 @@ export class WorkflowWorkspaces {
     for (const ws of repos) {
       const head = await this.refHead(ws.repository, landing.targetRef, signal);
       const known = this.vouched(ws, landing.targetRef, head);
-      branches.push({ repository: ws.repository, head, ...(known ? { landed: known.head } : {}), waiting: this.trains.get(this.trainKey(ws))?.queue.length ?? 0,
-        ...(known?.halt && known.halt.head === head ? { halted: known.halt.reason } : {}) });
+      const train = this.trains.get(this.trainKey(ws));
+      branches.push({ repository: ws.repository, head, ...(known ? { landed: known.head } : {}), waiting: train?.queue.length ?? 0,
+        ...(known?.halt && known.halt.head === head ? { halted: known.halt.reason } : {}),
+        ...(train?.trouble ? { retrying: { failures: train.trouble.failures, since: train.trouble.since, reason: train.trouble.reason } } : {}) });
     }
     const names: Record<keyof LandingOverride, string> = { commands: 'checks', precheck: 'precheck', protect: 'protect', batch: 'batch' };
     return { targetRef: landing.targetRef, checks: landing.commands, ...(landing.precheck ? { precheck: landing.precheck } : {}), ...(landing.protect ? { protect: landing.protect } : {}),

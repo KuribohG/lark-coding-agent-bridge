@@ -62,6 +62,17 @@ export const MAX_WORKSPACE_RECORDS = 16_384;
  * serialized per repository; writing the checked-out files is the expensive part and runs in this many slots.
  */
 export const WORKSPACE_CHECKOUT_SLOTS = 64;
+/**
+ * How long a landing train waits before each run it repeats after a failure of its own (a Git command that failed in
+ * its worktree), with its submissions kept in the queue. A lock another process holds there is released within
+ * minutes; after the last wait the submissions get the failure back.
+ */
+export const TRAIN_RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 45_000, 120_000, 300_000, 300_000, 300_000];
+/**
+ * A lock file in the train's own Git directory that is this old was left by a process that is gone: a shell call a
+ * member started without a time limit of its own is stopped after ten minutes, and that leaves the lock behind.
+ */
+export const TRAIN_STALE_LOCK_MS = 600_000;
 
 export const MAILBOX_MAX_MESSAGES = 4096;
 export const MAILBOX_MAX_OPERATIONS = 8192;

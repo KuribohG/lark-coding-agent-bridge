@@ -112,7 +112,9 @@ export interface LandingView {
   batch: number;
   /** The settings that come from configure_landing rather than the script. */
   overridden: string[];
-  branches: Array<{ repository: string; head: string | null; landed?: string; waiting: number; halted?: string }>;
+  branches: Array<{ repository: string; head: string | null; landed?: string; waiting: number; halted?: string;
+    /** The train failed for a reason of its own (a Git command in its worktree) and runs again with its submissions kept. */
+    retrying?: { failures: number; since: number; reason: string } }>;
 }
 
 /** A change configure_landing did not make, and why. */
