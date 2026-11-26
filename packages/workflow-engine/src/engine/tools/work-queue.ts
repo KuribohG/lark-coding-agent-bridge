@@ -2,10 +2,11 @@ import { CONTROL_ARGS } from './control-args';
 import { LANDING_HALTED, pushEvent, requireState } from '../kernel-state';
 import { assigned, closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
 import { queueName } from '../work-routing';
-import { scriptText } from '../script-contract';
+import { boundedInteger, scriptText } from '../script-contract';
 import { workAuthority } from '../swarm';
 import { memberOperation } from './members';
 import type { ToolArgs, WorkflowTool, WorkflowToolPlugin } from './types';
+import type { KernelContext } from '../kernel-context';
 import type { WorkflowView } from '../types';
 import { versioned } from './versioned';
 
@@ -42,6 +43,35 @@ function active(ctx: { now(): number }, state: WorkflowView): void {
 }
 
 const LAND_LEASE_MS = 120_000;
+/**
+ * How long a submit_work call waits for its landing before it answers that the submission is still in the queue, in
+ * seconds. A landing takes as long as the trains ahead of it; a member's shell call has a time limit of its own, and a
+ * call that is cut off there looks like a failure and costs a turn to work out. Three minutes fits under the limits
+ * the agent CLIs give a shell call that names none.
+ */
+const SUBMIT_WAIT_DEFAULT_S = 180;
+const SUBMIT_WAIT_MAX_S = 3600;
+
+/**
+ * A landing a member asked for, from the call that started it to the answer it has been given. It runs on whether or
+ * not a call waits for it, so the answer is kept: a call that comes back for it reads it, and one that never came
+ * back while it ran still finds it.
+ */
+interface Submission {
+  operationId: string;
+  attemptId: string;
+  /** The claim it completes when it lands, as `claimId:generation`. */
+  claim?: string;
+  workspace: string;
+  state: ReturnType<KernelContext['store']['workspaceView']>;
+  since: number;
+  answer: Promise<unknown>;
+  settled: boolean;
+  /** A call has returned the answer. */
+  read: boolean;
+}
+/** The latest submission of each member turn of a kernel; held in memory like the landing queue itself. */
+const submissions = new WeakMap<KernelContext, Map<string, Submission>>();
 
 /**
  * Lands the commits of the member's worktree and, when it holds a claim, completes that work item with the landing.
@@ -54,48 +84,80 @@ const submitWork: WorkflowTool = {
     prepare: (ctx, state) => ctx.scheduler.expireClaims(state),
     call: () => { throw new Error('submit_work runs outside a transaction'); },
     run: async (ctx, caller, args, bound) => {
-      if (Object.keys(args).some(key => !['operationId', 'claimId', 'generation', 'result'].includes(key))) throw new Error('Unsupported submit_work option');
+      if (Object.keys(args).some(key => !['operationId', 'claimId', 'generation', 'result', 'waitSeconds'].includes(key))) throw new Error('Unsupported submit_work option');
       const operationId = scriptText(args.operationId, 'operationId', 160);
       const claim = args.claimId === undefined ? undefined : { claimId: args.claimId, generation: args.generation };
       if (!claim && args.result !== undefined) throw new Error('result belongs to a claimed work item; pass claimId and generation');
-      const hold = () => bound((state, task) => {
-        active(ctx, state);
-        if (claim) holdClaim(state, task, caller.attemptId, claim, ctx.now(), LAND_LEASE_MS);
-      });
-      const start = bound((state, task) => {
-        active(ctx, state);
-        if (state.script?.readOnly || task.readOnly) throw new Error('Work landing is disabled in read-only workflows');
-        const prior = claim && workOperation(state, task, caller.attemptId, operationId);
-        if (prior) return { prior: prior.response };
-        if (!task.workspaceId) throw new Error('submit_work requires a member that runs in a managed worktree');
-        if (!ctx.host.land) throw new Error('Landing is unavailable in this workflow');
-        if (claim) holdClaim(state, task, caller.attemptId, claim, ctx.now(), LAND_LEASE_MS);
-        return { workspace: task.workspaceId, state: ctx.store.workspaceView(state) };
-      });
-      if ('prior' in start) return { status: 'landed', item: start.prior };
-      // Checks may outlast any lease: keep the claim while they run, and stop landing once the member's turn is gone.
-      const controller = new AbortController();
-      const timer = setInterval(() => { try { hold(); } catch (error) { controller.abort(error); } }, LAND_LEASE_MS / 4);
-      timer.unref();
-      let report;
-      try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId }, controller.signal) as { status: string; headCommit?: string; commits?: number }; }
-      finally { clearInterval(timer); }
-      // What the landing queue found out about the branch is for the main agent; a halted branch says it until it is heard.
-      const { notice, ...rest } = report as typeof report & { notice?: string };
-      const halted = rest.status === 'halted';
-      if (notice) {
-        try {
-          bound(state => {
-            // A halt stands until the main agent restores or adopts the branch, which settles the notice (landing.ts).
-            if (!state.events.some(event => event.kind === 'landing_attention' && !event.acknowledged && event.summary === notice)) pushEvent(state, { kind: 'landing_attention', summary: notice, ...(halted ? { subject: LANDING_HALTED } : {}) }, ctx.now);
-          });
-        } catch { /* the member's turn is gone; the next report carries a standing notice again */ }
+      const waitMs = boundedInteger(args.waitSeconds, SUBMIT_WAIT_DEFAULT_S, 0, SUBMIT_WAIT_MAX_S) * 1000;
+      const workflowId = bound(state => { active(ctx, state); return state.workflowId; });
+      const book = submissions.get(ctx) ?? new Map<string, Submission>(); submissions.set(ctx, book);
+      const key = `${workflowId}:${caller.taskId}`, last = book.get(key), held = claim && `${String(claim.claimId)}:${String(claim.generation)}`;
+      // One landing at a time in a worktree: a call made while it runs waits for it, whatever operationId it names.
+      // A repeat of its operationId reads its answer again. So does a call that submits the same claim under another
+      // operationId before any call has returned the answer: the member has yet to learn what became of that item.
+      const joins = last && last.attemptId === caller.attemptId && (!last.settled || last.operationId === operationId || !last.read && !!held && last.claim === held);
+      const submission = joins ? last : (() => {
+        const start = bound((state, task) => {
+          active(ctx, state);
+          if (state.script?.readOnly || task.readOnly) throw new Error('Work landing is disabled in read-only workflows');
+          const prior = claim && workOperation(state, task, caller.attemptId, operationId);
+          if (prior) return { prior: prior.response };
+          if (!task.workspaceId) throw new Error('submit_work requires a member that runs in a managed worktree');
+          if (!ctx.host.land) throw new Error('Landing is unavailable in this workflow');
+          if (claim) holdClaim(state, task, caller.attemptId, claim, ctx.now(), LAND_LEASE_MS);
+          return { workspace: task.workspaceId, state: ctx.store.workspaceView(state) };
+        });
+        if ('prior' in start) return { prior: start.prior };
+        const hold = () => bound((state, task) => {
+          active(ctx, state);
+          if (claim) holdClaim(state, task, caller.attemptId, claim, ctx.now(), LAND_LEASE_MS);
+        });
+        // Checks may outlast any lease: keep the claim while they run, and stop landing once the member's turn is gone.
+        const controller = new AbortController();
+        const timer = setInterval(() => { try { hold(); } catch (error) { controller.abort(error); } }, LAND_LEASE_MS / 4);
+        timer.unref();
+        const answer = (async () => {
+          let report;
+          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId }, controller.signal) as { status: string; headCommit?: string; commits?: number }; }
+          finally { clearInterval(timer); }
+          // What the landing queue found out about the branch is for the main agent; a halted branch says it until it is heard.
+          const { notice, ...rest } = report as typeof report & { notice?: string };
+          const halted = rest.status === 'halted';
+          if (notice) {
+            try {
+              bound(state => {
+                // A halt stands until the main agent restores or adopts the branch, which settles the notice (landing.ts).
+                if (!state.events.some(event => event.kind === 'landing_attention' && !event.acknowledged && event.summary === notice)) pushEvent(state, { kind: 'landing_attention', summary: notice, ...(halted ? { subject: LANDING_HALTED } : {}) }, ctx.now);
+              });
+            } catch { /* the member's turn is gone; the next report carries a standing notice again */ }
+          }
+          report = rest;
+          if (report.status !== 'landed' || !claim) return report;
+          const item = bound((state, task) => mutateWork(state, task, caller.attemptId, 'complete_work',
+            { operationId, ...claim, result: args.result ?? { headCommit: report.headCommit, commits: report.commits } }, ctx.now()));
+          return { ...report, item };
+        })();
+        const begun: Submission = { operationId, attemptId: caller.attemptId, ...(held ? { claim: held } : {}), workspace: start.workspace, state: start.state, since: Date.now(), answer, settled: false, read: false };
+        const settle = () => { begun.settled = true; };
+        answer.then(settle, settle);
+        book.set(key, begun);
+        return begun;
+      })();
+      if ('prior' in submission) return { status: 'landed', item: submission.prior };
+      let timer: NodeJS.Timeout | undefined;
+      // The call that waits does not keep a closing service alive.
+      const waited = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), waitMs); timer.unref(); });
+      const answered = await Promise.race([submission.answer.then(value => ({ value }), (error: unknown) => ({ error })), waited]);
+      clearTimeout(timer);
+      if (!answered) {
+        // Nothing is wrong: the submission is where `stage` says, and the same call goes on waiting for it.
+        const progress = ctx.host.landProgress?.(submission.state, { workspace: submission.workspace, taskId: caller.taskId }) as object | undefined;
+        return { status: 'queued', operationId: submission.operationId, ...(progress ?? { stage: 'preparing', seconds: Math.round((Date.now() - submission.since) / 1000) }) };
       }
-      report = rest;
-      if (report.status !== 'landed' || !claim) return report;
-      const item = bound((state, task) => mutateWork(state, task, caller.attemptId, 'complete_work',
-        { operationId, ...claim, result: args.result ?? { headCommit: report.headCommit, commits: report.commits } }, ctx.now()));
-      return { ...report, item };
+      submission.read = true;
+      if ('error' in answered) throw answered.error;
+      // An answer to an earlier call says which submission it is about.
+      return submission.operationId === operationId ? answered.value : { ...answered.value as object, operationId: submission.operationId };
     },
   },
 };
@@ -117,11 +179,16 @@ const MEMBER_INSTRUCTIONS = [
     + 'item.writeOverlaps lists the unfinished items that expect to change the same paths with nothing to order them (member says who holds one): ask that member who changes what before you start. '
     + 'item.neededBy lists the items that wait on yours and are handed out when you complete it: when yours is a check and it did not pass, end it with fail_work and say why, not with complete_work. '
     + 'Losing a claim does not undo what you changed outside the workflow: check what has already happened and make a repeat harmless.',
-  'Landing code: when you run in a managed worktree and your system prompt names a Landing branch, deliver code with submit_work({operationId,claimId?,generation?,result?}). '
+  'Landing code: when you run in a managed worktree and your system prompt names a Landing branch, deliver code with submit_work({operationId,claimId?,generation?,result?,waitSeconds?}). '
     + 'Commit first, and put the key of the item in the commit message: a problem later found in that code is then reported with your item as its origin and comes back to you. '
     + 'submit_work rebases your commits onto the tip of the landing branch, checks them in one batch with the commits of other members that are waiting, advances the branch and, given claimId and generation, '
     + 'completes the item with result (the landed commit when omitted). It returns {status:"landed",headCommit,commits,item} and leaves your worktree at the tip of the branch, with what others have landed: start the next item there. '
-    + 'The call blocks until the batch has been checked; if your command times out, repeat it with the same operationId to rejoin the same landing. Only submit_work advances the landing branch: never commit, update-ref or push to it. '
+    + 'The call waits for the landing for up to waitSeconds (180 unless you pass another, at most 3600): give your shell command a time limit a minute longer than that. '
+    + 'When the landing takes longer the call answers {status:"queued",operationId,stage,seconds,position?,waiting?,train?,retrying?}, and nothing is wrong: '
+    + 'stage is preparing (your commits are being rebased and prechecked in your worktree), waiting (in the queue; position 1 boards the next batch) or on_train (in the batch that is being checked now). '
+    + 'Call submit_work again with the same operationId to go on waiting, as often as it takes. Until you have the answer leave your worktree as it is, without a commit, rebase or reset, and do not go looking for the queue. '
+    + 'retrying means the queue itself failed and runs again with your submission kept: it needs nothing from you. '
+    + 'The answer is kept until you have read it, so a call that was cut off loses nothing: repeat it with the same operationId. Only submit_work advances the landing branch: never commit, update-ref or push to it. '
     + 'The batch is checked in a worktree of the queue\'s own (a train-… directory that git worktree list shows): never run a command in it, not even git status, which locks its index and stops the landing for everyone.',
   'When a landing is turned back the claim stays yours while you repair: submit again with a new operationId, or use release_claim or fail_work when you cannot. '
     + '{status:"conflict",targetCommit,detail}: your commits conflict with what has landed. Rebase onto targetCommit, resolve the conflict and submit again. '

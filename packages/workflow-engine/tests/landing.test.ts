@@ -465,6 +465,38 @@ describe('a train that fails for a reason of its own', () => {
     expect(report.notice).toContain('把这一批提交退回给了成员');
   }, 60_000);
 
+  it('tells a member that waits where its submission is', async () => {
+    const h = await fixture({ retryDelaysMs: [20, 20, 20, 20, 20, 20, 20, 20, 20, 20] });
+    const gate = join(h.dir, 'gate'), held = join(h.dir, 'precheck-gate'); await writeFile(gate, ''); await writeFile(held, '');
+    const until = (file: string) => node(`const fs=require('fs');const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(file)}))clearInterval(t)},10)`);
+    await h.configure([h.logged('', true)], { precheck: [until(held)] });
+    const first = await h.member('first'); await first.commit('first.txt', 'x\n');
+    expect(await first.land()).toMatchObject({ status: 'landed' });
+    const own = await git((await h.runs())[0]!, 'rev-parse', '--absolute-git-dir');
+    const a = await h.member('a'), b = await h.member('b'), c = await h.member('c');
+    await a.commit('a.txt', 'a\n'); await b.commit('b.txt', 'b\n'); await c.commit('c.txt', 'c\n');
+    const where = (member: typeof a, name: string) => h.manager.progress(h.state.workflowId, { workspace: member.ws.id, taskId: name });
+    expect(where(a, 'a')).toBeUndefined();
+    // In its own worktree until the precheck is through.
+    await rm(held); await rm(gate);
+    const landA = a.land();
+    await vi.waitFor(() => expect(where(a, 'a')).toMatchObject({ stage: 'preparing' }), { timeout: 20_000, interval: 10 });
+    await writeFile(held, '');
+    // On the train while its checks run; the ones behind it wait in order.
+    await vi.waitFor(() => expect(where(a, 'a')).toMatchObject({ stage: 'on_train', waiting: 0, train: { submissions: 1, step: 'checking', checks: 1 } }), { timeout: 20_000, interval: 10 });
+    const landB = b.land(), landC = c.land();
+    await vi.waitFor(() => expect(where(c, 'c')).toMatchObject({ stage: 'waiting', position: 2, waiting: 2, train: { submissions: 1 } }), { timeout: 20_000, interval: 10 });
+    expect(where(b, 'b')).toMatchObject({ stage: 'waiting', position: 1 });
+    // A train that runs again for a reason of its own says so to those it carries.
+    await writeFile(join(own, 'index.lock'), ''); await writeFile(gate, '');
+    expect(await landA).toMatchObject({ status: 'landed' });
+    await vi.waitFor(() => expect(where(b, 'b')?.retrying?.failures).toBeGreaterThanOrEqual(1), { timeout: 20_000, interval: 10 });
+    expect(where(b, 'b')!.retrying!.reason).toContain('index.lock');
+    await rm(join(own, 'index.lock'));
+    expect((await Promise.all([landB, landC])).map(report => report.status)).toEqual(['landed', 'landed']);
+    expect(where(b, 'b')).toBeUndefined();
+  }, 60_000);
+
   it('does not run a check again that ran out of time', async () => {
     const h = await fixture({ retryDelaysMs: [10, 10] });
     await h.configure([{ ...h.logged('setTimeout(()=>{},60000)'), timeoutMs: 300 }]);
@@ -611,6 +643,55 @@ describe('submit_work', () => {
     expect(await pending).toMatchObject({ status: 'check_failed', commands: [{ stderr: 'boom' }] });
     expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'claimed' });
     expect(await h.send(request, 'release_claim', { claimId: grant.claimId, generation: grant.generation, reason: 'cannot fix' })).toMatchObject({ status: 'pending' });
+  });
+
+  it('answers that the submission is queued when the landing outlasts the wait, and keeps the answer until the member has read it', async () => {
+    const releases: Array<(report: unknown) => void> = [];
+    const h = harness(() => new Promise(resolve => { releases.push(resolve); }));
+    const request = await h.start('ws-1');
+    const grant = await h.send(request, 'claim_work') as Grant;
+    const submit = (operationId: string, waitSeconds = 0) => h.send(request, 'submit_work', { operationId, claimId: grant.claimId, generation: grant.generation, waitSeconds });
+    expect(await submit('submit-1')).toMatchObject({ status: 'queued', operationId: 'submit-1', stage: 'preparing' });
+    // The landing goes on without a caller; a repeat waits for it, and so does a call under another operationId.
+    expect(await submit('submit-1')).toMatchObject({ status: 'queued', operationId: 'submit-1' });
+    expect(await submit('submit-2')).toMatchObject({ status: 'queued', operationId: 'submit-1' });
+    expect(releases).toHaveLength(1);
+    // The claim stays leased though no call is open.
+    h.advance(100_000); await h.kernel.tick();
+    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'claimed' });
+    releases[0]!({ status: 'landed', targetRef: 'refs/heads/x', headCommit: 'abc', commits: 1 });
+    await vi.waitFor(() => expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'completed', result: { headCommit: 'abc' } }));
+    // It landed while nobody waited. The member that submits the item again has yet to read that, and is told so.
+    expect(await submit('submit-3')).toMatchObject({ status: 'landed', item: { status: 'completed' }, operationId: 'submit-1' });
+    const again = await submit('submit-1') as Record<string, unknown>;
+    expect(again).toMatchObject({ status: 'landed', item: { status: 'completed' } });
+    expect(again.operationId).toBeUndefined();
+    expect(releases).toHaveLength(1);
+    await expect(h.send(request, 'submit_work', { waitSeconds: 3601 })).rejects.toThrow();
+  });
+
+  it('keeps a failed landing\'s answer for a repeat and lands anew under a new operationId once it was read', async () => {
+    const releases: Array<{ resolve(report: unknown): void; reject(error: unknown): void }> = [];
+    const h = harness(() => new Promise((resolve, reject) => { releases.push({ resolve, reject }); }));
+    const request = await h.start('ws-1');
+    const submit = (operationId: string, waitSeconds = 0) => h.send(request, 'submit_work', { operationId, waitSeconds });
+    expect(await submit('one')).toMatchObject({ status: 'queued' });
+    releases[0]!.resolve({ status: 'check_failed', targetRef: 'refs/heads/x', targetCommit: 'abc', headCommit: 'def', commands: [{ argv: ['test'], code: 1, stdout: '', stderr: 'boom' }] });
+    expect(await submit('one', 5)).toMatchObject({ status: 'check_failed', commands: [{ stderr: 'boom' }] });
+    expect(await submit('one')).toMatchObject({ status: 'check_failed' });
+    expect(releases).toHaveLength(1);
+    // The repair goes in under a new operationId. What fails for a reason of the queue's is kept the same way.
+    expect(await submit('two')).toMatchObject({ status: 'queued', operationId: 'two' });
+    expect(releases).toHaveLength(2);
+    releases[1]!.reject(new Error('The landing train failed 8 times in a row'));
+    await expect(submit('two', 5)).rejects.toThrow('8 times in a row');
+    await expect(submit('two')).rejects.toThrow('8 times in a row');
+    // Without a claim an answer nobody read is not mistaken for that of new commits.
+    expect(await submit('three')).toMatchObject({ status: 'queued', operationId: 'three' });
+    releases[2]!.resolve({ status: 'landed', targetRef: 'refs/heads/x', headCommit: 'abc', commits: 1 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(await submit('four')).toMatchObject({ status: 'queued', operationId: 'four' });
+    expect(releases).toHaveLength(4);
   });
 
   it('raises what the queue found out about the branch as an event for the main agent, once while it stands, and keeps it from the member', async () => {

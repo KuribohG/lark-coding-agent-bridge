@@ -148,6 +148,7 @@ export class WorkflowRuntime {
         signal.throwIfAborted();
         return this.workspaceManager().land({ state, signal }, input);
       },
+      landProgress: (state, input) => this.knownWorkspaces()?.progress(state.workflowId, input),
       landing: async (state, input) => {
         await this.workspacePolicy(state.root);
         return this.workspaceManager().configure({ state, signal: new AbortController().signal }, input);

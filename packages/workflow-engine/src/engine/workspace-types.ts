@@ -150,6 +150,24 @@ export type LandReport = (
   /** Something the main agent should hear about the branch; submit_work raises it as an event and keeps it from the member. */
 ) & { notice?: string };
 
+/**
+ * Where a submission that has no answer yet is, for the member that waits for it. `preparing`: its commits are being
+ * rebased, screened and prechecked in its own worktree. `waiting`: it is in the queue for a train, at `position` (1
+ * boards next). `on_train`: it is on the train that is being stacked or checked now.
+ */
+export interface LandProgress {
+  stage: 'preparing' | 'waiting' | 'on_train';
+  /** Since the submission began. */
+  seconds: number;
+  position?: number;
+  /** Submissions in the queue behind the train that runs now. */
+  waiting?: number;
+  /** The train that runs now: how many submissions it carries, and how many runs of the checks it has started. */
+  train?: { submissions: number; step: 'stacking' | 'checking'; checks: number; seconds: number };
+  /** The train failed for a reason of its own (a Git command in its worktree) and runs again with its submissions kept. */
+  retrying?: { failures: number; seconds: number; reason: string };
+}
+
 export interface WorkspaceContext {
   state: WorkspaceStateView;
   signal: AbortSignal;

@@ -798,10 +798,12 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   workspace?(state: WorkspaceStateView, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** The repository a worktree of this workflow was made from and its isolation, as the `workspace` options that make another like it. */
   workspaceOrigin?(state: WorkspaceStateView, workspaceId: string): Promise<{ repo: string; isolation?: 'clone' }>;
-  /** Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). */
   /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
   tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;
+  /** Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). */
   land?(state: WorkspaceStateView, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
+  /** Where the landing in progress in that worktree is, as a LandProgress (workspace-types.ts); nothing when none is. */
+  landProgress?(state: WorkspaceStateView, input: { workspace: string; taskId: string }): unknown;
   /** Reports the landing and applies the main agent's changes to it; resolves to a LandingChange (workspace-types.ts). */
   landing?(state: WorkspaceStateView, input: Record<string, unknown>): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;

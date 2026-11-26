@@ -8,7 +8,7 @@ import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_RETRY_DELAYS_MS, TRAIN_STA
 import { boundedInteger, scriptText } from './script-contract';
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
-import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandProgress, LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
@@ -70,7 +70,9 @@ class GitFailure extends Error {}
 class BranchMoved extends Error {}
 /** A train that failed for a reason of its own and runs again with the same submissions. */
 interface TrainTrouble { failures: number; since: number; reason: string; repeated: boolean; mended?: string }
-interface Train { queue: Candidate[]; running: boolean; trouble?: TrainTrouble }
+/** The run a train is on: the submissions it took from the queue and how far it has come with them. */
+interface TrainRun { batch: Candidate[]; since: number; step: 'stacking' | 'checking'; checks: number }
+interface Train { queue: Candidate[]; running: boolean; trouble?: TrainTrouble; current?: TrainRun }
 /** How long a train waits before it runs again, and when a lock nobody releases counts as abandoned. */
 export interface TrainTiming { retryDelaysMs: readonly number[]; staleLockMs: number }
 /** What Git says when the index of a worktree cannot be read at all. */
@@ -104,8 +106,8 @@ export class WorkflowWorkspaces {
   private readonly tracks = new Map<string, Promise<unknown>>();
   /** What the main agent has yet to hear about each train's branch; it travels with the next reports. */
   private readonly unsaid = new Map<string, string>();
-  /** The landing in progress in each worktree; a repeated submission joins it. */
-  private readonly inFlight = new Map<string, Promise<LandReport>>();
+  /** The landing in progress in each worktree and when it began; a repeated submission joins it. */
+  private readonly inFlight = new Map<string, { report: Promise<LandReport>; since: number }>();
   /** Commits whose tree this service already screened for submodules and checkout filters, one check per commit. */
   private readonly supported = new Map<string, Promise<void>>();
   private closed = false;
@@ -690,10 +692,27 @@ export class WorkflowWorkspaces {
     if (this.closed) return Promise.reject(new Error('Workspace service is closed'));
     const key = `${ctx.state.workflowId}:${input.workspace}:${input.taskId}`;
     const joined = this.inFlight.get(key);
-    if (joined) return joined;
-    const pending = this.landInner(ctx, input); this.pending.add(pending); this.inFlight.set(key, pending);
+    if (joined) return joined.report;
+    const pending = this.landInner(ctx, input); this.pending.add(pending); this.inFlight.set(key, { report: pending, since: Date.now() });
     void pending.finally(() => { this.pending.delete(pending); this.inFlight.delete(key); }).catch(() => {});
     return pending;
+  }
+  /** Where the landing in progress in a worktree is, for the member that waits for it; nothing when none is. */
+  progress(workflow: string, input: { workspace: string; taskId: string }): LandProgress | undefined {
+    const flight = this.inFlight.get(`${workflow}:${input.workspace}:${input.taskId}`);
+    if (!flight) return undefined;
+    const seconds = (since: number) => Math.round((Date.now() - since) / 1000);
+    for (const [key, train] of this.trains) {
+      if (!key.startsWith(`${workflow}:`)) continue;
+      const mine = (candidate: Candidate) => candidate.ws.id === input.workspace && !candidate.settled;
+      const at = train.queue.findIndex(mine), riding = !!train.current?.batch.some(mine);
+      if (at < 0 && !riding) continue;
+      const { current, trouble } = train;
+      return { stage: riding ? 'on_train' : 'waiting', seconds: seconds(flight.since), ...(riding ? {} : { position: at + 1 }), waiting: train.queue.length,
+        ...(current ? { train: { submissions: current.batch.length, step: current.step, checks: current.checks, seconds: seconds(current.since) } } : {}),
+        ...(trouble ? { retrying: { failures: trouble.failures, seconds: seconds(trouble.since), reason: trouble.reason.split('\n')[0]!.slice(0, 300) } } : {}) };
+    }
+    return { stage: 'preparing', seconds: seconds(flight.since) };
   }
   private async landInner(ctx: WorkspaceContext, input: { workspace: string; taskId: string }): Promise<LandReport> {
     const workflow = ctx.state.workflowId, { signal } = ctx;
@@ -779,12 +798,16 @@ export class WorkflowWorkspaces {
         if (!train.queue.length) return;
         const landing = this.landing(train.queue[0]!.ws.workflowId);
         const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
+        train.current = { batch, since: Date.now(), step: 'stacking', checks: 0 };
         try {
           if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
           if (train.trouble) await this.mend(batch[0]!.ws, train.trouble).catch(() => undefined);
-          train.queue.unshift(...await this.round(landing, batch, train.trouble));
+          const again = await this.round(landing, batch, train.trouble, train.current);
+          train.current = undefined;
+          train.queue.unshift(...again);
           train.trouble = undefined;
         } catch (error) {
+          train.current = undefined;
           // A train that failed for a reason of its own runs again: its submissions did nothing wrong, and handing
           // them back would send every member through its rebase, its precheck and the queue once more.
           const left = batch.filter(candidate => !candidate.settled);
@@ -955,7 +978,7 @@ export class WorkflowWorkspaces {
    * head is a conflict; one that only fails to apply on top of this train's cargo is tried first on the next train.
    * Returns the submissions to queue again.
    */
-  private async round(landing: WorkspaceLanding, batch: Candidate[], trouble?: TrainTrouble): Promise<Candidate[]> {
+  private async round(landing: WorkspaceLanding, batch: Candidate[], trouble?: TrainTrouble, run?: TrainRun): Promise<Candidate[]> {
     const { signal } = this.stopping, { targetRef } = landing, { ws } = batch[0]!;
     const path = await this.trainWorktree(ws, signal);
     const deadlineAt = Math.max(...batch.map(candidate => candidate.ctx.state.deadlineAt));
@@ -981,6 +1004,7 @@ export class WorkflowWorkspaces {
       else { again.add(candidate); await at(head); }
     }
     const check = async (commit: string): Promise<CheckFailure | undefined> => {
+      if (run) { run.step = 'checking'; run.checks++; }
       await at(commit);
       const commands = tail(await this.run(path, landing.commands, signal, deadlineAt));
       if (commands.length !== landing.commands.length || commands.some(result => result.code)) return { commands };
