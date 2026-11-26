@@ -146,7 +146,7 @@ export class WorkflowWorkspaces {
   constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}) {
     this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, haltPollMs: TRAIN_HALT_POLL_MS, ...timing };
     this.overlays = new WorkspaceOverlays(join(resolve(directory), 'overlay'), processes,
-      (cwd, args, signal, allowFailure) => this.git(cwd, args, signal, allowFailure), signal => checkoutSlots.acquire(signal));
+      (cwd, args, signal, allowFailure, output) => this.git(cwd, args, signal, allowFailure, undefined, output), signal => checkoutSlots.acquire(signal));
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
     if (path !== ':memory:') chmodSync(path, 0o600);

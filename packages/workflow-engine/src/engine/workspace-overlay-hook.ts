@@ -10,6 +10,8 @@
  *
  * Paths are handled as latin1 strings, one character for each byte, so names that are not UTF-8 pass through intact.
  */
+/** The token the hook gives in a base tree, and the one a template index names: everything in it is as the base has it. */
+export const BASE_TOKEN = 'base';
 export const FSMONITOR_HOOK = String.raw`'use strict';
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const KEPT = 32, TOKEN = /^[0-9a-f]{40}$/;
@@ -49,7 +51,7 @@ function main() {
   if (process.argv[2] !== '2') process.exit(1);
   const here = place(), seen = process.argv[3] || '';
   // The base tree itself, where the template index is made: nothing differs from it.
-  if (!here) return answer('base', []);
+  if (!here) return answer('${BASE_TOKEN}', []);
   const now = listing(here.upper, here.lower), store = path.join(here.git, 'bridge-overlay-fsmonitor');
   const token = crypto.createHash('sha1').update(now.join('\0'), 'latin1').digest('hex');
   const recent = new Date();
@@ -63,7 +65,7 @@ function main() {
     for (const old of kept.slice(KEPT)) { try { fs.unlinkSync(path.join(store, old.name)); } catch (error) { /* another run removed it */ } }
   }
   let before = [];
-  if (seen !== 'base' && seen !== token) {
+  if (seen !== '${BASE_TOKEN}' && seen !== token) {
     try {
       if (!TOKEN.test(seen)) throw new Error('unknown token');
       before = fs.readFileSync(path.join(store, seen), 'latin1').split('\0').filter(Boolean);

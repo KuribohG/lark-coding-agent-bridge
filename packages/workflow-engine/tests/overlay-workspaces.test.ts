@@ -1,14 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WorkflowKernel } from '../src/engine/kernel';
-import { relocateIndex } from '../src/engine/workspace-overlay';
-import { FSMONITOR_HOOK } from '../src/engine/workspace-overlay-hook';
-import { workspaceCommand } from '../src/engine/workspace-process';
+import { relocateIndex, unchangedIndex, WorkspaceOverlays } from '../src/engine/workspace-overlay';
+import { BASE_TOKEN, FSMONITOR_HOOK } from '../src/engine/workspace-overlay-hook';
+import { nodeProcesses, workspaceCommand, type CommandOutput } from '../src/engine/workspace-process';
 import { CLONE_REMOTE, WorkflowWorkspaces } from '../src/engine/workspaces';
 import type { WorkspaceBinding, WorkspaceLanding } from '../src/engine/workspace-types';
 
@@ -57,7 +57,74 @@ describe('the index an overlay workspace starts from', () => {
   it('returns an index it does not understand as it is', () => {
     for (const index of [Buffer.alloc(0), Buffer.from('not an index at all, but long enough to be looked at'), Buffer.concat([Buffer.from('DIRC'), Buffer.alloc(60)])]) {
       expect(relocateIndex(index, '/elsewhere')).toBe(index);
+      expect(unchangedIndex(index, BASE_TOKEN)).toBeUndefined();
     }
+  });
+
+  /** Which entries Git holds to be unchanged without looking: `ls-files -f` prints those with a small letter. */
+  const trusted = async (cwd: string, options: string[], index?: string) => (await workspaceCommand('git', [...options, 'ls-files', '-f'], cwd, signal(), 60_000,
+    { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...(index ? { GIT_INDEX_FILE: index } : {}) })).stdout.split('\n').filter(Boolean).map(line => `${/^[a-z]/.test(line) ? 'trusted' : 'looked at'} ${line.slice(2)}`);
+
+  it.skipIf(process.platform === 'win32')('is marked so that Git takes every file as unchanged without a look, which one status of Git\'s own does not do', async () => {
+    const dir = await scratch('workflow-overlay-index-');
+    const repo = join(dir, 'repo'), script = join(dir, 'hook.cjs'), hook = join(dir, 'hook');
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'A'); await git(repo, 'config', 'user.email', 'a@localhost');
+    await writeFile(join(repo, 'src/a.txt'), 'a\n'); await writeFile(join(repo, 'top.txt'), 'top\n');
+    await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'base');
+    await writeFile(script, FSMONITOR_HOOK); await writeFile(hook, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`); await chmod(hook, 0o700);
+    const monitored = ['-c', `core.fsmonitor=${hook}`, '-c', 'core.fsmonitorHookVersion=2'];
+    // The index as it is made from a commit: Git has looked at no file yet.
+    await unlink(join(repo, '.git/index')); await git(repo, 'read-tree', 'HEAD');
+    const plain = await readFile(join(repo, '.git/index'));
+    await git(repo, ...monitored, 'status', '--porcelain');
+    expect(await trusted(repo, monitored)).toEqual(['looked at src/a.txt', 'looked at top.txt']);
+
+    await writeFile(join(repo, '.git/index'), unchangedIndex(plain, BASE_TOKEN)!);
+    expect(await trusted(repo, monitored)).toEqual(['trusted src/a.txt', 'trusted top.txt']);
+    expect(await git(repo, ...monitored, 'status', '--porcelain')).toBe('');
+    expect(await trusted(repo, monitored)).toEqual(['trusted src/a.txt', 'trusted top.txt']);
+    // Marking it again changes nothing.
+    expect(unchangedIndex(unchangedIndex(plain, BASE_TOKEN)!, BASE_TOKEN)).toEqual(unchangedIndex(plain, BASE_TOKEN));
+  });
+
+  it.skipIf(process.platform === 'win32')('comes with a checkout written by several processes at once, which holds every file of the commit', async () => {
+    const dir = await scratch('workflow-overlay-base-');
+    const repo = join(dir, 'repo');
+    await mkdir(repo, { recursive: true });
+    await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'A'); await git(repo, 'config', 'user.email', 'a@localhost');
+    // More paths than one process is given, in directories that the stretches of paths cut through.
+    for (let at = 0; at < 16; at++) {
+      const sub = join(repo, 'top', `d${String(at).padStart(2, '0')}`, 'sub');
+      await mkdir(sub, { recursive: true });
+      await Promise.all(Array.from({ length: 150 }, (_, file) => writeFile(join(sub, `f${String(file).padStart(3, '0')}.txt`), `${at}/${file}\n`)));
+    }
+    await writeFile(join(repo, '-dash.txt'), 'dash\n'); await writeFile(join(repo, 'with space.txt'), 'space\n');
+    await writeFile(join(repo, 'run.sh'), '#!/bin/sh\n'); await chmod(join(repo, 'run.sh'), 0o755); await symlink('run.sh', join(repo, 'link'));
+    await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'base');
+    const commit = await git(repo, 'rev-parse', 'HEAD');
+    const run = async (cwd: string, args: string[], stop: AbortSignal, allowFailure?: boolean, output?: CommandOutput) => {
+      const result = await workspaceCommand('git', ['-c', 'core.fsmonitor=false', ...args], cwd, stop, 600_000, process.env, nodeProcesses, output);
+      if (result.code && !allowFailure) throw new Error(result.stderr || result.stdout);
+      return result;
+    };
+    const commands: string[][] = [];
+    const overlays = new WorkspaceOverlays(join(dir, 'overlay'), nodeProcesses, (cwd, args, ...rest) => { commands.push(args); return run(cwd, args, ...rest); }, async () => () => {});
+    const base = await overlays.base({ commonDir: join(repo, '.git') }, commit, signal());
+    expect(commands.filter(args => args.includes('checkout-index')).length).toBeGreaterThan(2);
+    expect(commands.some(args => args.includes('--all'))).toBe(false);
+
+    // A full look at the tree, from an index of its own, finds every file as the commit has it.
+    const fresh = { ...process.env, GIT_INDEX_FILE: join(dir, 'fresh-index') }, at = ['--git-dir', join(repo, '.git'), '--work-tree', base.tree];
+    expect(await workspaceCommand('git', [...at, 'read-tree', commit], dir, signal(), 60_000, fresh)).toMatchObject({ code: 0 });
+    expect(await workspaceCommand('git', [...at, 'status', '--porcelain'], base.tree, signal(), 60_000, fresh)).toMatchObject({ code: 0, stdout: '' });
+    expect((await stat(join(base.tree, 'run.sh'))).mode & 0o111).toBe(0o111);
+    // The index workspaces start from trusts all of it, and knows that nothing is untracked.
+    const hook = await overlays.hook(), own = ['--git-dir', dirname(base.index), '--work-tree', base.tree, '-c', `core.fsmonitor=${hook}`, '-c', 'core.fsmonitorHookVersion=2'];
+    const entries = await trusted(base.tree, own, base.index);
+    expect(entries).toHaveLength(16 * 150 + 4);
+    expect(entries.filter(entry => !entry.startsWith('trusted '))).toEqual([]);
+    expect((await readFile(base.index)).includes(Buffer.from('UNTR'))).toBe(true);
   });
 });
 
