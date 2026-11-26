@@ -27,14 +27,13 @@ const LINGER_RETRY_MAX_MS = 60_000;
 
 /** What a worker is told about the managed checkout it runs in. */
 function workspaceInstructions(workspace: WorkspaceBinding, landingRef: string | undefined): string {
-  const overlay = workspace.isolation === 'overlay', clone = overlay || workspace.isolation === 'clone';
+  const clone = workspace.isolation === 'clone';
   const place = clone ? 'clone' : 'worktree';
   const branch = landingRef?.replace('refs/heads/', '');
   return `\nManaged ${place}: ${workspace.path}\nBaseline: ${workspace.baseCommit}\n`
     + (clone
       ? `This is a Git repository of your own: its branches, index, stash and locks are separate from the original checkout and from other members. The original checkout is the remote ${CLONE_REMOTE}; do not push to it. Work only in this clone. `
       : 'Work only in this worktree; do not modify the original checkout or other worktrees. ')
-    + (overlay ? 'Its files are an overlay mount: every file of the baseline is there to read, but only what you change is stored, and writing through the mount is several times slower than on a plain directory. Keep build outputs, caches and other bulky generated files in a directory outside it (CARGO_TARGET_DIR, an out-of-tree build directory), and do not check out a commit far from the baseline here. If its files answer "Transport endpoint is not connected", the mount was lost: your work is kept, and it is mounted again before your next turn. ' : '')
     + (workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.')
     + (branch ? `\nLanding branch: ${branch} (created by the first landing)${clone ? `, in the original checkout; \`git fetch ${CLONE_REMOTE}\` brings it here as ${CLONE_REMOTE}/${branch}` : ''}. submit_work rebases your commits onto it and hands them to the landing queue, which checks them together with other members' waiting work and lands them; it leaves this ${place} at the branch head, with what others landed and without the commits you handed over. `
       + 'Submit each item as soon as its own check passes, in small commits: work that waits drifts from the branch and conflicts more.' : '');

@@ -7,7 +7,6 @@ import { workflowDigest } from './digest';
 import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_HALT_POLL_MS, TRAIN_RETRY_DELAYS_MS, TRAIN_STALE_LOCK_MS, WORKSPACE_CHECKOUT_PROCESSES, WORKSPACE_CHECKOUT_SLOTS, WORKSPACE_LARGE_CHECKOUTS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { largeCheckout, writeCheckout, type CheckoutGit } from './workspace-checkout';
-import { WorkspaceOverlays } from './workspace-overlay';
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
 import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandReport, LandSubmitted, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
@@ -119,8 +118,6 @@ const tail = (results: WorkspaceChecks['commands']) => results.map(result => ({ 
 /** The main agent's changes to the landing, kept apart from the script's configuration in `@landing`. */
 const LANDING_OVERRIDE = '@landing-override';
 const short = (commit: string | null) => commit ? commit.slice(0, 10) : 'no commit';
-/** Whether the workspace is a repository of its own, with the source checkout as a remote: a clone, or an overlay, which is a clone whose files are not copied. */
-const apart = (ws: Pick<WorkspaceBinding, 'isolation'>) => ws.isolation === 'clone' || ws.isolation === 'overlay';
 
 /** The journal precedes Git/filesystem operations. Successful results are immutable on replay. */
 export class WorkflowWorkspaces {
@@ -141,9 +138,6 @@ export class WorkflowWorkspaces {
   private readonly supported = new Map<string, Promise<void>>();
   /** The look at a source checkout for uncommitted changes that is under way; see `uncommitted`. */
   private readonly looking = new Map<string, Promise<{ count: number; first: string[] }>>();
-  private readonly overlays: WorkspaceOverlays;
-  /** The mounted overlay workspaces this service has checked: Git runs in them with the overlay's own change list. */
-  private readonly overlaid = new Set<string>();
   /** The worktrees whose files are being written and how to stop each; `unwatched` when no creation waits for it. */
   private readonly making = new Map<string, { workflow: string; done: Promise<WorkspaceBinding>; stop: AbortController; unwatched: boolean }>();
   /** Why the files of a worktree no creation waited for could not be written, until whoever is bound to it is told. */
@@ -161,8 +155,6 @@ export class WorkflowWorkspaces {
 
   constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}) {
     this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, haltPollMs: TRAIN_HALT_POLL_MS, ...timing };
-    this.overlays = new WorkspaceOverlays(join(resolve(directory), 'overlay'), processes,
-      (cwd, args, signal, allowFailure, output) => this.git(cwd, args, signal, allowFailure, undefined, output), signal => checkoutSlots.acquire(signal));
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
@@ -224,10 +216,7 @@ export class WorkflowWorkspaces {
     const hooks = join(this.directory, 'empty-hooks'); await mkdir(hooks, { recursive: true, mode: 0o700 });
     // Git's own options (`-c name=value`) come before the subcommand.
     const name = `git ${args.find((arg, at) => !arg.startsWith('-') && args[at - 1] !== '-c') ?? ''}`.trim();
-    // No fsmonitor of the user's runs here. An overlay workspace keeps its own: without it Git stats every file through
-    // the mount, and a command that writes the index with it off strips what the member's own Git relies on.
-    const fsmonitor = this.overlaid.has(cwd) ? await this.overlays.hook() : 'false';
-    const result = await workspaceCommand('git', ['-c', `core.hooksPath=${hooks}`, '-c', `core.fsmonitor=${fsmonitor}`,
+    const result = await workspaceCommand('git', ['-c', `core.hooksPath=${hooks}`, '-c', 'core.fsmonitor=false',
       '-c', 'gc.auto=0', ...args], cwd, signal, GIT_TIMEOUT_MS, { ...gitEnv(), ...env }, this.processes, { name, ...output });
     if (result.code && !allowFailure) throw new GitFailure(`Git ${name.slice(4) || args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
     return result;
@@ -282,10 +271,7 @@ export class WorkflowWorkspaces {
   private async status(path: string, signal: AbortSignal, untracked: 'all' | 'no' = 'all'): Promise<{ count: number; first: string[] }> {
     const first: string[] = [];
     let count = 0;
-    // Listing every untracked file reads every directory. In an overlay only whether there are any is cheap to tell,
-    // from Git's untracked cache, which serves the default listing (an untracked directory as one entry).
-    const mode = untracked === 'all' && this.overlaid.has(path) ? 'normal' : untracked;
-    await this.git(path, ['status', '--porcelain', `--untracked-files=${mode}`], signal, false, undefined,
+    await this.git(path, ['status', '--porcelain', `--untracked-files=${untracked}`], signal, false, undefined,
       { scan: records(line => { if (line.trim() && count++ < 5) first.push(line.trim().slice(0, 200)); }, '\n') });
     return { count, first };
   }
@@ -328,7 +314,7 @@ export class WorkflowWorkspaces {
   }
 
   /** The checkout a worktree was made from and how it is kept apart from it, as the options that make another like it. */
-  origin(workflowId: string, id: string): { repo: string; isolation?: 'clone' | 'overlay' } {
+  origin(workflowId: string, id: string): { repo: string; isolation?: 'clone' } {
     const ws = this.value<WorkspaceBinding>(id, workflowId, 'workspace');
     return { repo: ws.repository, ...(ws.isolation ? { isolation: ws.isolation } : {}) };
   }
@@ -339,14 +325,11 @@ export class WorkflowWorkspaces {
     if (ws.rootDigest !== workflowDigest(root) || ws.status !== 'ready') throw new Error('Workspace binding is unavailable or authorization changed');
     return this.located(ws, signal);
   }
-  /** Checks that the directory is the workspace's own checkout of its repository, mounting it first when it is an overlay. */
+  /** Checks that the directory is the workspace's own checkout of its repository. */
   private async located(ws: WorkspaceBinding, signal: AbortSignal): Promise<WorkspaceBinding> {
-    // The process that serves an overlay may have died since it was last used; whoever is bound to it finds it mounted.
-    if (ws.isolation === 'overlay') { await this.overlays.mount(ws, signal); this.overlaid.add(ws.path); }
     const top = await realpath((await this.git(ws.path, ['rev-parse', '--show-toplevel'], signal)).stdout.trim());
     const common = await realpath(resolve(ws.path, (await this.git(ws.path, ['rev-parse', '--git-common-dir'], signal)).stdout.trim()));
-    const own = ws.isolation === 'clone' ? join(top, '.git') : ws.isolation === 'overlay' ? await realpath(this.overlays.place(ws).git) : ws.commonDir;
-    if (top !== await realpath(ws.path) || common !== own
+    if (top !== await realpath(ws.path) || common !== (ws.isolation === 'clone' ? join(top, '.git') : ws.commonDir)
       || top !== join(await realpath(this.directory), ws.workflowId, ws.id)) throw new Error('Workspace path or repository identity changed');
     return ws;
   }
@@ -467,7 +450,7 @@ export class WorkflowWorkspaces {
    * Records the worktree a creation makes and writes its files. With `defer` it answers as soon as the record exists,
    * the worktree still being prepared: whoever is bound to it is held back until `standing` says its files are there.
    */
-  private async materialize(ctx: WorkspaceContext, op: RecordRow, seed: { repository: string; commonDir: string; baseCommit: string; kind: WorkspaceBinding['kind']; isolation?: 'clone' | 'overlay'; changeId?: string }, checkout = seed.baseCommit, defer = false): Promise<WorkspaceBinding> {
+  private async materialize(ctx: WorkspaceContext, op: RecordRow, seed: { repository: string; commonDir: string; baseCommit: string; kind: WorkspaceBinding['kind']; isolation?: 'clone'; changeId?: string }, checkout = seed.baseCommit, defer = false): Promise<WorkspaceBinding> {
     // Removed worktrees are kept as records for replay and audit, but they no longer hold a directory or a slot.
     const count = (this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND COALESCE(json_extract(data,'$.status'),'')!='removed'").get(op.workflow) as { n: number }).n;
     const existing = this.db.prepare('SELECT id FROM workspace_records WHERE workflow=? AND key=?').get(op.workflow, `@${op.id}/workspace`);
@@ -500,7 +483,7 @@ export class WorkflowWorkspaces {
       await allowed?.();
       ends.throwIfAborted();
       await mkdir(dirname(ws.path), { recursive: true, mode: 0o700 });
-      if (apart(ws)) await this.clone(ws, checkout, ends);
+      if (ws.isolation === 'clone') await this.clone(ws, checkout, ends);
       else {
         // `worktree add` writes the `.git` file before it points HEAD at the commit. One that was stopped in between
         // left a worktree no later command completes; it holds no work yet, so it is registered again. Forced twice,
@@ -511,8 +494,7 @@ export class WorkflowWorkspaces {
         // Only registration races with other Git commands; leave `worktree add` cheap and write the files separately.
         if (!whole) await this.worktree(ws, ['add', '--force', '--force', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ends);
       }
-      // An overlay shows the baseline's files as soon as it is mounted; only another commit's differences are written.
-      if (ws.isolation !== 'overlay' || checkout !== ws.baseCommit) await this.writeTree(ws, checkout, ends);
+      await this.writeTree(ws.path, checkout, ends);
       // Ready is what lets a member start in it, so it is said only of a checkout that was found to be the planned one.
       await this.located(ws, ends);
       if ((await this.clean(ws, ends)).headCommit !== checkout) throw new Error('Recovered worktree does not match its planned revision');
@@ -547,36 +529,24 @@ export class WorkflowWorkspaces {
    */
   private async clone(ws: WorkspaceBinding, checkout: string, signal: AbortSignal): Promise<void> {
     // A clone that is still being prepared holds no work; one a crash left half-made is made again.
-    await this.removeClone(ws, signal);
+    await this.removeClone(ws);
     await this.git(ws.repository, ['update-ref', this.cloneRef(ws), checkout], signal);
-    // An overlay's repository is kept beside its mount: the mount shows the `.git` file that names it, the first thing
-    // in the directory of the workspace's changes, and Git's own files are read and written without passing through it.
-    const overlay = ws.isolation === 'overlay'
-      ? { base: await this.overlays.base(ws, ws.baseCommit, signal), ...await this.overlays.prepare(ws, signal) } : undefined;
-    const at = overlay?.upper ?? ws.path;
-    await this.git(ws.repository, ['clone', '--quiet', '--shared', '--no-checkout', '--origin', CLONE_REMOTE,
-      ...(overlay ? ['--separate-git-dir', overlay.git] : []), ws.repository, at], signal);
-    await this.git(at, ['update-ref', '--no-deref', 'HEAD', checkout], signal);
+    await this.git(ws.repository, ['clone', '--quiet', '--shared', '--no-checkout', '--origin', CLONE_REMOTE, ws.repository, ws.path], signal);
+    await this.git(ws.path, ['update-ref', '--no-deref', 'HEAD', checkout], signal);
     for (const key of ['user.name', 'user.email']) {
       const value = (await this.git(ws.repository, ['config', key], signal, true)).stdout.trim();
-      if (value) await this.git(at, ['config', key, value], signal);
+      if (value) await this.git(ws.path, ['config', key, value], signal);
     }
     const remotes = (await this.git(ws.repository, ['config', '--local', '-z', '--get-regexp', '^remote\\..*\\.(url|pushurl|fetch)$'], signal, true)).stdout
       .split('\0').filter(Boolean).map(entry => [entry.slice(0, entry.indexOf('\n')), entry.slice(entry.indexOf('\n') + 1)] as const)
       .filter(([key]) => key.slice('remote.'.length, key.lastIndexOf('.')) !== CLONE_REMOTE);
-    for (const [key, value] of remotes) await this.git(at, ['config', '--add', key, value], signal);
-    if (remotes.length) await this.git(at, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', CLONE_REMOTE,
+    for (const [key, value] of remotes) await this.git(ws.path, ['config', '--add', key, value], signal);
+    if (remotes.length) await this.git(ws.path, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', CLONE_REMOTE,
       '+refs/remotes/*:refs/remotes/*', `^refs/remotes/${CLONE_REMOTE}/*`], signal);
-    if (overlay) {
-      await this.overlays.adopt(ws, overlay.base, signal);
-      await this.overlays.mount(ws, signal); this.overlaid.add(ws.path);
-    }
   }
   /** Deletes a clone's directory; the path is the one this service derives for the workspace, never one read back. */
-  private async removeClone(ws: WorkspaceBinding, signal: AbortSignal): Promise<void> {
-    if (!apart(ws) || ws.path !== join(resolve(this.directory), ws.workflowId, ws.id)) throw new Error('Not a managed clone');
-    // An overlay is unmounted first: deleting through the mount would record every file of the baseline as removed.
-    if (ws.isolation === 'overlay') { this.overlaid.delete(ws.path); await this.overlays.remove(ws, signal); }
+  private async removeClone(ws: WorkspaceBinding): Promise<void> {
+    if (ws.isolation !== 'clone' || ws.path !== join(resolve(this.directory), ws.workflowId, ws.id)) throw new Error('Not a managed clone');
     await rm(ws.path, { recursive: true, force: true, maxRetries: 3 });
   }
   /**
@@ -584,7 +554,7 @@ export class WorkflowWorkspaces {
    * this copies it there and checks the source received the commit that was asked for.
    */
   private async publish(ws: WorkspaceBinding, head: string, signal: AbortSignal): Promise<void> {
-    if (!apart(ws)) return;
+    if (ws.isolation !== 'clone') return;
     await this.git(ws.path, ['update-ref', CLONE_PUBLISH_REF, head], signal);
     await this.git(ws.repository, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', ws.path, `+${CLONE_PUBLISH_REF}:${this.cloneRef(ws)}`], signal);
     if (await this.refHead(ws.repository, this.cloneRef(ws), signal) !== head) throw new Error('Clone changed while its commits were copied to the source repository');
@@ -593,21 +563,18 @@ export class WorkflowWorkspaces {
   /**
    * Writes a registered worktree's files. `read-tree --reset -u` uses the same checkout machinery as `worktree add`,
    * so filters and modes match, and repeating it on a worktree whose files are already there changes nothing. A large
-   * checkout is first offered to `writeCheckout`, which has many processes write it, one checkout at a time; through
-   * an overlay's mount only what differs from the baseline is written, by Git alone.
+   * checkout is first offered to `writeCheckout`, which has many processes write it, one checkout at a time.
    */
-  private async writeTree(ws: Pick<WorkspaceBinding, 'path' | 'isolation'>, commit: string, signal: AbortSignal): Promise<void> {
-    if (ws.isolation !== 'overlay') {
-      let release = await checkoutSlots.acquire(signal), large = false;
-      try { large = await largeCheckout(this.checkoutGit, ws.path, commit, signal); } finally { release(); }
-      if (large) {
-        // Only a large checkout waits its turn here: a small one is not kept behind the minutes several of these take.
-        release = await largeCheckouts.acquire(signal);
-        try { if (await writeCheckout(this.checkoutGit, ws.path, commit, WORKSPACE_CHECKOUT_PROCESSES, signal)) return; } finally { release(); }
-      }
+  private async writeTree(path: string, commit: string, signal: AbortSignal): Promise<void> {
+    let release = await checkoutSlots.acquire(signal), large = false;
+    try { large = await largeCheckout(this.checkoutGit, path, commit, signal); } finally { release(); }
+    if (large) {
+      // Only a large checkout waits its turn here: a small one is not kept behind the minutes several of these take.
+      release = await largeCheckouts.acquire(signal);
+      try { if (await writeCheckout(this.checkoutGit, path, commit, WORKSPACE_CHECKOUT_PROCESSES, signal)) return; } finally { release(); }
     }
-    const release = await checkoutSlots.acquire(signal);
-    try { await this.git(ws.path, ['read-tree', '--reset', '-u', commit], signal); } finally { release(); }
+    release = await checkoutSlots.acquire(signal);
+    try { await this.git(path, ['read-tree', '--reset', '-u', commit], signal); } finally { release(); }
   }
 
   perform(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<unknown> {
@@ -657,8 +624,8 @@ export class WorkflowWorkspaces {
     const id = (value: unknown) => scriptText(value, 'artifact ID', 100);
     if (kind === 'create') {
       if (args.change !== undefined && (args.base !== undefined || args.repo !== undefined || args.isolation !== undefined)) throw new Error('Choose base, repo and isolation, or change');
-      if (args.isolation !== undefined && args.isolation !== 'worktree' && args.isolation !== 'clone' && args.isolation !== 'overlay') throw new Error('isolation is "worktree", "clone" or "overlay"');
-      const isolation: { isolation?: 'clone' | 'overlay' } = args.isolation === 'clone' || args.isolation === 'overlay' ? { isolation: args.isolation } : {};
+      if (args.isolation !== undefined && args.isolation !== 'worktree' && args.isolation !== 'clone') throw new Error('isolation is "worktree" or "clone"');
+      const isolation = args.isolation === 'clone' ? { isolation: 'clone' as const } : {};
       if (args.change !== undefined) {
         const change = this.value<WorkspaceChange>(id(args.change), op.workflow, 'change');
         const source = this.value<WorkspaceBinding>(change.workspaceId, op.workflow, 'workspace');
@@ -675,8 +642,6 @@ export class WorkflowWorkspaces {
         if (dirty.count) throw new Error(`Authorized checkout has uncommitted changes (${dirty.first.join(', ')}${dirty.count > 5 ? `, and ${dirty.count - 5} more` : ''}, in ${repo.repository}); choose a clean committed baseline first`);
         // A clone reads the source's objects from disk; ones a partial clone would fetch on demand are not there.
         if (isolation.isolation && (await this.git(repo.repository, ['config', '--get-regexp', '^(extensions\\.partialclone|remote\\..*\\.promisor)$'], ctx.signal, true)).stdout.trim()) throw new Error('Clone workspaces do not support partial-clone repositories');
-        // Refused before anything is recorded when the host cannot mount one, so the key stays free for another isolation.
-        if (isolation.isolation === 'overlay') await this.overlays.probe(ctx.signal);
         seed = { ...repo, baseCommit: await this.revision(repo.repository, args.base, ctx.signal) }; this.save(op, seed);
       }
       await this.supportedTree(seed.repository, seed.baseCommit, ctx.signal);
@@ -780,26 +745,24 @@ export class WorkflowWorkspaces {
       this.idle(ws, ctx);
       this.failed.delete(ws.id);
       this.save(op, { removing: true });
-      if (apart(ws)) await this.dropClone(ws, ctx.signal);
+      if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
       else if (await access(join(ws.path, '.git')).then(() => true, () => false)) {
         const unlock = await this.worktree(ws, ['unlock', ws.path], ctx.signal, true);
         if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
         await this.worktree(ws, ['remove', '--force', ws.path], ctx.signal);
       } else await rm(ws.path, { recursive: true, force: true, maxRetries: 3 });
       this.putWorkspace({ ...ws, status: 'removed' });
-      this.retireBase(ws);
       return { workspace: ws.id, removed: true };
     }
     // A clone whose removal was interrupted may be half deleted; nothing in it is needed, so the removal is finished.
-    if (intent.removing && (apart(ws) || !await access(ws.path).then(() => true, () => false))) {
+    if (intent.removing && (ws.isolation === 'clone' || !await access(ws.path).then(() => true, () => false))) {
       if (ws.busy && ws.busy.token !== intent.token) throw new Error('Workspace execution ownership changed');
-      if (apart(ws)) await this.dropClone(ws, ctx.signal);
+      if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
       else {
         const listed = (await this.worktree(ws, ['list', '--porcelain'], ctx.signal)).stdout;
         if (listed.split('\n').includes(`worktree ${ws.path}`)) throw new Error('Missing worktree is still registered; preserve for recovery');
       }
       this.putWorkspace({ ...ws, status: 'removed', busy: undefined });
-      this.retireBase(ws);
       return { workspace: ws.id, removed: true };
     }
     this.idle(ws, ctx);
@@ -809,14 +772,13 @@ export class WorkflowWorkspaces {
       // Cleanup discards the directory, uncommitted and unintegrated changes included: a member that cannot be
       // revived is better redone than kept around for work nobody may ever land.
       this.save(op, { removing: true, token });
-      if (apart(ws)) await this.dropClone(ws, ctx.signal);
+      if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
       else {
         const unlock = await this.worktree(ws, ['unlock', ws.path], ctx.signal, true);
         if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
         await this.worktree(ws, ['remove', '--force', ws.path], ctx.signal);
       }
       this.putWorkspace({ ...ws, status: 'removed', busy: { token, ownerPid: process.pid } });
-      this.retireBase(ws);
       if (ws.kind === 'task') await this.retireTrain(ws, ctx.signal);
       return { workspace: ws.id, removed: true };
     } finally { this.end(ws, token); }
@@ -824,14 +786,8 @@ export class WorkflowWorkspaces {
 
   /** Removes a clone and the source's ref on it. What the clone landed or froze is held by other refs. */
   private async dropClone(ws: WorkspaceBinding, signal: AbortSignal): Promise<void> {
-    await this.removeClone(ws, signal);
+    await this.removeClone(ws);
     await this.git(ws.repository, ['update-ref', '-d', this.cloneRef(ws)], signal, true);
-  }
-  /** Deletes the baseline checkout an overlay read, once no workspace of any workflow is left that reads it. */
-  private retireBase(ws: WorkspaceBinding): void {
-    if (ws.isolation !== 'overlay') return;
-    const left = this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE kind='workspace' AND json_extract(data,'$.isolation')='overlay' AND COALESCE(json_extract(data,'$.status'),'')!='removed' AND json_extract(data,'$.commonDir')=? AND json_extract(data,'$.baseCommit')=?").get(ws.commonDir, ws.baseCommit) as { n: number };
-    if (!left.n) void this.overlays.retire(ws, ws.baseCommit).catch(() => undefined);
   }
 
   private async refHead(repo: string, ref: string, signal: AbortSignal): Promise<string | null> {

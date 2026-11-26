@@ -33,7 +33,7 @@ Create worktrees in batches, not one awaited call after another. Registration is
 
 The worker must commit intended changes and leave a clean index/worktree. `reviewedAgent` freezes the commit after the worker exits, creates an independent review snapshot, checks that the reviewer left it unchanged, and records approval from the actual task result. Rejection sends feedback to the original member/worktree. With `worker.workspace`, the result adds `{change,approval}` to `{value,review,rounds}`. Without it, existing helper behavior is unchanged. Nested `workflowTool` delegation in a workspace is not supported in this version.
 
-## Worktree, clone or overlay
+## Worktree or clone
 
 `createWorkspace({key, isolation})` chooses how far a workspace is separated from the others.
 
@@ -41,29 +41,12 @@ The worker must commit intended changes and leave a clean index/worktree. `revie
 | --- | --- | --- |
 | `"worktree"` (default) | Its own directory, index and `HEAD`. | The repository's `.git`: branches and other refs, the stash, hooks, config, and Git's maintenance. One member's `git stash pop`, `git gc`, `git worktree prune` or branch update acts on everyone's. |
 | `"clone"` | A repository of its own: refs, index, stash, locks and config. | Only objects, which the clone reads from the source checkout through alternates. Nothing is copied, so a clone costs about what a worktree does. |
-| `"overlay"` | A clone whose files are not written out: its directory is a mount that shows one checkout of the baseline under the files the member changed. | That checkout, read-only, with every overlay made from the same commit; and objects, as a clone does. |
 
 Use a clone when many members work at once or run Git commands beyond add and commit. Everything else is the same: the clone starts detached at the baseline, freezing, review, `submit_work` and cleanup work as they do for a worktree, and the landing branch is still in the source checkout. The bridge copies a clone's commits to the source when a change is frozen or submitted, and resets the clone to the landed head afterwards.
 
 Inside a clone the source checkout is the remote `bridge-source`, so `git fetch bridge-source` shows its branches (and the landing branch) as `bridge-source/<branch>`. The source's own remotes and their remote-tracking refs are carried over under their names. Members should not push to `bridge-source`.
 
-### Overlay
-
-A worktree or a clone writes every file of the checkout for every member, and deletes them again at cleanup. For a large repository and many members that is most of the time a swarm takes to start, and millions of files on the workspace filesystem. An overlay workspace writes none: the baseline is checked out once for each commit, and each member's directory is a FUSE mount (fuse-overlayfs) of that checkout under a directory of the member's own, which receives whatever the member creates, changes or deletes. Making a workspace then takes about a second whatever the size of the repository, and it holds on disk what its member changed.
-
-In every other respect an overlay is a clone: a repository of its own with `bridge-source` as its remote, frozen, reviewed, landed and cleaned up the same way. Its Git directory is kept outside the mount, so the workspace's `.git` is a file that names it.
-
-Git would normally stat every tracked file to answer `git status`, through the mount. An overlay workspace instead starts from an index made once on the baseline, which records every file as unchanged, and is configured with an fsmonitor hook that lists the member's own directory of changes; Git then looks only at what is listed there. A member's `git status`, `git diff` and `git commit` cost what the change is worth, not what the repository is. `git add -A` and `git clean` are the exception: they read every directory, which is slow the first time in a workspace.
-
-What members should know, and are told in their instructions:
-
-- Writing through the mount is several times slower than on a plain directory. Keep build outputs, caches and other bulky generated files outside the workspace.
-- Checking out a commit far from the baseline writes every differing file through the mount. Stay near the baseline; the landing rebases onto the landing branch, which is usually close.
-- The mount is served by a process of its own that outlives the bridge. If it dies, the directory answers `Transport endpoint is not connected` until the bridge mounts it again, which it does before the next turn, check or landing that uses the workspace. The member's work is in plain files and is not affected.
-
-Requirements: Linux, `/dev/fuse`, `fusermount3` and `fuse-overlayfs` on the bridge's host. `WORKFLOW_OVERLAY_COMMAND` in the bridge's environment names another executable that takes fuse-overlayfs's arguments, for example a wrapper around a patched build. The workspace directory must be on a filesystem that a FUSE mount may cover and that fuse-overlayfs can keep its changes on; the first overlay a bridge makes tries this out with a small mount, and `createWorkspace` fails with the reason where it does not work. Each mounted workspace is one serving process and one of the FUSE mounts of the bridge's user, of which `fusermount3` allows 1000 unless `/etc/fuse.conf` sets `mount_max`. The baseline checkout is deleted with the last workspace that reads it. Review snapshots and the landing's own worktree remain plain worktrees.
-
-Limits: the source keeps a ref `refs/bridge-workflow/<workflow-id>/clones/<workspace-id>` on what each clone or overlay depends on, removed with the clone; do not delete the source checkout or prune those refs while clones exist. Repositories that are themselves partial clones are refused. Cleanup deletes the clone's directory, subject to the same conditions as a worktree.
+Limits: the source keeps a ref `refs/bridge-workflow/<workflow-id>/clones/<workspace-id>` on what each clone depends on, removed with the clone; do not delete the source checkout or prune those refs while clones exist. Repositories that are themselves partial clones are refused. Cleanup deletes the clone's directory, subject to the same conditions as a worktree.
 
 ## Starting before every worktree is written
 
@@ -77,7 +60,7 @@ return await swarm(goal, {key: 'crew', lead: 'lead', members: names.map((name, n
 
 Worktrees are written in about the order they were asked for: two asked for within seconds of each other may swap. Ask for the lead's first: a swarm with a lead hands out nothing until the lead has planned.
 
-- A checkout of 2,000 files or more is written by 64 Git processes, each a stretch of its files, and one such checkout at a time. One Git process writes a checkout file by file, and on a network filesystem each file takes several round trips whatever else runs beside it: 134,000 files took twenty minutes that way, with one other checkout running or with sixty-three, and half a minute with 64 processes on the one checkout. The worktrees of a swarm therefore become ready one after another from the first minute. Smaller checkouts, sparse ones, and the commits an overlay writes through its mount are written by Git alone as before, and do not wait for a large checkout's turn.
+- A checkout of 2,000 files or more is written by 64 Git processes, each a stretch of its files, and one such checkout at a time. One Git process writes a checkout file by file, and on a network filesystem each file takes several round trips whatever else runs beside it: 134,000 files took twenty minutes that way, with one other checkout running or with sixty-three, and half a minute with 64 processes on the one checkout. The worktrees of a swarm therefore become ready one after another from the first minute. Smaller checkouts and sparse ones are written by Git alone as before, and do not wait for a large checkout's turn.
 - A worktree whose files cannot be written makes its member stop as failed, with the reason. Whoever answers for the swarm's members is told as for any failed member: `staff_swarm({revive})` has the files written again, and `cleanup` removes what was made.
 - When the bridge restarts, a worktree that was not finished is written again the next time the swarm looks at its member, and registered again if the restart stopped Git while it was registering it. A workflow that is cancelled or has ended stops writing its worktrees.
 - `agent(prompt, {workspace})` with a worktree that is still being prepared waits for it. Freezing, checking and every other operation on one is refused until it is ready, except `cleanupWorkspace`, which stops the writing and removes what there is.
@@ -97,7 +80,7 @@ Every operation requires an immutable, unique `key` (1–100 characters, no surr
 
 | API | Result and requirements |
 | --- | --- |
-| `createWorkspace({key,base?,repo?,isolation?,wait?})` | Workspace `{id,path,baseCommit,status,...}`. `base` is a full commit ID; omitted means resolve the authorized checkout's HEAD once and persist it. Requires a clean repository-root cwd, or `repo`. `isolation` is `"worktree"` (default), `"clone"` or `"overlay"`, see above. With `wait:false` the answer comes before the files are written, with `status: "preparing"`; see above. |
+| `createWorkspace({key,base?,repo?,isolation?,wait?})` | Workspace `{id,path,baseCommit,status,...}`. `base` is a full commit ID; omitted means resolve the authorized checkout's HEAD once and persist it. Requires a clean repository-root cwd, or `repo`. `isolation` is `"worktree"` (default) or `"clone"`, see above. With `wait:false` the answer comes before the files are written, with `status: "preparing"`; see above. |
 | `createWorkspace({key,change})` | A separate reviewer worktree pinned to a frozen change ID. Mutually exclusive with `base`, `repo` and `isolation`. |
 | `agent(prompt,{key,workspace,...})` / `startAgent(prompt,{key,workspace,...})` | Run in the managed workspace ID. A persistent member cannot change workspace. Only one active task/check/inspection owns a worktree at a time. |
 | `freezeWorkspace({key,workspace})` | Immutable `{id,workspaceId,baseCommit,headCommit,tree,diffDigest,files}`. Rejects dirty/untracked files, unfinished Git operations, non-descendant or nonlinear candidate history, whitespace/conflict-marker errors, and a change whose list of paths is over 2 MB. Supervisor-prepared commits can also be frozen. |
