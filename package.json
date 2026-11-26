@@ -83,7 +83,7 @@
   "scripts": {
     "dev": "tsup --watch",
     "build:web": "vite build web && vite build web/chat",
-    "build:native": "node native/build.mjs",
+    "build:native": "node native/build.mjs && node native/build-wsfs.mjs",
     "build": "npm run build:web && tsup && npm run build:native",
     "build:packages": "npm run build --prefix packages/workflow-engine",
     "typecheck": "tsc --noEmit",
