@@ -263,6 +263,18 @@ describe('dashboard views', () => {
   it('lists turns and shows one with its prompt and result', () => {
     expect(turns(state, { show: 'active' }).turns.map(entry => entry.taskId).sort()).toEqual(['t-slot', 't-w1']);
     expect(turns(state, { member: 'w2' })).toMatchObject({ total: 1, archived: 5, turns: [{ taskId: 't-w2', member: 'w2', status: 'result_ready', endedAt: 400 }] });
+    const withEphemeral: WorkflowState = {
+      ...state,
+      tasks: [
+        ...state.tasks,
+        { taskId: 't-eph', taskKey: 'ephemeral-task', requestDigest: 't-eph', sessionRef: 'session-lead',
+          objective: 'one-shot prompt', inputRefs: [], status: 'result_ready',
+          attempts: [{ attemptId: 't-eph-1', startedAt: 105, admittedAt: 110, endedAt: 200 }], resultRefs: [] },
+      ],
+    };
+    expect(turns(withEphemeral, { show: 'all', member: 'missing-review-seat-7713' })).toMatchObject({ total: 0, turns: [] });
+    expect(turns(withEphemeral, { show: 'active', member: 'missing-review-seat-7713' })).toMatchObject({ total: 0, turns: [] });
+    expect(turns(withEphemeral, { show: 'failed', member: 'missing-review-seat-7713' })).toMatchObject({ total: 0, turns: [] });
     expect(turn(source, 't-w2')).toMatchObject({ objective: 'prompt of t-w2', results: [{ ref: 'artifact:t-w2', text: 'what w2 found' }], nativeSessionId: 'native-w2' });
     const stored: WorkflowArchive = { ...archive, task: id => id === 't-old' ? { ...state.tasks[1]!, taskId: 't-old', objective: { digest: 'abc', chars: 3 }, resultRefs: [] } as never : undefined };
     expect(turn({ ...source, archive: stored }, 't-old')).toMatchObject({ archived: true, objective: 'text abc' });
@@ -338,6 +350,8 @@ describe('dashboard server', () => {
     expect(page.headers.get('content-type')).toMatch(/text\/html/);
     expect(html).toContain('const LABEL = "te\\u003c/script>st";');
     expect(html).not.toContain(handle.token!);
+    expect(html).toContain('role="dialog" aria-modal="true"');
+    expect(html).toContain('setDrawerBackgroundInert');
 
     expect((await fetch(origin + '/api/sources')).status).toBe(401);
     expect((await fetch(origin + '/api/sources', { headers: { 'x-workflow-dashboard-token': 'wrong' } })).status).toBe(401);

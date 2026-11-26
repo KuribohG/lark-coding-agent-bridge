@@ -671,8 +671,8 @@ export interface TurnFilter {
 
 export function turns(state: WorkflowState, filter: TurnFilter = {}): TurnsView {
   const name = names(state);
-  const agentId = filter.member ? state.agents?.find(agent => agent.key === filter.member)?.agentId : undefined;
-  const selected = state.tasks.filter(task => (!filter.member || task.agentId === agentId)
+  const agentId = filter.member ? state.agents?.find(agent => agent.key === filter.member)?.agentId ?? filter.member : undefined;
+  const selected = state.tasks.filter(task => (!filter.member || (Boolean(task.agentId) && task.agentId === agentId))
     && (filter.show === 'active' ? RUNNING.has(task.status) || WAITING.has(task.status) || task.status === 'queued'
       : filter.show === 'failed' ? ['failed', 'unknown', 'interrupted'].includes(task.status) : true));
   const latest = (task: WorkflowTask) => task.attempts.at(-1)?.startedAt ?? 0;

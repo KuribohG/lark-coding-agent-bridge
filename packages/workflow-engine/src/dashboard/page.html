@@ -161,6 +161,7 @@ pre, .pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px
 
 #drawer { position: fixed; top: 44px; right: 0; bottom: 0; width: min(900px, 62vw); background: var(--surface); border-left: 1px solid var(--hair); box-shadow: -8px 0 24px rgba(0,0,0,.12); display: none; flex-direction: column; z-index: 5; }
 #drawer.open { display: flex; }
+#drawer:focus { outline: none; }
 #drawer .dh { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--hair); }
 #drawer .dh h3 { margin: 0; font-size: 14px; flex: 1; min-width: 0; }
 #drawer .db { overflow: auto; padding: 12px 14px 60px; flex: 1; }
@@ -187,7 +188,7 @@ pre, .pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px
   <div class="head" id="head" hidden></div>
   <div id="content"><div class="empty">选择左侧的工作流查看详情。</div></div>
 </main>
-<div id="drawer"><div class="dh"><button class="plain" id="drawerBack" title="返回上一项">←</button><h3 class="clip" id="drawerTitle"></h3><button class="plain" id="drawerClose" title="关闭（Esc）">✕</button></div><div class="db" id="drawerBody"></div></div>
+<div id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" tabindex="-1"><div class="dh"><button class="plain" id="drawerBack" title="返回上一项">←</button><h3 class="clip" id="drawerTitle"></h3><button class="plain" id="drawerClose" title="关闭（Esc）">✕</button></div><div class="db" id="drawerBody" tabindex="0"></div></div>
 <script id="markdown">
 // Markdown as a tree of [tag, properties, ...children] made of text only. The page builds its elements from the
 // tree one by one, so nothing a text says can become markup. It covers what plans and reports use: headings, lists,
@@ -445,7 +446,18 @@ function go(next, replace) {
 }
 /** Changes filters of the current tab; the drawer, if any, stays. */
 const setQ = (changes, replace = true) => go({ q: { ...S.q, ...changes } }, replace);
-const openDrawer = (kind, key) => go({ q: { ...S.q, d: kind + ':' + key } });
+let drawerReturnFocus = null;
+let drawerReturnMeta = null;
+function rememberDrawerOpener() {
+  const active = document.activeElement;
+  if (!active || active === document.body || $('drawer').contains(active)) return;
+  drawerReturnFocus = active;
+  if (active.id) drawerReturnMeta = { id: active.id };
+  else if (active.dataset && active.dataset.table && active.dataset.rowIndex !== undefined) {
+    drawerReturnMeta = { table: active.dataset.table, rowIndex: active.dataset.rowIndex };
+  } else drawerReturnMeta = null;
+}
+const openDrawer = (kind, key) => { rememberDrawerOpener(); go({ q: { ...S.q, d: kind + ':' + key } }); };
 function onRoute() {
   const route = parseHash();
   const moved = route.source !== S.source || route.wf !== S.wf;
@@ -525,6 +537,7 @@ async function refresh() {
     if (!S.wf) {
       const first = S.list.workflows.find(row => !row.parentId);
       if (first) return void go({ wf: first.id, tab: 'overview', q: {} }, true);
+      hideDrawer();
       $('head').hidden = true; $('content').replaceChildren(h('div', { class: 'empty' }, '这个存储里还没有工作流。'));
     } else {
       const summary = S.list.workflows.find(row => row.id === S.wf);
@@ -537,7 +550,7 @@ async function refresh() {
         const detail = await loadDrawer();
         if (makeHash() !== at) return;
         if ((detail.changed || S.drawerDirty) && !selecting($('drawer'))) { S.drawerDirty = false; paintDrawer(detail); } else if (detail.changed) S.drawerDirty = true;
-      } else $('drawer').classList.remove('open');
+      } else hideDrawer();
     }
     live(S.paused ? 'warn' : 'good', S.paused ? '已暂停自动刷新' : '实时 · 日志位置 ' + (S.list ? S.list.position : ''));
   } catch (error) {
@@ -660,8 +673,9 @@ function table(id, columns, rows, { onRow, selected, empty = '没有条目。' }
     h('thead', {}, h('tr', {}, columns.map((column, index) => h('th', { class: (column.sort ? 'sort ' : '') + (column.num ? 'num' : ''), title: column.hint,
       onclick: column.sort ? () => { S.sort[id] = sort && sort.col === index ? (sort.dir === 1 ? { col: index, dir: -1 } : undefined) : { col: index, dir: 1 }; S.dirty = S.drawerDirty = true; refresh(); } : undefined },
       column.title, sort && sort.col === index ? (sort.dir === 1 ? ' ↑' : ' ↓') : '')))),
-    h('tbody', {}, shown.map(row => h('tr', { class: (onRow ? 'row ' : '') + (selected && selected(row) ? 'sel' : ''), tabIndex: onRow ? 0 : undefined,
-      onclick: onRow ? () => onRow(row) : undefined, onkeydown: onRow ? event => { if (event.key === 'Enter') onRow(row); } : undefined },
+    h('tbody', {}, shown.map((row, rowIndex) => h('tr', { class: (onRow ? 'row ' : '') + (selected && selected(row) ? 'sel' : ''), tabIndex: onRow ? 0 : undefined,
+      data: onRow ? { table: id, rowIndex: String(rowIndex) } : undefined,
+      onclick: onRow ? () => onRow(row) : undefined, onkeydown: onRow ? event => { if (event.key === 'Enter') { event.preventDefault(); onRow(row); } } : undefined },
       columns.map(column => h('td', { class: (column.num ? 'num ' : '') + (column.cls || '') }, column.cell(row))))))));
 }
 const card = (title, more, ...body) => h('section', { class: 'card' }, h('h3', {}, title, more ? h('span', { class: 'more' }, more) : null), ...body);
@@ -912,9 +926,44 @@ const turnList = turns => turns.length ? h('div', { class: 'box', style: 'paddin
   { title: '任务', cls: 'wide', cell: t => h('div', { class: 'clip mono', title: t.key }, brief(t.key)) }, { title: '状态', cell: t => chip(...pair(TURN, t.status)) },
   { title: '开始', cls: 'nowrap', cell: t => tick('ago', t.startedAt) }, { title: '耗时', cls: 'nowrap', cell: t => turnTiming(t) },
   { title: '错误', cls: 'mid', cell: t => t.error ? h('div', { class: 'clip', title: t.error }, t.error) : '' }], turns, { onRow: t => openDrawer('turn', t.taskId) })) : h('div', { class: 'faint' }, '还没有轮次。');
+function setDrawerBackgroundInert(inert) {
+  for (const selector of ['aside.side', 'main']) {
+    const el = document.querySelector(selector);
+    if (!el) continue;
+    el.inert = Boolean(inert);
+    if (inert) el.setAttribute('aria-hidden', 'true');
+    else el.removeAttribute('aria-hidden');
+  }
+}
+function drawerFocusables() {
+  return Array.from($('drawer').querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+    .filter(el => !el.hidden && el.offsetParent !== null);
+}
+function restoreDrawerFocus() {
+  const target = drawerReturnFocus?.isConnected ? drawerReturnFocus
+    : drawerReturnMeta?.id ? $(drawerReturnMeta.id)
+    : drawerReturnMeta?.table ? document.querySelector(`#content tr.row[data-table="${drawerReturnMeta.table}"][data-row-index="${drawerReturnMeta.rowIndex}"]`)
+    : null;
+  drawerReturnFocus = null;
+  drawerReturnMeta = null;
+  if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+}
+function hideDrawer() {
+  const drawer = $('drawer');
+  const wasOpen = drawer.classList.contains('open');
+  drawer.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+  setDrawerBackgroundInert(false);
+  if (wasOpen && (drawer.contains(document.activeElement) || !document.activeElement || document.activeElement === document.body)) {
+    restoreDrawerFocus();
+  }
+}
 function paintDrawer(detail) {
-  const kind = drawerKind(), d = detail.body, body = $('drawerBody');
-  const top = body.dataset.key === S.q.d ? body.scrollTop : 0;
+  const kind = drawerKind(), d = detail.body, body = $('drawerBody'), drawer = $('drawer');
+  const prevKey = body.dataset.key;
+  const wasOpen = drawer.classList.contains('open');
+  const hadDrawerFocus = drawer.contains(document.activeElement);
+  const top = prevKey === S.q.d ? body.scrollTop : 0;
   body.dataset.key = S.q.d;
   let title, nodes;
   if (kind === 'member') {
@@ -993,12 +1042,37 @@ function paintDrawer(detail) {
   $('drawerTitle').textContent = title; $('drawerTitle').title = title;
   body.replaceChildren(...nodes.flat(Infinity).filter(Boolean));
   body.scrollTop = top;
-  $('drawer').classList.add('open');
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+  setDrawerBackgroundInert(true);
+  if (!wasOpen || prevKey !== S.q.d || !hadDrawerFocus) {
+    ($('drawerClose') || drawer).focus({ preventScroll: true });
+  } else if (!drawer.contains(document.activeElement)) {
+    ($('drawerBody') || $('drawerClose') || drawer).focus({ preventScroll: true });
+  }
 }
 function closeDrawer() { const { d, ...rest } = S.q; if (d !== undefined) go({ q: rest }); }
 $('drawerClose').addEventListener('click', closeDrawer);
 $('drawerBack').addEventListener('click', () => history.back());
-document.addEventListener('keydown', event => { if (event.key === 'Escape' && S.q.d) closeDrawer(); });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && S.q.d) { closeDrawer(); return; }
+  if (event.key === 'Tab' && $('drawer').classList.contains('open')) {
+    const focusables = drawerFocusables();
+    if (!focusables.length) { event.preventDefault(); $('drawer').focus({ preventScroll: true }); return; }
+    const active = document.activeElement;
+    const index = focusables.indexOf(active);
+    if (index === -1) {
+      event.preventDefault();
+      (event.shiftKey ? focusables[focusables.length - 1] : focusables[0]).focus({ preventScroll: true });
+    } else if (event.shiftKey && index === 0) {
+      event.preventDefault();
+      focusables[focusables.length - 1].focus({ preventScroll: true });
+    } else if (!event.shiftKey && index === focusables.length - 1) {
+      event.preventDefault();
+      focusables[0].focus({ preventScroll: true });
+    }
+  }
+});
 
 // ---------- chrome ----------
 $('label').textContent = LABEL || '';
