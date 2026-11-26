@@ -116,7 +116,10 @@ export class ScriptApi {
     const { store, host } = ctx;
     if (ctx.closed) throw new Error('Workflow service is closed');
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid workspace call');
-    const args = input as Record<string, unknown>;
+    const given = input as Record<string, unknown>;
+    // A script's creation answers before the files of the worktree are written, unless it asks to wait for them:
+    // whoever works in the worktree is held back until they are there, and nothing else needs them sooner.
+    const args = given.kind === 'create' && given.wait === undefined ? { ...given, wait: false } : given;
     const root = await host.resolveRoot(scopeId);
     const state = requireState(store.state(scopeId, workflowId));
     if (!root || !sameRoot(root, state.root)) throw new Error('Root binding changed');

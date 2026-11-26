@@ -89,7 +89,7 @@ describe('a swarm whose worktrees are still being written', () => {
     let first: string | undefined;
     h.held.hold((args, cwd) => writes(args, cwd) && cwd !== (first ??= cwd));
     await h.run(`const spaces = [];
-      for (const n of [0, 1, 2]) spaces.push(await createWorkspace({key:"w" + n, wait:false}));
+      for (const n of [0, 1, 2]) spaces.push(await createWorkspace({key:"w" + n}));
       for (const n of [0, 1, 2]) await enqueueWork({key:"item-" + n, title:"Item " + n, input:n});
       return await swarm("Claim and finish the queued work", {key:"crew", maxTurns:4,
         members: spaces.map((space, n) => ({name:"w" + n, queue:"default", workspace: space.id}))});`);
@@ -189,7 +189,7 @@ describe('a swarm whose worktrees are still being written', () => {
 
   it('makes a script turn in a worktree that is still being prepared wait for it', async () => {
     const h = await harness(); h.held.hold(writes);
-    await h.run('const ws = await createWorkspace({key:"w", wait:false}); return await agent("work", {key:"turn", workspace: ws.id});');
+    await h.run('const ws = await createWorkspace({key:"w"}); return await agent("work", {key:"turn", workspace: ws.id});');
     await h.until(() => expect(h.worktrees()).toHaveLength(1));
     await h.settle();
     expect(h.specs).toHaveLength(0);
@@ -197,5 +197,21 @@ describe('a swarm whose worktrees are still being written', () => {
     await h.held.release();
     await h.until(() => expect(h.specs).toHaveLength(1));
     expect(await exists(join(h.specs[0]!.workspace!.path, 'README'))).toBe(true);
+  }, 30_000);
+
+  it('answers a script before the files are written, unless the script asks to wait for them', async () => {
+    const h = await harness(); h.held.hold(writes);
+    // What each creation answered is in the key of the item the script enqueues after it; the turn keeps the script running.
+    await h.run(`const quick = await createWorkspace({key:"quick"});
+      await enqueueWork({key:"quick-" + quick.status, title:"Quick", input:1});
+      const waited = await createWorkspace({key:"waited", wait:true});
+      await enqueueWork({key:"waited-" + waited.status, title:"Waited", input:2});
+      return await agent("hold", {key:"hold"});`);
+    const items = () => (h.state().workQueue?.items ?? []).map(item => item.key);
+    await h.until(() => expect(items()).toEqual(['quick-preparing']));
+    await h.settle();
+    expect(items()).toEqual(['quick-preparing']);
+    await h.held.release();
+    await h.until(() => expect(items()).toEqual(['quick-preparing', 'waited-ready']));
   }, 30_000);
 });

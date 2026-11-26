@@ -29,7 +29,7 @@ return await acceptIntegration({
 
 Pass explicit worker `harness`, `model`, and `reasoningEffort` values appropriate to the task. Independent changes can run the create/review sequence inside `parallel`, with unique keys and members. Example: [parallel reviewed changes](../workflow-definitions/scripted/examples/isolated-implementation.js).
 
-Create worktrees in batches, not one awaited call after another. Registration is serialized per repository and cheap; writing a checkout's files is the expensive part and runs in a bounded pool, so `parallel` over the whole member list costs roughly one checkout's time plus a wave per 64 worktrees. Awaiting each create turns that into a queue: a workflow that made 80 worktrees serially spent nearly 8 minutes before its first member could start.
+`createWorkspace` answers once the worktree is recorded; its files are written afterwards, and whoever is to work in it is held back until they are there (see [Starting before every worktree is written](#starting-before-every-worktree-is-written)). Registration is serialized per repository and cheap, so creating the worktrees of a whole member list takes seconds, in `parallel` or one after another. With `wait:true` a call waits for the files: awaiting such calls one after another turns the checkouts into a queue.
 
 The worker must commit intended changes and leave a clean index/worktree. `reviewedAgent` freezes the commit after the worker exits, creates an independent review snapshot, checks that the reviewer left it unchanged, and records approval from the actual task result. Rejection sends feedback to the original member/worktree. With `worker.workspace`, the result adds `{change,approval}` to `{value,review,rounds}`. Without it, existing helper behavior is unchanged. Nested `workflowTool` delegation in a workspace is not supported in this version.
 
@@ -50,11 +50,11 @@ Limits: the source keeps a ref `refs/bridge-workflow/<workflow-id>/clones/<works
 
 ## Starting before every worktree is written
 
-Writing the files is what makes a workspace slow on a large repository, and a swarm does not need every member's worktree before its first member can work. `createWorkspace({key, wait:false})` answers as soon as the worktree is recorded, with `status: "preparing"`, and its files are written afterwards. The ID is given to a swarm member like any other: the swarm holds that member back and wakes it when its worktree is ready. Members whose worktrees are ready work meanwhile, and the work items go to them, since a member that has not been woken has claimed nothing.
+Writing the files is what makes a workspace slow on a large repository, and a swarm does not need every member's worktree before its first member can work. `createWorkspace({key})` therefore answers as soon as the worktree is recorded, with `status: "preparing"`, and its files are written afterwards. The ID is given to a swarm member like any other: the swarm holds that member back and wakes it when its worktree is ready. Members whose worktrees are ready work meanwhile, and the work items go to them, since a member that has not been woken has claimed nothing.
 
 ```js
 const names = ['lead', 'w1', 'w2'];
-const spaces = await parallel(names.map(name => () => createWorkspace({key: 'ws-' + name, wait: false})));
+const spaces = await parallel(names.map(name => () => createWorkspace({key: 'ws-' + name})));
 return await swarm(goal, {key: 'crew', lead: 'lead', members: names.map((name, n) => ({name, queue: 'default', workspace: spaces[n].id}))});
 ```
 
@@ -63,8 +63,8 @@ Worktrees are written in about the order they were asked for: two asked for with
 - A checkout of 2,000 files or more is written by 64 Git processes, each a stretch of its files, and one such checkout at a time. One Git process writes a checkout file by file, and on a network filesystem each file takes several round trips whatever else runs beside it: 134,000 files took twenty minutes that way, with one other checkout running or with sixty-three, and half a minute with 64 processes on the one checkout. The worktrees of a swarm therefore become ready one after another from the first minute. Smaller checkouts and sparse ones are written by Git alone as before, and do not wait for a large checkout's turn.
 - A worktree whose files cannot be written makes its member stop as failed, with the reason. Whoever answers for the swarm's members is told as for any failed member: `staff_swarm({revive})` has the files written again, and `cleanup` removes what was made.
 - When the bridge restarts, a worktree that was not finished is written again the next time the swarm looks at its member, and registered again if the restart stopped Git while it was registering it. A workflow that is cancelled or has ended stops writing its worktrees.
-- `agent(prompt, {workspace})` with a worktree that is still being prepared waits for it. Freezing, checking and every other operation on one is refused until it is ready, except `cleanupWorkspace`, which stops the writing and removes what there is.
-- `wait` is no part of what a key stands for. The same key asked for again gives the same worktree, and without `wait:false` the call waits for its files.
+- `agent(prompt, {workspace})` with a worktree that is still being prepared waits for it, and so do `freezeWorkspace`, `checkWorkspace` and `acceptIntegration`. `cleanupWorkspace` does not: it stops the writing and removes what there is.
+- `createWorkspace({key, wait:true})` answers only when the files are written, with `status: "ready"`, and fails if they cannot be. `wait` is no part of what a key stands for: the same key asked for again gives the same worktree.
 
 ## Staffing a running swarm
 
@@ -80,7 +80,7 @@ Every operation requires an immutable, unique `key` (1–100 characters, no surr
 
 | API | Result and requirements |
 | --- | --- |
-| `createWorkspace({key,base?,repo?,isolation?,wait?})` | Workspace `{id,path,baseCommit,status,...}`. `base` is a full commit ID; omitted means resolve the authorized checkout's HEAD once and persist it. Requires a clean repository-root cwd, or `repo`. `isolation` is `"worktree"` (default) or `"clone"`, see above. With `wait:false` the answer comes before the files are written, with `status: "preparing"`; see above. |
+| `createWorkspace({key,base?,repo?,isolation?,wait?})` | Workspace `{id,path,baseCommit,status,...}`. `base` is a full commit ID; omitted means resolve the authorized checkout's HEAD once and persist it. Requires a clean repository-root cwd, or `repo`. `isolation` is `"worktree"` (default) or `"clone"`, see above. The answer comes before the files are written, with `status: "preparing"`; `wait:true` waits for them. See above. |
 | `createWorkspace({key,change})` | A separate reviewer worktree pinned to a frozen change ID. Mutually exclusive with `base`, `repo` and `isolation`. |
 | `agent(prompt,{key,workspace,...})` / `startAgent(prompt,{key,workspace,...})` | Run in the managed workspace ID. A persistent member cannot change workspace. Only one active task/check/inspection owns a worktree at a time. |
 | `freezeWorkspace({key,workspace})` | Immutable `{id,workspaceId,baseCommit,headCommit,tree,diffDigest,files}`. Rejects dirty/untracked files, unfinished Git operations, non-descendant or nonlinear candidate history, whitespace/conflict-marker errors, and a change whose list of paths is over 2 MB. Supervisor-prepared commits can also be frozen. |

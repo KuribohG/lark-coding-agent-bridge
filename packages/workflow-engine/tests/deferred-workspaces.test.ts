@@ -9,7 +9,6 @@ import { workspaceCommand } from '../src/engine/workspace-process';
 import { WorkflowWorkspaces } from '../src/engine/workspaces';
 import type { WorkspaceBinding } from '../src/engine/workspace-types';
 import { gate, writes } from './helpers/held-git';
-import { largeCommit, LARGE_PATHS } from './helpers/large-tree';
 
 const closes: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); }, 30_000);
@@ -52,12 +51,17 @@ describe('worktrees whose files are written after their creation has answered', 
     expect(h.standing(ws)).toBe('preparing');
     expect(h.manager.preparing(h.root, h.workflow, ws.id)).toBe(true);
     await expect(h.manager.binding(h.root, h.workflow, ws.id, signal())).rejects.toThrow('still being prepared');
-    await expect(h.op('freeze', 'early', { workspace: ws.id })).rejects.toThrow('still being prepared');
+    // Freezing it waits for its files, as does asking for it again without `wait: false`.
+    let frozen = false;
+    const early = h.op<{ headCommit: string }>('freeze', 'early', { workspace: ws.id }); void early.then(() => { frozen = true; }, () => {});
     expect(await h.op('create', 'a', { wait: false })).toMatchObject({ id: ws.id, status: 'preparing' });
     let told = 0; h.manager.watch(() => { told++; });
     const waited = h.op<WorkspaceBinding>('create', 'a'), prepared = h.manager.prepared(h.root, h.workflow, ws.id, signal());
+    await new Promise(done => setTimeout(done, 200));
+    expect(frozen).toBe(false);
     await h.held.release();
     expect(await waited).toMatchObject({ id: ws.id, status: 'ready' });
+    expect((await early).headCommit).toBe(h.base);
     expect((await prepared).id).toBe(ws.id);
     expect(h.standing(ws)).toBe('ready');
     await vi.waitFor(() => expect(told).toBe(1));
@@ -172,15 +176,18 @@ describe('worktrees whose files are written after their creation has answered', 
 
 describe('a large checkout written by several Git processes', () => {
   const run = (cwd: string, args: string[], env = process.env, input?: string) => execFileSync('git', args, { cwd, env, input, encoding: 'utf8', maxBuffer: 256 << 20 });
-  /** A commit with LARGE_PATHS, attributes that change line endings, an executable and a symlink. */
+  /** Files enough for a large checkout, under names short enough for a filesystem that bounds the length of a path. */
+  const MANY = Array.from({ length: 6000 }, (_, index) => `bulk/${index % 48}/f-${index}.txt`);
+  /** A commit with MANY, attributes that change line endings, an executable and a symlink. */
   function varied(repo: string, parent: string, dir: string, attributes = true): string {
-    const large = largeCommit(repo, parent, { files: { ...(attributes ? { '.gitattributes': '*.crlf text eol=crlf\n' } : {}), 'zz/last.crlf': 'one\ntwo\n', 'aa/empty.txt': '' } });
     const env = { ...process.env, GIT_INDEX_FILE: join(dir, 'index-' + randomUUID()) };
     const blob = (text: string) => run(repo, ['hash-object', '-w', '--stdin'], process.env, text).trim();
-    run(repo, ['read-tree', large], env);
-    run(repo, ['update-index', '--add', '--cacheinfo', `100755,${blob('#!/bin/sh\necho ok\n')},tools/run.sh`], env);
-    run(repo, ['update-index', '--add', '--cacheinfo', `120000,${blob('run.sh')},tools/link`], env);
-    return run(repo, ['commit-tree', run(repo, ['write-tree'], env).trim(), '-p', large, '-m', 'varied']).trim();
+    const shared = blob('x\n');
+    run(repo, ['read-tree', parent], env);
+    run(repo, ['update-index', '--add', '--index-info'], env, [...MANY.map(path => `100644 ${shared}\t${path}`),
+      ...(attributes ? [`100644 ${blob('*.crlf text eol=crlf\n')}\t.gitattributes`] : []), `100644 ${blob('one\ntwo\n')}\tzz/last.crlf`, `100644 ${blob('')}\taa/empty.txt`,
+      `100755 ${blob('#!/bin/sh\necho ok\n')}\ttools/run.sh`, `120000 ${blob('run.sh')}\ttools/link`].join('\n') + '\n');
+    return run(repo, ['commit-tree', run(repo, ['write-tree'], env).trim(), '-p', parent, '-m', 'varied']).trim();
   }
 
   it.each(['worktree', 'clone'] as const)('makes a %s whose files and index are what Git alone would have left', async isolation => {
@@ -196,10 +203,12 @@ describe('a large checkout written by several Git processes', () => {
     const recorded = run(ws.path, ['ls-files', '--debug']);
     expect(recorded.match(/^ {2}mtime: 0:0$/gm)).toBeNull();
     expect(recorded.match(/^ {2}size: 0\t/gm)).toHaveLength(1);
-    expect(recorded.match(/^ {2}size: 2\t/gm)!.length).toBeGreaterThanOrEqual(LARGE_PATHS.length);
+    // A clone does not take the source's core.autocrlf, so Git for Windows writes its files with CRLF.
+    const crlf = isolation === 'clone' && process.platform === 'win32';
+    expect(recorded.match(crlf ? /^ {2}size: 3\t/gm : /^ {2}size: 2\t/gm)!.length).toBeGreaterThanOrEqual(MANY.length);
     // Attributes come from the commit, whichever process writes the `.gitattributes` file and when.
     expect(await readFile(join(ws.path, 'zz/last.crlf'), 'utf8')).toBe('one\r\ntwo\r\n');
-    expect(await readFile(join(ws.path, LARGE_PATHS.at(-1)!), 'utf8')).toBe('x\n');
+    expect(await readFile(join(ws.path, MANY.at(-1)!), 'utf8')).toBe(crlf ? 'x\r\n' : 'x\n');
     if (process.platform !== 'win32') {
       expect((await lstat(join(ws.path, 'tools/run.sh'))).mode & 0o111).toBe(0o111);
       expect(await readlink(join(ws.path, 'tools/link'))).toBe('run.sh');
@@ -247,6 +256,6 @@ describe('a large checkout written by several Git processes', () => {
     full = false;
     const ws = await h.op<WorkspaceBinding>('create', 'big', { base: commit });
     expect(run(ws.path, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
-    expect(run(ws.path, ['ls-files']).split('\n').filter(Boolean)).toHaveLength(LARGE_PATHS.length + 6);
+    expect(run(ws.path, ['ls-files']).split('\n').filter(Boolean)).toHaveLength(MANY.length + 6);
   }, 120_000);
 });

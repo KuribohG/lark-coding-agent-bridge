@@ -675,7 +675,10 @@ export class WorkflowWorkspaces {
       } finally { this.end(ws, token); }
     }
     if (kind === 'integrate') return this.integrate(ctx, op, args);
-    const ws = await this.binding(ctx.state.root, op.workflow, id(args.workspace), ctx.signal); this.idle(ws, ctx);
+    // Freezing or checking a worktree whose files are still being written waits for them.
+    const ws = this.preparing(ctx.state.root, op.workflow, id(args.workspace)) ? await this.prepared(ctx.state.root, op.workflow, id(args.workspace), ctx.signal)
+      : await this.binding(ctx.state.root, op.workflow, id(args.workspace), ctx.signal);
+    this.idle(ws, ctx);
     const token = this.begin(ws);
     try {
       if (kind === 'freeze') {
