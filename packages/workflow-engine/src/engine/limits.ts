@@ -73,6 +73,12 @@ export const TRAIN_RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 45_000, 
  * member started without a time limit of its own is stopped after ten minutes, and that leaves the lock behind.
  */
 export const TRAIN_STALE_LOCK_MS = 600_000;
+/**
+ * How often a train whose branch is halted looks at the branch again. Its submissions wait in the queue meanwhile;
+ * the main agent settling the branch (configure_landing) wakes the train at once, so this only covers a branch that
+ * was put right from outside.
+ */
+export const TRAIN_HALT_POLL_MS = 30_000;
 
 export const MAILBOX_MAX_MESSAGES = 4096;
 export const MAILBOX_MAX_OPERATIONS = 8192;

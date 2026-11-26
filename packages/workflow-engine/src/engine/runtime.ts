@@ -35,7 +35,7 @@ function workspaceInstructions(workspace: WorkspaceBinding, landingRef: string |
       ? `This is a Git repository of your own: its branches, index, stash and locks are separate from the original checkout and from other members. The original checkout is the remote ${CLONE_REMOTE}; do not push to it. Work only in this clone. `
       : 'Work only in this worktree; do not modify the original checkout or other worktrees. ')
     + (workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.')
-    + (branch ? `\nLanding branch: ${branch} (created by the first landing)${clone ? `, in the original checkout; \`git fetch ${CLONE_REMOTE}\` brings it here as ${CLONE_REMOTE}/${branch}` : ''}. submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this ${place} to the branch head, with what others landed. `
+    + (branch ? `\nLanding branch: ${branch} (created by the first landing)${clone ? `, in the original checkout; \`git fetch ${CLONE_REMOTE}\` brings it here as ${CLONE_REMOTE}/${branch}` : ''}. submit_work rebases your commits onto it and hands them to the landing queue, which checks them together with other members' waiting work and lands them; it leaves this ${place} at the branch head, with what others landed and without the commits you handed over. `
       + 'Submit each item as soon as its own check passes, in small commits: work that waits drifts from the branch and conflicts more.' : '');
 }
 const jsonFormatRetryPrompt = (problem: string) => `Your last final answer cannot be used as the result of the script: ${problem.slice(0, 1500)}. Do not run the task or any tool again. Give the content of that answer once more in the JSON structure the task asks for (matching its JSON Schema exactly when it has one), as a final answer that holds this one JSON value and nothing else: no code fence and no other text.`;
@@ -148,7 +148,6 @@ export class WorkflowRuntime {
         signal.throwIfAborted();
         return this.workspaceManager().land({ state, signal }, input);
       },
-      landProgress: (state, input) => this.knownWorkspaces()?.progress(state.workflowId, input),
       landing: async (state, input) => {
         await this.workspacePolicy(state.root);
         return this.workspaceManager().configure({ state, signal: new AbortController().signal }, input);
@@ -309,6 +308,8 @@ export class WorkflowRuntime {
         workspace: input => this.kernel.scriptWorkspace(scopeId, workflowId, runId, input, controller.signal),
         progress: (kind, text) => this.kernel.scriptProgress(scopeId, workflowId, runId, kind, text),
       });
+      // Commits that members handed to the landing queue are the workflow's work until they have landed or come back.
+      await this.waitForScriptValue(listener => this.kernel.onChange(scopeId, listener), controller.signal, () => this.kernel.scriptLandingSettled(scopeId, workflowId, runId));
       this.kernel.finishScript(scopeId, workflowId, runId, { text });
     } catch (error) {
       if (!this.closed) this.kernel.finishScript(scopeId, workflowId, runId, { error: error instanceof Error ? error.message : String(error),

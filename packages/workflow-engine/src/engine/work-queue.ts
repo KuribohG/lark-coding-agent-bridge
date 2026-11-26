@@ -834,6 +834,9 @@ function turnBack(state: WorkflowView, claim: ClaimView, now: number, back: { st
     + `The item is yours again: finish what you are doing, then claim_work hands it to you before other work, with what the queue answered in item.landing. Your commits are ${commits}; git cherry-pick brings them into your worktree.`, now);
 }
 
+/** What a submission is answered once the landing queue holds it, and the claim the engine holds for it from then on. */
+interface Submitted { response: unknown; claim: Record<string, unknown> }
+
 /** The claim of a submission the landing queue holds, named as the member named it. */
 function submission(state: WorkflowView, args: Record<string, unknown>): ClaimView {
   const claim = state.workQueue?.claims.find(claim => claim.id === args.claimId);
@@ -847,7 +850,7 @@ function submission(state: WorkflowView, args: Record<string, unknown>): ClaimVi
  * (`completeSubmission`, `returnSubmission`). The answer is recorded for `operationId`, so a repeated call reads it.
  */
 export function submitClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number,
-  landing: Omit<NonNullable<WorkClaim['landing']>, 'since'>, worktree: string): unknown {
+  landing: Omit<NonNullable<WorkClaim['landing']>, 'since'>, worktree: string): Submitted {
   const operationId = scriptText(args.operationId, 'operationId', 160);
   const claim = ownedClaim(state, task, attemptId, args, now), item = itemById(state, claim.itemId);
   if ((state.workQueue?.operations ?? []).length >= WORK_MAX_OPERATIONS) throw new Error('Work operation limit reached');
@@ -858,7 +861,49 @@ export function submitClaim(state: WorkflowView, task: TaskView, attemptId: stri
   emit(state, { type: 'work_operation_recorded', operation: { key: `${task.taskId}:${attemptId}:${operationId}`,
     digest: workflowDigest({ method: 'submit_work', claimId: claim.id, generation: claim.generation }), response } });
   capacity(state, response);
-  return response;
+  return { response, claim: { claimId: claim.id, generation: claim.generation } };
+}
+
+/**
+ * Commits a member submitted for no work item get an item of their own, which the landing queue holds from the start.
+ * Every submission is then followed, completed and returned in the same way, and a script can wait for one with
+ * waitWork. The item is added to the member's queue even when that is closed: it is not new work, and becomes work
+ * only if the queue turns the commits back.
+ */
+export function trackSubmission(state: WorkflowView, task: TaskView, attemptId: string, operationId: unknown, now: number,
+  landing: Omit<NonNullable<WorkClaim['landing']>, 'since'>, worktree: string): Submitted {
+  const operation = scriptText(operationId, 'operationId', 160);
+  const work = state.workQueue;
+  if ((work?.operations ?? []).length >= WORK_MAX_OPERATIONS) throw new Error('Work operation limit reached');
+  if ((work?.items ?? []).length >= WORK_MAX_ITEMS) throw new Error('Work item limit reached');
+  if ((work?.claims ?? []).length >= WORK_MAX_CLAIMS) throw new Error('Work claim history limit reached');
+  const member = state.agents?.find(agent => agent.agentId === task.agentId)?.key;
+  const name = memberQueue(state, member) ?? 'default';
+  openQueue(state, name);
+  const commits = `${landing.targetCommit}..${landing.headCommit}`, stem = `submitted-${landing.headCommit.slice(0, 12)}`;
+  let key = stem;
+  for (let again = 2; workItemByKey(state, key); again++) key = `${stem}-${again}`;
+  const title = `Commits ${commits} that ${member ?? 'a task'} submitted for no work item`;
+  const input = { commits, count: landing.commits, note: 'Added by submit_work to follow these commits through the landing queue. It is completed when they land.' };
+  const item: WorkflowWorkItem = { id: randomUUID(), key, title, ...(member ? { by: member } : {}), input, digest: workflowDigest({ key, title, input }), maxAttempts: 3, resources: [],
+    ...(name !== 'default' ? { queue: name } : {}), ...(member ? { assignee: member } : {}), generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: now, updatedAt: now };
+  emit(state, { type: 'work_enqueued', item });
+  const leaseUntil = Math.min(now + SUBMITTED_LEASE_MS, state.deadlineAt);
+  // A task that is no persistent member has no agent: the claim names the task, and an item that comes back is anyone's.
+  const claim: WorkClaim = { id: randomUUID(), itemId: item.id, agentId: task.agentId ?? `task:${task.taskId}`, taskId: task.taskId, attemptId, generation: 1, progress: 0, leaseUntil, status: 'active', createdAt: now };
+  emit(state, { type: 'work_claimed', claim });
+  emit(state, { type: 'claim_submitted', claimId: claim.id, landing: { since: now, ...landing } });
+  emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil });
+  const response = { status: 'submitted', itemId: item.id, key, ...landing, worktree };
+  emit(state, { type: 'work_operation_recorded', operation: { key: `${task.taskId}:${attemptId}:${operation}`, digest: workflowDigest({ method: 'submit_work', headCommit: landing.headCommit }), response } });
+  capacity(state, item, response);
+  return { response, claim: { claimId: claim.id, generation: claim.generation } };
+}
+
+/** The key of the item a task is at work on: the one it holds a claim for that is not with the landing queue. */
+export function heldWork(state: WorkflowView, task: TaskView): string | undefined {
+  const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && !claim.landing && (task.agentId ? claim.agentId === task.agentId : claim.taskId === task.taskId));
+  return claim && itemById(state, claim.itemId).key;
 }
 
 /** Keeps a submission with the landing queue for one more lease; throws once the item is no longer the queue's to land. */

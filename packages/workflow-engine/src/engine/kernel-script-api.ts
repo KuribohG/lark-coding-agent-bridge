@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { renderWorkflowPlan } from './presentation';
-import { closeWorkQueue, enqueueWork, unfinishedWork, workStatus } from './work-queue';
+import { closeWorkQueue, enqueueWork, submittedWork, unfinishedWork, workStatus } from './work-queue';
 import { bindSwarm, memberSwarm, parseSwarm, swarmResult } from './swarm';
 import { queueControl, queueName, queueNames } from './work-routing';
 import { beginEventWait } from './event-waits';
@@ -311,6 +311,17 @@ export class ScriptApi {
     }, 'script:' + runId);
   }
 
+  /**
+   * Whether the landing queue is done with everything members of this run submitted to it: `true` then, nothing while
+   * commits wait there. A script that returns is finished only then, as the commits are work of the workflow that
+   * has yet to land or to be turned back.
+   */
+  scriptLandingSettled(scopeId: string, workflowId: string, runId: string): true | undefined {
+    const state = requireState(this.ctx.store.state(scopeId, workflowId));
+    if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running') throw new Error('Script run is inactive');
+    return submittedWork(state) ? undefined : true;
+  }
+
   scriptSwarmResult(scopeId: string, workflowId: string, runId: string, key: string): unknown | undefined {
     const state = requireState(this.ctx.store.state(scopeId, workflowId));
     if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running'
@@ -386,7 +397,14 @@ export class ScriptApi {
     if (!state?.script || state.script.runId !== runId || state.script.status !== 'running' || state.status !== 'active') return;
     ctx.store.transact(() => {
       if ('text' in result && state.swarms?.some(swarm => swarm.status === 'running' && swarm.runId === runId)) result = { error: 'Swarm is unfinished; await swarm()' };
-      if ('text' in result && unfinishedWork(state)) result = { error: 'Script returned with unfinished work items; continue consumption or explicitly cancel the workflow.' };
+      if ('text' in result && unfinishedWork(state)) {
+        // Commits the landing queue turned back after their member had gone on, with nobody left to take them up.
+        const returned = (state.workQueue?.items ?? []).filter(item => item.status === 'pending' && item.landing);
+        result = { error: returned.length
+          ? `Script returned, and the landing queue turned back the commits of ${returned.length} work item(s) that nobody was left to repair: `
+            + `${returned.slice(0, 8).map(item => `${item.key} (${item.landing!.status}, commits ${item.landing!.commits})`).join(', ')}. work_status({key}) shows what the queue answered.`
+          : 'Script returned with unfinished work items; continue consumption or explicitly cancel the workflow.' };
+      }
       if ('text' in result && state.tasks.some(task => task.scriptManaged && state.script!.calls.some(call => call.taskId === task.taskId)
         && (BUSY.has(task.status) || task.status === 'waiting_workflow'))) result = { error: 'Script returned with unfinished task handles; join or cancel every started task' };
       if ('text' in result && state.waits?.some(wait => wait.runId === runId && wait.status === 'waiting')) result = { error: 'Script returned with unfinished event waits' };

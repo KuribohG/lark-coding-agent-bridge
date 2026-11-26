@@ -168,33 +168,54 @@ describe('hosted workers in managed worktrees', () => {
     await h.until(() => expect(h.specs).toHaveLength(2));
     expect(h.specs[1]!.host).toEqual({ key: first.host!.key, attach: true });
 
-    // The process never learns of the restart: it lands with the claim ID and generation it was given before it.
-    const landed = await callWorkflow('submit_work', { operationId: 'land-1', claimId: grant.claimId, generation: grant.generation, result: { fixed: true } }, first.env);
-    expect(landed).toMatchObject({ status: 'landed', commits: 1, item: { status: 'completed' } });
-    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'completed', result: { fixed: true }, generation: 1 });
+    // The process never learns of the restart: it submits with the claim ID and generation it was given before it.
+    const submitted = await callWorkflow('submit_work', { operationId: 'land-1', claimId: grant.claimId, generation: grant.generation, result: { fixed: true } }, first.env);
+    expect(submitted).toMatchObject({ status: 'submitted', key: 'bug', commits: 1, worktree: 'reset' });
+    await h.until(() => expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'completed', result: { fixed: true }, generation: 1 }));
     h.hosts.get(first.host!.key)!.finish('landed');
     await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
     expect(await git(h.repo, 'show', `${(h.result() as string).replace('refs/heads/', '')}:fix.txt`)).toBe('fixed');
     expect(h.lease()).toBeUndefined();
   }, 30_000);
 
-  it('answers a landing in flight when the controller closes, and the member gets it from the next controller', async () => {
+  it('fails the script that returns when the queue turned commits back and nobody is left to repair them', async () => {
+    const h = await harness();
+    // Checks that nothing passes: the queue turns back whatever is submitted.
+    await h.run(`const landing = await configureLanding({key:"landing", checks: args.checks});
+      const ws = await createWorkspace({key:"w"});
+      await enqueueWork({key:"bug", title:"Bug", input:null});
+      await agent("fix", {key:"turn", member:"A", workspace: ws.id});
+      return landing.targetRef;`, { checks: [{ argv: [process.execPath, '-e', 'process.exit(3)'] }] });
+    await h.until(() => expect(h.state().tasks[0]?.status).toBe('running'));
+    const first = h.specs[0]!, cwd = first.workspace!.path;
+    const grant = await callWorkflow('claim_work', { operationId: 'claim-1' }, first.env) as { claimId: string; generation: number };
+    await writeFile(join(cwd, 'fix.txt'), 'fixed\n'); await git(cwd, 'add', '.');
+    await git(cwd, '-c', 'user.name=Fixer', '-c', 'user.email=fixer@localhost', 'commit', '-m', 'fix');
+    expect(await callWorkflow('submit_work', { operationId: 'land-1', claimId: grant.claimId, generation: grant.generation }, first.env)).toMatchObject({ status: 'submitted', key: 'bug' });
+    // The member goes on and ends its turn; the script returns after it, and its result waits for the queue.
+    h.hosts.get(first.host!.key)!.finish('done');
+    await h.until(() => expect(h.state().script?.status).toBe('failed'));
+    expect(h.state().script!.error).toContain('the landing queue turned back the commits of 1 work item(s) that nobody was left to repair: bug (check_failed, commits ');
+    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'pending', assignee: 'A', landing: { status: 'check_failed' } });
+  }, 30_000);
+
+  it('ends a submission in flight when the controller closes, and the member gets its answer from the next controller', async () => {
     const h = await harness();
     const gate = join(h.dir, 'checks-wait');
     await writeFile(gate, '');
-    // The checks hang for as long as the gate file exists.
-    const checks = [{ argv: [process.execPath, '-e', `const fs=require('fs');const t=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(gate)}))clearInterval(t)},20)`] }];
-    await h.run(`const landing = await configureLanding({key:"landing", checks: args.checks});
+    // The precheck, which the call waits for, hangs for as long as the gate file exists.
+    const precheck = [{ argv: [process.execPath, '-e', `const fs=require('fs');const t=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(gate)}))clearInterval(t)},20)`] }];
+    await h.run(`const landing = await configureLanding({key:"landing", checks: args.checks, precheck: args.precheck});
       const ws = await createWorkspace({key:"w"});
       await agent("fix", {key:"turn", member:"A", workspace: ws.id});
-      return landing.targetRef;`, { checks });
+      return landing.targetRef;`, { checks: [{ argv: [process.execPath, '-e', 'process.exit(0)'] }], precheck });
     await h.until(() => expect(h.state().tasks[0]?.status).toBe('running'));
     const first = h.specs[0]!, cwd = first.workspace!.path;
     await writeFile(join(cwd, 'fix.txt'), 'fixed\n'); await git(cwd, 'add', '.');
     await git(cwd, '-c', 'user.name=Fixer', '-c', 'user.email=fixer@localhost', 'commit', '-m', 'fix');
     let waited = '';
     const landing = callWorkflow('submit_work', { operationId: 'land-1' }, first.env, { onWait: reason => { waited = reason; } });
-    // The submission is on a train whose checks do not end.
+    // The submission is at a precheck that does not end.
     await new Promise(resolve => setTimeout(resolve, 1500));
 
     const started = Date.now();
@@ -202,11 +223,16 @@ describe('hosted workers in managed worktrees', () => {
     expect(Date.now() - started).toBeLessThan(10_000);
     await rm(gate);
     await h.resume();
-    await expect(landing).resolves.toMatchObject({ status: 'landed', commits: 1 });
+    // The call is made again of the next controller, which prechecks the commits the worktree still holds and takes them.
+    const submitted = await landing as { status: string; key: string };
+    expect(submitted).toMatchObject({ status: 'submitted', commits: 1 });
     expect(waited).toContain('restarting');
     expect(h.specs[1]!.host).toEqual({ key: first.host!.key, attach: true });
+    // The turn ends before the queue is done, and the script after it: its result waits for the commits to land.
     h.hosts.get(first.host!.key)!.finish('landed');
     await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.state().workQueue!.items.find(item => item.key === submitted.key)).toMatchObject({ status: 'completed', doneBy: 'A' });
+    expect(await git(h.repo, 'show', `${(h.result() as string).replace('refs/heads/', '')}:fix.txt`)).toBe('fixed');
   }, 60_000);
 
   it('frees the worktree of a worker that ended while no controller was attached, and runs the turn again in it', async () => {

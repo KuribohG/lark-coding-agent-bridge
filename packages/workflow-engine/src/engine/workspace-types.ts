@@ -75,12 +75,6 @@ export interface WorkspaceLanding {
   protect?: Array<{ paths: string[]; allow: string[] }>;
   /** Submissions one train carries at most. */
   batch: number;
-  /**
-   * A member that submits the commits of a work item does not wait for the train: once they have passed what is checked
-   * in its own worktree it is answered `submitted` and takes its next item, and the item comes back to it if the queue
-   * turns the commits back (see `LandSubmitted`).
-   */
-  async?: boolean;
 }
 
 /**
@@ -93,7 +87,6 @@ export interface LandingOverride {
   precheck?: WorkspaceCommands;
   protect?: NonNullable<WorkspaceLanding['protect']>;
   batch?: number;
-  async?: boolean;
 }
 
 /**
@@ -117,11 +110,13 @@ export interface LandingView {
   precheck?: WorkspaceCommands;
   protect?: WorkspaceLanding['protect'];
   batch: number;
-  /** Members hand a work item's commits to the queue and go on to the next item without waiting for the train. */
-  async: boolean;
   /** The settings that come from configure_landing rather than the script. */
   overridden: string[];
-  branches: Array<{ repository: string; head: string | null; landed?: string; waiting: number; halted?: string;
+  branches: Array<{ repository: string; head: string | null; landed?: string;
+    /** Submissions in the queue behind the train that runs now; while the branch is halted they stay there. */
+    waiting: number; halted?: string;
+    /** The train that runs now: how many submissions it carries, how many runs of the checks it has started, and since when. */
+    train?: { submissions: number; step: 'stacking' | 'checking'; checks: number; since: number };
     /** The train failed for a reason of its own (a Git command in its worktree) and runs again with its submissions kept. */
     retrying?: { failures: number; since: number; reason: string } }>;
 }
@@ -146,43 +141,26 @@ export interface LandingChange {
 }
 
 /**
- * A submission that joined the queue of an `async` landing, for the member that goes on without its answer. The
- * commits `targetCommit..headCommit` are the queue's now, by their IDs; the member's worktree was moved back to
+ * A submission that joined the landing queue, which is what its member is answered: it goes on to its next item, and
+ * what the queue makes of the commits reaches it through the work item they are for. The commits
+ * `targetCommit..headCommit` are the queue's now, by their IDs; the member's worktree was moved back to
  * `targetCommit`, the tip of the landing branch, unless `worktree` says it was `kept` as it stood.
  */
 export interface LandSubmitted { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }
 
 export type LandReport = (
-  /** The branch head now contains the work, and the worktree was moved to it. */
+  /** The branch head now contains the work. With no commits it is what a worktree that had nothing to land is answered. */
   | { status: 'landed'; targetRef: string; headCommit: string; commits: number }
-  /** The commits do not apply to `targetCommit`; the worktree holds them as submitted. */
+  /** The commits do not apply to `targetCommit`. From the rebase in the member's worktree, which holds them as submitted; from a train, about commits its member no longer has checked out. */
   | { status: 'conflict'; targetRef: string; targetCommit: string; detail: string }
-  /** The worktree is left with the commits that failed, on top of `targetCommit`. */
+  /** A check failed on the commits on top of `targetCommit`: the precheck in the member's worktree, which holds them, or the checks of a train. */
   | { status: 'check_failed'; targetRef: string; targetCommit: string; headCommit: string; reason?: string; commands: WorkspaceChecks['commands'] }
   /** The commits change protected paths; the worktree is left rebased onto `targetCommit`. */
   | { status: 'rejected'; targetRef: string; targetCommit: string; files: string[]; reason: string }
-  /** The branch was moved from outside the queue to a commit it does not vouch for; nothing lands until the main agent settles it. */
+  /** The branch was moved from outside the queue to a commit it does not vouch for. What a new submission is answered until the main agent settles it; submissions already in the queue wait there. */
   | { status: 'halted'; targetRef: string; targetCommit: string | null; reason: string }
   /** Something the main agent should hear about the branch; submit_work raises it as an event and keeps it from the member. */
 ) & { notice?: string };
-
-/**
- * Where a submission that has no answer yet is, for the member that waits for it. `preparing`: its commits are being
- * rebased, screened and prechecked in its own worktree. `waiting`: it is in the queue for a train, at `position` (1
- * boards next). `on_train`: it is on the train that is being stacked or checked now.
- */
-export interface LandProgress {
-  stage: 'preparing' | 'waiting' | 'on_train';
-  /** Since the submission began. */
-  seconds: number;
-  position?: number;
-  /** Submissions in the queue behind the train that runs now. */
-  waiting?: number;
-  /** The train that runs now: how many submissions it carries, and how many runs of the checks it has started. */
-  train?: { submissions: number; step: 'stacking' | 'checking'; checks: number; seconds: number };
-  /** The train failed for a reason of its own (a Git command in its worktree) and runs again with its submissions kept. */
-  retrying?: { failures: number; seconds: number; reason: string };
-}
 
 export interface WorkspaceContext {
   state: WorkspaceStateView;

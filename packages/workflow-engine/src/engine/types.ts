@@ -826,14 +826,15 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
   tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;
   /**
-   * Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). Where the
-   * landing lets members go on without the answer, `submitted` is called with a LandSubmitted once the submission has
-   * joined the queue, and the report follows whenever the queue has it.
+   * Submits the commits of the worktree `taskId` runs in to the landing queue; resolves to a LandReport
+   * (workspace-types.ts). What fails in the worktree is the report. Otherwise `submitted` is called with a
+   * LandSubmitted as the commits join the queue (when it throws they do not, and the worktree keeps them), and the
+   * report follows whenever the queue has dealt with them; `noticed` takes what the main agent should hear about the
+   * branch while they wait.
    */
   land?(state: WorkspaceStateView, input: { workspace: string; taskId: string;
-    submitted?: (info: { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }) => void }, signal: AbortSignal): Promise<unknown>;
-  /** Where the landing in progress in that worktree is, as a LandProgress (workspace-types.ts); nothing when none is. */
-  landProgress?(state: WorkspaceStateView, input: { workspace: string; taskId: string }): unknown;
+    submitted?: (info: { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }) => void;
+    noticed?: (notice: string) => void }, signal: AbortSignal): Promise<unknown>;
   /** Reports the landing and applies the main agent's changes to it; resolves to a LandingChange (workspace-types.ts). */
   landing?(state: WorkspaceStateView, input: Record<string, unknown>): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;

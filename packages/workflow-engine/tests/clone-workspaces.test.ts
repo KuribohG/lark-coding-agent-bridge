@@ -91,12 +91,14 @@ describe('clone workspaces', () => {
     await b.commit('b.txt', 'b\n');
     const second = await b.land() as { status: string; headCommit: string };
     expect(second).toMatchObject({ status: 'landed', commits: 1 });
-    // The clone reads what others landed without fetching, rebases onto it and is moved to the new head.
+    // The clone reads what others landed without fetching and rebases onto it. Once the queue has its commits it is
+    // left at the tip it rebased onto, for the member's next item.
     await a.commit('a2.txt', 'a2\n');
     const third = await a.land() as { status: string; headCommit: string };
     expect(third).toMatchObject({ status: 'landed', commits: 1 });
     expect(await git(h.repo, 'rev-parse', landing.targetRef)).toBe(third.headCommit);
-    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(third.headCommit);
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(second.headCommit);
+    expect(await git(a.ws.path, 'status', '--porcelain')).toBe('');
     expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n').sort()).toEqual(['a.txt', 'a2.txt', 'b.txt', 'shared.txt']);
     await git(a.ws.path, 'fetch', '--quiet', CLONE_REMOTE);
     expect(await git(a.ws.path, 'rev-parse', `${CLONE_REMOTE}/${landing.targetRef.replace('refs/heads/', '')}`)).toBe(third.headCommit);

@@ -176,6 +176,10 @@ export class WorkflowKernel {
     return this.ctx.scripts.scriptWork(scopeId, workflowId, runId, input);
   }
 
+  scriptLandingSettled(scopeId: string, workflowId: string, runId: string): true | undefined {
+    return this.ctx.scripts.scriptLandingSettled(scopeId, workflowId, runId);
+  }
+
   scriptSwarmResult(scopeId: string, workflowId: string, runId: string, key: string): unknown | undefined {
     return this.ctx.scripts.scriptSwarmResult(scopeId, workflowId, runId, key);
   }

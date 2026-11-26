@@ -4,11 +4,11 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
-import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_RETRY_DELAYS_MS, TRAIN_STALE_LOCK_MS, WORKSPACE_CHECKOUT_SLOTS } from './limits';
+import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_HALT_POLL_MS, TRAIN_RETRY_DELAYS_MS, TRAIN_STALE_LOCK_MS, WORKSPACE_CHECKOUT_SLOTS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
-import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandProgress, LandReport, LandSubmitted, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandReport, LandSubmitted, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
@@ -62,27 +62,39 @@ const checkoutSlots = new Slots(WORKSPACE_CHECKOUT_SLOTS);
 
 /** A submission waiting for a train: the member's commits `base..head`, already rebased onto the branch as it was then. */
 interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits: number; ctx: WorkspaceContext; resolve(report: LandReport): void; reject(error: unknown): void;
-  /** Its member has its answer; a train that runs again leaves it out. */
+  /** Takes what the main agent should hear about the branch while the submission waits (see `LandInput`). */
+  noticed?: (notice: string) => void;
+  /** The queue has answered it; a train that runs again leaves it out. */
   settled?: boolean }
 /** A Git command that failed. In a train's worktree that is the train's trouble, not that of the submissions it carries. */
 class GitFailure extends Error {}
 /** The landing branch moved while a train's checks ran, so what they passed on is no longer what would land. */
 class BranchMoved extends Error {}
+/** The landing branch is somewhere the queue cannot accept; its submissions wait until the main agent has settled it. */
+class LandingHalted extends Error { constructor(readonly notice: string) { super(notice); } }
 /** A train that failed for a reason of its own and runs again with the same submissions. */
 interface TrainTrouble { failures: number; since: number; reason: string; repeated: boolean; mended?: string }
 /** The run a train is on: the submissions it took from the queue and how far it has come with them. */
 interface TrainRun { batch: Candidate[]; since: number; step: 'stacking' | 'checking'; checks: number }
-interface Train { queue: Candidate[]; running: boolean; trouble?: TrainTrouble; current?: TrainRun }
-/** How long a train waits before it runs again, and when a lock nobody releases counts as abandoned. */
+interface Train { queue: Candidate[]; running: boolean; trouble?: TrainTrouble; current?: TrainRun;
+  /** The halt the train waits out, as the main agent was told of it. */
+  halted?: string;
+  /** Ends the wait the train is in, when something it waits for may have changed. */
+  wake?: () => void }
 /**
- * The landing a task waits for in its worktree. `head` names its submission once it has joined the queue; `detach`
- * ends the wait before the queue has answered, so the task can start another landing there.
+ * What a task is doing in its worktree to submit its commits: the rebase, the screening and the precheck, until the
+ * commits have joined the queue. A repeated call joins it; `detach` ends it, so the task can submit again there.
  */
-interface Flight { report: Promise<LandReport>; since: number; head?: string; detach(): void }
-/** What submit_work asks of `land`. `submitted` is called when the submission goes on without its member (`async`). */
-interface LandInput { workspace: string; taskId: string; submitted?: (info: LandSubmitted) => void }
+interface Flight { report: Promise<LandReport>; detach(): void }
+/**
+ * What submit_work asks of `land`. `submitted` is called as the commits join the queue, which is when the member is
+ * answered; when it throws they do not join, and the worktree keeps them. `noticed` takes what the main agent should
+ * hear about the branch while they wait there.
+ */
+interface LandInput { workspace: string; taskId: string; submitted?: (info: LandSubmitted) => void; noticed?: (notice: string) => void }
 
-export interface TrainTiming { retryDelaysMs: readonly number[]; staleLockMs: number }
+/** How long a train waits before it runs again or looks at a halted branch again, and when a lock nobody releases counts as abandoned. */
+export interface TrainTiming { retryDelaysMs: readonly number[]; staleLockMs: number; haltPollMs: number }
 /** What Git says when the index of a worktree cannot be read at all. */
 const INDEX_UNREADABLE = /index file smaller than expected|index file corrupt|bad index file sha1 signature|bad signature 0x|bad index version/;
 type CheckFailure = { commands: WorkspaceChecks['commands']; reason?: string };
@@ -124,7 +136,7 @@ export class WorkflowWorkspaces {
   private grafts = true;
 
   constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}) {
-    this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, ...timing };
+    this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, haltPollMs: TRAIN_HALT_POLL_MS, ...timing };
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
@@ -424,7 +436,7 @@ export class WorkflowWorkspaces {
   private async performInner(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<unknown> {
     const { kind, key, ...args } = input;
     const allowed: Record<string, string[]> = { create: ['base', 'change', 'repo', 'isolation'], freeze: ['workspace'], approve: ['change', 'taskId'],
-      integrate: ['base', 'approvals', 'target'], landing: ['checks', 'target', 'precheck', 'protect', 'batch', 'async'], check: ['workspace', 'commands'], accept: ['workspace', 'checks'], cleanup: ['workspace'] };
+      integrate: ['base', 'approvals', 'target'], landing: ['checks', 'target', 'precheck', 'protect', 'batch'], check: ['workspace', 'commands'], accept: ['workspace', 'checks'], cleanup: ['workspace'] };
     if (!Object.hasOwn(allowed, String(kind)) || Object.keys(args).some(key => !allowed[String(kind)]!.includes(key))) throw new Error('Unsupported workspace operation or option');
     const name = scriptText(key, 'workspace operation key', 100);
     if (name.startsWith('@') || name.trim() !== name) throw new Error('Invalid workspace operation key');
@@ -483,7 +495,7 @@ export class WorkflowWorkspaces {
     if (kind === 'landing') {
       const precheck = args.precheck === undefined ? undefined : this.commands(args.precheck), protect = this.protect(args.protect);
       const landing: WorkspaceLanding = { targetRef: this.targetRef(op.workflow, args.target), commands: this.commands(args.checks),
-        ...(precheck ? { precheck } : {}), ...(protect ? { protect } : {}), batch: boundedInteger(args.batch, 16, 1, 64), ...(this.flag(args.async, 'async') ? { async: true } : {}) };
+        ...(precheck ? { precheck } : {}), ...(protect ? { protect } : {}), batch: boundedInteger(args.batch, 16, 1, 64) };
       this.put(op.workflow, '@landing', 'landing', landing);
       return landing;
     }
@@ -660,10 +672,6 @@ export class WorkflowWorkspaces {
       return { paths, allow: ((rule.allow ?? []) as unknown[]).map(id => scriptText(id, 'workspace ID', 100)) };
     });
   }
-  private flag(value: unknown, name: string): boolean | undefined {
-    if (value !== undefined && typeof value !== 'boolean') throw new Error(`${name} is true or false`);
-    return value;
-  }
   private commands(value: unknown): WorkspaceCommands {
     if (!Array.isArray(value) || !value.length || value.length > 4) throw new Error('Checks require 1–4 foreground commands');
     return value.map(raw => {
@@ -695,39 +703,26 @@ export class WorkflowWorkspaces {
     const precheck = over.precheck ? over.precheck.length ? over.precheck : undefined : base.precheck;
     const protect = [...base.protect ?? [], ...over.protect ?? []];
     return { targetRef: base.targetRef, commands: over.commands ?? base.commands, ...(precheck ? { precheck } : {}),
-      ...(protect.length ? { protect } : {}), batch: over.batch ?? base.batch, ...(over.async ?? base.async ? { async: true } : {}) };
+      ...(protect.length ? { protect } : {}), batch: over.batch ?? base.batch };
   }
   /**
-   * Lands the commits of a member's worktree on the landing branch. Called by the task running in that worktree,
-   * which waits for the answer. The worktree is rebased onto the branch, screened for protected paths and prechecked
-   * on its own, side by side with other members; then the submission boards the next train (see `round`).
+   * Submits the commits of a member's worktree to the landing queue. Called by the task running in that worktree. The
+   * worktree is rebased onto the branch, screened for protected paths and prechecked on its own, side by side with
+   * other members, and what fails there is the answer. Then the commits join the queue by their IDs, `submitted` is
+   * called, and the worktree goes back to the tip of the branch for the member's next item: the queue does not look
+   * at it again. The promise settles with what the queue made of the commits (see `round`), which may be much later.
    */
   land(ctx: WorkspaceContext, input: LandInput): Promise<LandReport> {
     if (this.closed) return Promise.reject(new Error('Workspace service is closed'));
     const key = `${ctx.state.workflowId}:${input.workspace}:${input.taskId}`;
     const joined = this.inFlight.get(key);
     if (joined) return joined.report;
-    const flight = { since: Date.now(), detach: () => { if (this.inFlight.get(key) === flight) this.inFlight.delete(key); } } as Flight;
-    const pending = flight.report = this.landInner(ctx, input, flight); this.pending.add(pending); this.inFlight.set(key, flight);
+    const flight = { detach: () => { if (this.inFlight.get(key) === flight) this.inFlight.delete(key); } } as Flight;
+    // The rebase and the precheck stop with the service as well as with whoever submitted.
+    const pending = flight.report = this.landInner({ ...ctx, signal: AbortSignal.any([ctx.signal, this.stopping.signal]) }, input, flight);
+    this.pending.add(pending); this.inFlight.set(key, flight);
     void pending.finally(() => { this.pending.delete(pending); flight.detach(); }).catch(() => {});
     return pending;
-  }
-  /** Where the landing in progress in a worktree is, for the member that waits for it; nothing when none is. */
-  progress(workflow: string, input: { workspace: string; taskId: string }): LandProgress | undefined {
-    const flight = this.inFlight.get(`${workflow}:${input.workspace}:${input.taskId}`);
-    if (!flight) return undefined;
-    const seconds = (since: number) => Math.round((Date.now() - since) / 1000);
-    for (const [key, train] of this.trains) {
-      if (!key.startsWith(`${workflow}:`)) continue;
-      const mine = (candidate: Candidate) => candidate.ws.id === input.workspace && !candidate.settled && (!flight.head || candidate.head === flight.head);
-      const at = train.queue.findIndex(mine), riding = !!train.current?.batch.some(mine);
-      if (at < 0 && !riding) continue;
-      const { current, trouble } = train;
-      return { stage: riding ? 'on_train' : 'waiting', seconds: seconds(flight.since), ...(riding ? {} : { position: at + 1 }), waiting: train.queue.length,
-        ...(current ? { train: { submissions: current.batch.length, step: current.step, checks: current.checks, seconds: seconds(current.since) } } : {}),
-        ...(trouble ? { retrying: { failures: trouble.failures, seconds: seconds(trouble.since), reason: trouble.reason.split('\n')[0]!.slice(0, 300) } } : {}) };
-    }
-    return { stage: 'preparing', seconds: seconds(flight.since) };
   }
   private async landInner(ctx: WorkspaceContext, input: LandInput, flight: Flight): Promise<LandReport> {
     const workflow = ctx.state.workflowId, { signal } = ctx;
@@ -773,26 +768,25 @@ export class WorkflowWorkspaces {
     }
     const commits = Number((await this.git(ws.path, ['rev-list', '--count', `${targetCommit}..${pinned.headCommit}`], signal)).stdout.trim());
     await this.publish(ws, pinned.headCommit, signal);
-    flight.head = pinned.headCommit;
-    const boarded = this.board({ ws, base: targetCommit, head: pinned.headCommit, commits, ctx });
-    if (landing.async && input.submitted) {
-      // The member goes on to its next item. The queue has the commits by their IDs and no longer looks at this
-      // worktree, which starts the next item where a landing would have left it: at the tip of the branch, without
-      // commits that may yet be turned back. A worktree that cannot be moved is left to the member.
-      void boarded.catch(() => {});
-      const moved = await this.git(ws.path, ['reset', '--hard', '--quiet', targetCommit], new AbortController().signal, true).then(result => !result.code, () => false);
-      flight.detach();
-      input.submitted({ targetRef, targetCommit, headCommit: pinned.headCommit, commits, worktree: moved ? 'reset' : 'kept' });
-      return boarded;
+    signal.throwIfAborted();
+    // The queue takes the commits by their IDs. The worktree starts the member's next item where a landing would
+    // leave it: at the tip of the branch, without commits that may yet be turned back. One that cannot be moved is
+    // left to the member, which is told so.
+    const quiet = new AbortController().signal;
+    const moved = await this.git(ws.path, ['reset', '--hard', '--quiet', targetCommit], quiet, true).then(result => !result.code, () => false);
+    flight.detach();
+    try { input.submitted?.({ targetRef, targetCommit, headCommit: pinned.headCommit, commits, worktree: moved ? 'reset' : 'kept' }); }
+    catch (error) {
+      // Nobody answers for the commits (the claim they were submitted for ended meanwhile, say). The queue does not
+      // take them, and the worktree gets them back for whoever works there next.
+      const back = !moved || await this.git(ws.path, ['reset', '--hard', '--quiet', pinned.headCommit], quiet, true).then(result => !result.code, () => false);
+      if (back) throw error;
+      throw new Error(`${error instanceof Error ? error.message : String(error)}. The commits are ${targetCommit}..${pinned.headCommit}, and the worktree was moved back to ${targetCommit}: git cherry-pick brings them back`);
     }
-    const report = await boarded;
-    // The train restacked the commits: bring the worktree to where the report says they are, unless the member moved it meanwhile.
-    if ((report.status === 'landed' || report.status === 'check_failed') && report.headCommit !== pinned.headCommit) {
-      const quiet = new AbortController().signal;
-      const now = await this.clean(ws, quiet).catch(() => undefined);
-      if (now?.headCommit === pinned.headCommit) await this.git(ws.path, ['reset', '--hard', '--quiet', report.headCommit], quiet, true);
-    }
-    return report;
+    const boarded = this.board({ ws, base: targetCommit, head: pinned.headCommit, commits, ctx, ...(input.noticed ? { noticed: input.noticed } : {}) });
+    // Whoever submitted may be gone when the queue answers.
+    void boarded.catch(() => {});
+    return boarded;
   }
   private async identity(path: string, signal: AbortSignal): Promise<string[]> {
     return (await this.git(path, ['config', 'user.email'], signal, true)).stdout.trim() ? [] : ['-c', 'user.name=Bridge workflow', '-c', 'user.email=workflow@localhost'];
@@ -832,12 +826,20 @@ export class WorkflowWorkspaces {
           const again = await this.round(landing, batch, train.trouble, train.current);
           train.current = undefined;
           train.queue.unshift(...again);
-          train.trouble = undefined;
+          train.trouble = undefined; train.halted = undefined;
         } catch (error) {
           train.current = undefined;
           // A train that failed for a reason of its own runs again: its submissions did nothing wrong, and handing
           // them back would send every member through its rebase, its precheck and the queue once more.
           const left = batch.filter(candidate => !candidate.settled);
+          if (error instanceof LandingHalted && !this.closed) {
+            // Nothing is wrong with the submissions: they keep their place and board again once the branch is settled.
+            // The main agent hears of the halt once, through whichever of them can still pass it on.
+            train.queue.unshift(...left);
+            if (train.halted !== error.notice) { train.halted = error.notice; left.find(candidate => candidate.noticed)?.noticed!(error.notice); }
+            wait = this.timing.haltPollMs;
+            return;
+          }
           wait = this.closed ? undefined : this.retryDelay(train, error);
           if (wait !== undefined) { train.queue.unshift(...left); return; }
           let failure = error;
@@ -851,7 +853,7 @@ export class WorkflowWorkspaces {
         }
       });
       // The worktree is free while the train waits, so the main agent can settle the branch or change the checks.
-      if (wait) await this.pause(wait);
+      if (wait) { await this.pause(wait, wake => { train.wake = wake; }); train.wake = undefined; }
     }
     for (const candidate of train.queue.splice(0)) candidate.reject(this.stopping.signal.reason);
     train.running = false;
@@ -883,11 +885,12 @@ export class WorkflowWorkspaces {
     const prior = this.unsaid.get(key);
     this.unsaid.set(key, prior && prior !== notice ? `${prior}\n${notice}` : notice);
   }
-  private pause(ms: number): Promise<void> {
+  private pause(ms: number, waker?: (wake: () => void) => void): Promise<void> {
     const { signal } = this.stopping;
     return new Promise(resolve => {
       const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
       const timer = setTimeout(done, ms);
+      waker?.(done);
       signal.addEventListener('abort', done, { once: true });
       if (signal.aborted) done();
     });
@@ -977,7 +980,7 @@ export class WorkflowWorkspaces {
   private async vet(landing: WorkspaceLanding, ws: WorkspaceBinding, path: string, known: LandingHead, current: string | null, deadlineAt: number, signal: AbortSignal): Promise<{ halt?: string; notice: string }> {
     const { targetRef } = landing;
     const stopped = (reason: string) => ({ halt: reason, notice: `落地已停止：落地分支 ${targetRef} 被队列外改动（队列上次落地在 ${short(known.head)}，现在是 ${short(current)}），不能自动接纳：${reason}。`
-      + '在主 agent 处理之前成员的 submit_work 都返回 halted。configure_landing 的 branch:"restore" 把分支恢复到队列上次落地的位置（外来提交保存在返回的 kept 引用下），branch:"adopt" 按现状接纳；查明来源，成员只应通过 submit_work 落地。' });
+      + '已在队列里的提交留在队列里等待，新的 submit_work 返回 halted，直到主 agent 处理。configure_landing 的 branch:"restore" 把分支恢复到队列上次落地的位置（外来提交保存在返回的 kept 引用下），branch:"adopt" 按现状接纳；查明来源，成员只应通过 submit_work 落地。' });
     if (known.halt && known.halt.head === current) return stopped(known.halt.reason);
     const halt = (reason: string) => { this.putHead(ws, { targetRef, head: known.head, halt: { head: current, reason } }); return stopped(reason); };
     if (!current) return halt('the landing branch was deleted');
@@ -1011,7 +1014,7 @@ export class WorkflowWorkspaces {
     const deadlineAt = Math.max(...batch.map(candidate => candidate.ctx.state.deadlineAt));
     // The branch may have been moved since the members rebased onto it.
     const verdict = await this.inspect(landing, ws, deadlineAt);
-    if (verdict.halt) { for (const candidate of batch) candidate.resolve(this.halted(targetRef, verdict)); return []; }
+    if (verdict.halt) throw new LandingHalted(verdict.notice ?? verdict.halt);
     const expected = verdict.head, key = this.trainKey(ws);
     // A train that got here after failing for a reason of its own says so; the main agent can tell the members.
     const notice = [this.unsaid.get(key), trouble && !(trouble.reason.startsWith('Landing branch was moved')) ? this.troubled(ws, trouble, true) : undefined].filter(Boolean).join('\n') || undefined;
@@ -1169,7 +1172,7 @@ export class WorkflowWorkspaces {
   }
   private async configureInner(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<LandingChange> {
     const workflow = ctx.state.workflowId, { signal } = this.stopping;
-    if (Object.keys(input).some(key => !['checks', 'precheck', 'protect', 'batch', 'async', 'reset', 'branch'].includes(key))) throw new Error('Unsupported configure_landing option');
+    if (Object.keys(input).some(key => !['checks', 'precheck', 'protect', 'batch', 'reset', 'branch'].includes(key))) throw new Error('Unsupported configure_landing option');
     if (input.reset !== undefined && input.reset !== true) throw new Error('reset is true or left out');
     if (input.branch !== undefined && input.branch !== 'restore' && input.branch !== 'adopt') throw new Error('branch is "restore" or "adopt"');
     const base = this.record<WorkspaceLanding>(workflow, '@landing');
@@ -1180,8 +1183,7 @@ export class WorkflowWorkspaces {
       ...(input.checks === undefined ? {} : { commands: this.commands(input.checks) }),
       ...(input.precheck === undefined ? {} : { precheck: empty(input.precheck) ? [] : this.commands(input.precheck) }),
       ...(input.protect === undefined ? {} : { protect: empty(input.protect) ? [] : this.protect(input.protect)! }),
-      ...(input.batch === undefined ? {} : { batch: boundedInteger(input.batch, 16, 1, 64) }),
-      ...(input.async === undefined ? {} : { async: this.flag(input.async, 'async')! }) };
+      ...(input.batch === undefined ? {} : { batch: boundedInteger(input.batch, 16, 1, 64) }) };
     if (!next.protect?.length) delete next.protect;
     const repos = this.landingRepositories(workflow, ctx.state.root);
     const settled: NonNullable<LandingChange['settled']> = [];
@@ -1189,6 +1191,8 @@ export class WorkflowWorkspaces {
       const outcome = await this.exclusive(this.trainKey(ws), () => this.settle(ws, base.targetRef, input.branch as 'restore' | 'adopt', signal));
       if (outcome) settled.push(outcome);
     }
+    // A train that waits for the branch to be settled looks at it again now.
+    if (settled.length) for (const ws of repos) this.trains.get(this.trainKey(ws))?.wake?.();
     const current = this.effective(base, stored), wanted = this.effective(base, next);
     const differs = (a: unknown, b: unknown) => workflowDigest(a ?? null) !== workflowDigest(b ?? null);
     const changed = differs(current, wanted) || differs(stored, next);
@@ -1251,11 +1255,12 @@ export class WorkflowWorkspaces {
       const train = this.trains.get(this.trainKey(ws));
       branches.push({ repository: ws.repository, head, ...(known ? { landed: known.head } : {}), waiting: train?.queue.length ?? 0,
         ...(known?.halt && known.halt.head === head ? { halted: known.halt.reason } : {}),
+        ...(train?.current ? { train: { submissions: train.current.batch.length, step: train.current.step, checks: train.current.checks, since: train.current.since } } : {}),
         ...(train?.trouble ? { retrying: { failures: train.trouble.failures, since: train.trouble.since, reason: train.trouble.reason } } : {}) });
     }
-    const names: Record<keyof LandingOverride, string> = { commands: 'checks', precheck: 'precheck', protect: 'protect', batch: 'batch', async: 'async' };
+    const names: Record<keyof LandingOverride, string> = { commands: 'checks', precheck: 'precheck', protect: 'protect', batch: 'batch' };
     return { targetRef: landing.targetRef, checks: landing.commands, ...(landing.precheck ? { precheck: landing.precheck } : {}), ...(landing.protect ? { protect: landing.protect } : {}),
-      batch: landing.batch, async: !!landing.async, overridden: (Object.keys(names) as Array<keyof LandingOverride>).filter(key => over[key] !== undefined).map(key => names[key]), branches };
+      batch: landing.batch, overridden: (Object.keys(names) as Array<keyof LandingOverride>).filter(key => over[key] !== undefined).map(key => names[key]), branches };
   }
 
   private async check(ctx: WorkspaceContext, op: RecordRow, ws: WorkspaceBinding, value: unknown): Promise<WorkspaceChecks> {

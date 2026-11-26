@@ -32,7 +32,7 @@ describe('workflow tool plugins', () => {
     // A member is told what to do when a landing fails for a reason that is not its own.
     for (const text of ['Do not merge by hand a file that a command generates', 'If targetCommit fails by itself the landing branch is broken', 'do not repair the changes of other members']) expect(member, text).toContain(text);
     // The queue is told in the order a member meets it, and work found in a delivered item goes back to whoever delivered it.
-    const order = ['Taking an item:', 'Doing it:', 'Landing code:', 'When a landing is turned back', 'Adding work:', 'Finding work:', 'Changing work you added:', 'Repeats and restarts:'].map(text => member.indexOf(text));
+    const order = ['Taking an item:', 'Doing it:', 'Landing code:', 'When the queue turns your commits back', 'What turns a landing back', 'Adding work:', 'Finding work:', 'Changing work you added:', 'Repeats and restarts:'].map(text => member.indexOf(text));
     expect(order.every((at, index) => at > (order[index - 1] ?? -1))).toBe(true);
     for (const text of ['origin is the key of the item whose delivered result the new item is about', 'put the key of the item in the commit message']) expect(member, text).toContain(text);
   });

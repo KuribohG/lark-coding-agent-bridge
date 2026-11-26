@@ -7,8 +7,8 @@ import type { WorkflowCaller } from './types';
 const MAX_BODY = 512_000;
 /**
  * Operations that answer only after the engine has finished work of its own; the others answer at once.
- * submit_work waits for its landing as long as its caller asked, an hour at most, and then says where the submission
- * is. configure_landing waits for the train in progress and for the new checks it tries on the branch, which may each
+ * submit_work waits for the rebase and the precheck in its caller's worktree as long as the caller asked, an hour at
+ * most, and then says that they are still running. configure_landing waits for the train in progress and for the new checks it tries on the branch, which may each
  * run for hours on a loaded host; six hours keeps that wait inside the worker's own tool deadline, which the scheduler
  * bounds at seven.
  */
