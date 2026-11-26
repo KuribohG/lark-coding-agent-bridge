@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { callWorkflow, WorkflowRuntime } from '../src';
 import { WorkflowKernel } from '../src/engine/kernel';
-import { workspaceCommand } from '../src/engine/workspace-process';
+import { nodeProcesses, workspaceCommand } from '../src/engine/workspace-process';
+import type { WorkflowProcesses } from '../src/engine/ports';
 import { CLONE_REMOTE, WorkflowWorkspaces, type TrainTiming } from '../src/engine/workspaces';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 import type { LandReport, WorkspaceBinding, WorkspaceLanding } from '../src/engine/workspace-types';
@@ -22,7 +23,7 @@ async function git(cwd: string, ...argv: string[]) {
 }
 const node = (code: string) => ({ argv: [process.execPath, '-e', code] });
 
-async function fixture(timing: Partial<TrainTiming> = {}) {
+async function fixture(timing: Partial<TrainTiming> = {}, processes?: WorkflowProcesses) {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-landing-'));
   closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const repo = join(dir, 'repo'); await mkdir(repo);
@@ -35,7 +36,7 @@ async function fixture(timing: Partial<TrainTiming> = {}) {
   closes.push(() => kernel.close());
   await kernel.call({ kind: 'main', scopeId: 'scope', allowStart: true }, 'run_script', { operationId: 'start', goal: 'test', plan: 'test landing', script: 'return null;' });
   const state = kernel.state('scope')!;
-  const manager = new WorkflowWorkspaces(join(dir, 'workspaces.sqlite'), join(dir, 'worktrees'), undefined, timing);
+  const manager = new WorkflowWorkspaces(join(dir, 'workspaces.sqlite'), join(dir, 'worktrees'), processes, timing);
   closes.push(() => manager.close());
   const ctx = { state, signal: signal() };
   const op = <T>(kind: string, key: string, args: object = {}) => manager.perform(ctx, { kind, key, ...args }) as Promise<T>;
@@ -389,6 +390,91 @@ describe('a landing branch that only the queue moves', () => {
   }, 60_000);
 });
 
+describe('stacking a train', () => {
+  /** The Git commands the service runs, by their arguments after its own options. */
+  const recorded = () => {
+    const calls: string[][] = [];
+    const processes: WorkflowProcesses = { ...nodeProcesses, spawn: (command, args, options) => {
+      if (command === 'git') calls.push(args.filter((arg, at) => !arg.startsWith('core.') && !arg.startsWith('gc.') && !arg.startsWith('user.') && arg !== '-c' && args[at - 1] !== undefined));
+      return nodeProcesses.spawn(command, args, options);
+    } };
+    return { calls, processes, ran: (name: string) => calls.filter(call => call[0] === name) };
+  };
+  /** A commit as Git stores it, without the lines that a new commit of the same change gets anew. */
+  const kept = async (cwd: string, commit: string) => (await git(cwd, 'cat-file', 'commit', commit)).split('\n').filter(line => !/^(tree|parent|committer) /.test(line)).join('\n');
+
+  it('stacks submissions without picking them into its worktree, and keeps each commit\'s author and message', async () => {
+    const git2 = recorded(); const h = await fixture({}, git2.processes);
+    const landing = await h.configure([h.logged('', true)]);
+    const a = await h.member('a'), b = await h.member('b');
+    await a.commit('a.txt', 'a\n');
+    await writeFile(join(b.ws.path, 'b.txt'), 'b\n'); await git(b.ws.path, 'add', '.');
+    await git(b.ws.path, '-c', 'user.name=Someone Else', '-c', 'user.email=else@example.org', 'commit', '-q', '--date=2001-02-03T04:05:06+0700', '-m', 'Subject of b', '-m', 'Body, with a line\nand   spaces  kept.');
+    await git(b.ws.path, 'commit', '-q', '--allow-empty', '-m', 'made empty on purpose');
+    const originals = (await git(b.ws.path, 'rev-list', '--reverse', `${h.base}..HEAD`)).split('\n');
+    const reports = await h.together(2, () => [a.land(), b.land()]);
+    expect(reports).toMatchObject([{ status: 'landed', commits: 1 }, { status: 'landed', commits: 2 }]);
+    // Nothing was picked: the commits were merged in the object database, and the worktree only took the stack to check.
+    expect(git2.ran('cherry-pick').filter(call => !call.includes('--abort'))).toEqual([]);
+    expect(git2.ran('merge-tree').length).toBeGreaterThanOrEqual(3);
+    // The blocker of `together`, a, and both commits of b, the empty one too; a and b board in the order they got through.
+    const landed = (await git(h.repo, 'log', '--format=%H %s', `${h.base}..${landing.targetRef}`)).split('\n');
+    expect(landed).toHaveLength(4);
+    expect(await git(h.repo, 'rev-list', '--min-parents=2', landing.targetRef)).toBe('');
+    const mine = ['Subject of b', 'made empty on purpose'].map(subject => landed.find(line => line.endsWith(' ' + subject))!.split(' ')[0]!);
+    for (const [index, original] of originals.entries()) {
+      expect(mine[index]).not.toBe(original);
+      expect(await kept(h.repo, mine[index]!)).toBe(await kept(h.repo, original));
+    }
+    expect(await git(h.repo, 'log', '-1', '--format=%cn <%ce>', mine[0]!)).toBe('Test <test@localhost>');
+    expect(await git(h.repo, 'rev-parse', `${mine[1]}~1`)).toBe(mine[0]);
+    expect(await git(h.repo, 'diff', '--name-only', mine[0]!, mine[1]!)).toBe('');
+    for (const member of [a, b]) expect(await git(member.ws.path, 'rev-parse', 'HEAD')).toBe(await h.head());
+  }, 60_000);
+
+  it('leaves out a commit the branch already holds', async () => {
+    const h = await fixture(); const landing = await h.configure([h.logged('', true)]);
+    const a = await h.member('a'), b = await h.member('b');
+    await a.commit('same.txt', 'the same change\n');
+    await b.commit('same.txt', 'the same change\n'); await b.commit('b.txt', 'b\n');
+    const reports = await h.together(2, () => [a.land(), b.land()]);
+    expect(reports.map(report => report.status)).toEqual(['landed', 'landed']);
+    expect((await git(h.repo, 'log', '--format=%s', `${h.base}..${landing.targetRef}`)).split('\n').filter(subject => subject === 'same.txt')).toHaveLength(1);
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).toEqual(expect.arrayContaining(['same.txt', 'b.txt']));
+  }, 60_000);
+
+  it('picks in its worktree what is not a plain line of commits, and hands a merge back as a conflict', async () => {
+    const git2 = recorded(); const h = await fixture({}, git2.processes);
+    await h.configure([h.logged('', true)]);
+    const m = await h.member('m');
+    await git(m.ws.path, 'checkout', '-q', '-b', 'side-' + randomUUID()); await m.commit('side.txt', 'side\n');
+    const side = await git(m.ws.path, 'rev-parse', 'HEAD');
+    await git(m.ws.path, 'checkout', '-q', '--detach', h.base); await m.commit('main.txt', 'main\n');
+    await git(m.ws.path, 'merge', '-q', '--no-ff', '-m', 'merge side', side);
+    const [report] = await h.together(1, () => [m.land()]);
+    expect(report).toMatchObject({ status: 'conflict' });
+    expect((report as { detail: string }).detail).toContain('is a merge');
+    expect(git2.ran('merge-tree')).toEqual([]);
+    expect(git2.ran('cherry-pick').some(call => !call.includes('--abort'))).toBe(true);
+  }, 60_000);
+
+  it('picks in its worktree under a Git that cannot merge without one, and asks it only once', async () => {
+    const calls: string[][] = [];
+    const old: WorkflowProcesses = { ...nodeProcesses, spawn: (command, args, options) => {
+      if (command !== 'git' || !args.includes('merge-tree')) return nodeProcesses.spawn(command, args, options);
+      calls.push([...args]);
+      return nodeProcesses.spawn(process.execPath, ['-e', `process.stderr.write("error: unknown option \`merge-base=x'\\nusage: git merge-tree [--write-tree]\\n");process.exit(129)`], options);
+    } };
+    const h = await fixture({}, old); const landing = await h.configure([h.logged('', true)]);
+    const members = await Promise.all(['a', 'b', 'c'].map(name => h.member(name)));
+    await Promise.all(members.map((member, index) => member.commit(`file-${index}.txt`, 'x\n')));
+    const reports = await h.together(3, () => members.map(member => member.land()));
+    expect(reports.map(report => report.status)).toEqual(['landed', 'landed', 'landed']);
+    expect(calls).toHaveLength(1);
+    expect(await git(h.repo, 'rev-list', '--count', `${h.base}..${landing.targetRef}`)).toBe('4');
+  }, 60_000);
+});
+
 describe('a train that fails for a reason of its own', () => {
   /** A landing with one submission landed, so the train's worktree exists; returns that worktree's own Git directory. */
   const started = async (h: Awaited<ReturnType<typeof fixture>>) => {
@@ -484,7 +570,10 @@ describe('a train that fails for a reason of its own', () => {
     await writeFile(held, '');
     // On the train while its checks run; the ones behind it wait in order.
     await vi.waitFor(() => expect(where(a, 'a')).toMatchObject({ stage: 'on_train', waiting: 0, train: { submissions: 1, step: 'checking', checks: 1 } }), { timeout: 20_000, interval: 10 });
-    const landB = b.land(), landC = c.land();
+    // Whoever is through its own worktree first boards first: b is in the queue before c submits.
+    const landB = b.land();
+    await vi.waitFor(() => expect(where(b, 'b')).toMatchObject({ stage: 'waiting', position: 1 }), { timeout: 20_000, interval: 10 });
+    const landC = c.land();
     await vi.waitFor(() => expect(where(c, 'c')).toMatchObject({ stage: 'waiting', position: 2, waiting: 2, train: { submissions: 1 } }), { timeout: 20_000, interval: 10 });
     expect(where(b, 'b')).toMatchObject({ stage: 'waiting', position: 1 });
     // A train that runs again for a reason of its own says so to those it carries.

@@ -112,6 +112,8 @@ export class WorkflowWorkspaces {
   private readonly supported = new Map<string, Promise<void>>();
   private closed = false;
   private readonly timing: TrainTiming;
+  /** Whether this Git stacks commits without a worktree (`merge-tree --merge-base`, Git 2.40); found out on first use. */
+  private grafts = true;
 
   constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}) {
     this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, ...timing };
@@ -971,8 +973,8 @@ export class WorkflowWorkspaces {
   }
 
   /**
-   * One train. Stacks the batch on the branch head in the train's worktree, in the order submitted, and runs the
-   * checks on the whole stack. If they pass, the branch advances to the stack and everyone on it has landed. If they
+   * One train. Stacks the batch on the branch head, in the order submitted, and runs the checks on the whole stack in
+   * the train's worktree. If they pass, the branch advances to the stack and everyone on it has landed. If they
    * fail, the stack is bisected for the first submission that breaks the checks: the ones before it land, it gets the
    * failed checks back, and the ones after it ride the next train. A submission that does not apply to the branch
    * head is a conflict; one that only fails to apply on top of this train's cargo is tried first on the next train.
@@ -992,16 +994,21 @@ export class WorkflowWorkspaces {
     const told = <T extends LandReport>(report: T): T => { if (!notice) return report; said = true; return { ...report, notice }; };
     const start = expected ?? batch[0]!.base;
     const at = (commit: string) => this.park(path, commit, signal);
-    await at(start);
     const identity = await this.identity(path, signal);
     const stack: Candidate[] = [], heads = [start], again = new Set<Candidate>();
     for (const candidate of batch) {
       if (candidate.ctx.signal.aborted) { candidate.reject(candidate.ctx.signal.reason); continue; }
       const head = heads.at(-1)!;
-      const detail = await this.stack(path, head, candidate, identity, signal);
-      if (detail === undefined) { stack.push(candidate); heads.push(await this.revision(path, undefined, signal)); }
-      else if (head === start) candidate.resolve(told({ status: 'conflict', targetRef, targetCommit: start, detail }));
-      else { again.add(candidate); await at(head); }
+      let stacked = await this.graft(path, head, candidate, identity, signal);
+      if (!stacked) {
+        // Not a plain line of commits: the worktree picks them one by one.
+        await at(head);
+        const detail = await this.stack(path, head, candidate, identity, signal);
+        stacked = detail === undefined ? { head: await this.revision(path, undefined, signal) } : { conflict: detail };
+      }
+      if ('head' in stacked) { stack.push(candidate); heads.push(stacked.head); }
+      else if (head === start) candidate.resolve(told({ status: 'conflict', targetRef, targetCommit: start, detail: stacked.conflict }));
+      else again.add(candidate);
     }
     const check = async (commit: string): Promise<CheckFailure | undefined> => {
       if (run) { run.step = 'checking'; run.checks++; }
@@ -1032,6 +1039,53 @@ export class WorkflowWorkspaces {
     // Said once a report carried it; a train that only requeues its submissions says it on the next.
     if (said) this.unsaid.delete(key);
     return batch.filter(candidate => again.has(candidate));
+  }
+  /**
+   * Puts a submission's commits on top of `head` without a worktree. Each commit is merged into the stack in the object
+   * database, the way a pick merges it (its parent is the merge base), and committed again with its author and message.
+   * A pick in the worktree rewrites the index and looks at every file of the checkout for each commit, which on a
+   * network file system takes longer than the merge by orders of magnitude, and it holds the index lock all the while.
+   * Returns the new head, or what Git said of the conflict. Returns nothing for commits this does not stack (a merge, a
+   * message in another encoding, a Git without `merge-tree --merge-base`): the worktree picks those.
+   */
+  private async graft(path: string, head: string, candidate: Candidate, identity: string[], signal: AbortSignal): Promise<{ head: string } | { conflict: string } | undefined> {
+    // Nothing landed since the member rebased: its commits go on as they are.
+    if (candidate.base === head) return { head: candidate.head };
+    if (!this.grafts) return undefined;
+    const field = '\x1f';
+    const listed = await this.git(path, ['log', '-z', '--reverse', '--date=raw', `--format=${['%H', '%P', '%T', '%an', '%ae', '%ad', '%e', '%B'].join('%x1f')}`,
+      `${candidate.base}..${candidate.head}`], signal).catch(error => { if (signal.aborted) throw error; return undefined; });
+    if (!listed) return undefined;
+    const commits = listed.stdout.split('\0').filter(Boolean).map(entry => {
+      const [hash = '', parent = '', tree = '', name = '', email = '', date = '', encoding = '', ...message] = entry.split(field);
+      return { hash, parent, tree, name, email, date, encoding, message: message.join(field) };
+    });
+    // A line of ordinary commits from the base to the head, each of which names all a new commit takes from it.
+    const plain = commits.length > 0 && commits.every((commit, index) => SHA.test(commit.hash) && SHA.test(commit.tree)
+      && commit.parent === (index ? commits[index - 1]!.hash : candidate.base) && commit.name && commit.email && /^\d+ [+-]\d{4}$/.test(commit.date)
+      && !commit.encoding && commit.message.length <= 20_000 && !commit.message.includes('\0'));
+    if (!plain || commits.at(-1)!.hash !== candidate.head) return undefined;
+    const trees = (await this.git(path, ['rev-parse', `${candidate.base}^{tree}`, `${head}^{tree}`], signal)).stdout.trim().split('\n');
+    let tip = head, tipTree = trees[1]!, parentTree = trees[0]!;
+    for (const commit of commits) {
+      const merged = await this.git(path, ['merge-tree', '--write-tree', '--name-only', `--merge-base=${commit.parent}`, tip, commit.hash], signal, true, undefined, { keep: 'tail' });
+      // The tree comes first; what follows it names the files in conflict and says why.
+      if (merged.code === 1) return { conflict: (merged.stdout.slice(merged.stdout.indexOf('\n') + 1).trim() || merged.stderr).slice(-4000) };
+      const tree = merged.stdout.trim();
+      if (merged.code || !SHA.test(tree)) {
+        if (merged.code === 129 || /unknown option|usage: git merge-tree/.test(merged.stderr)) { this.grafts = false; return undefined; }
+        throw new GitFailure(`Git merge-tree failed: ${(merged.stderr || merged.stdout).slice(0, 1600)}`);
+      }
+      // A commit the branch already holds changes nothing on it, and a pick skips it. One that was made empty is kept.
+      if (tree !== tipTree || commit.tree === parentTree) {
+        tip = (await this.git(path, [...identity, 'commit-tree', tree, '-p', tip, '-m', commit.message], signal, false,
+          { GIT_AUTHOR_NAME: commit.name, GIT_AUTHOR_EMAIL: commit.email, GIT_AUTHOR_DATE: commit.date })).stdout.trim();
+        if (!SHA.test(tip)) throw new GitFailure('Git commit-tree failed: it named no commit');
+        tipTree = tree;
+      }
+      parentTree = commit.tree;
+    }
+    return { head: tip };
   }
   /** Puts a submission's commits on top of `head` in the train's worktree; returns Git's complaint when they do not apply. */
   private async stack(path: string, head: string, candidate: Candidate, identity: string[], signal: AbortSignal): Promise<string | undefined> {
