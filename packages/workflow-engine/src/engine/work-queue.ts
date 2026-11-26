@@ -8,7 +8,7 @@ import { WORK_FLOW_SLOT_MS, WORK_FLOW_SLOTS, WORK_MAX_BYTES, WORK_MAX_CLAIMS, WO
 import { boundedInteger, scriptText } from './script-contract';
 import { matchFields, SEARCH_ARCHIVE_ROWS, searchTerms, searchText, storedTerms } from './search';
 import { consumes, MEMBER_NAME, memberQueue, queueControl, queueName, queueNames } from './work-routing';
-import type { Immutable, TaskView, WorkClaim, WorkflowView, WorkflowWorkItem } from './types';
+import type { Immutable, TaskView, WorkClaim, WorkflowView, WorkflowWorkItem, WorkLandingReturn } from './types';
 
 type ItemView = Immutable<WorkflowWorkItem>;
 type ClaimView = Immutable<WorkClaim>;
@@ -553,15 +553,22 @@ export function expireWorkClaims(state: WorkflowView, now: number, held: (claim:
   const due = state.workQueue?.claims.filter(claim => claim.status === 'active' && !claim.frozen && claim.heldUntil === undefined && claim.leaseUntil <= now) ?? [];
   const expired: ClaimView[] = [];
   for (const claim of due) {
-    if (now < state.deadlineAt && held(claim)) emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(now + HELD_LEASE_MS, state.deadlineAt) });
+    // The landing queue renews the lease of what it holds: a submission whose lease ran out was lost with its queue.
+    // It has no turn to cancel, so it is not among the claims returned.
+    if (claim.landing) turnBack(state, claim, now, { status: 'lost', reason: SUBMISSION_LOST });
+    else if (now < state.deadlineAt && held(claim)) emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(now + HELD_LEASE_MS, state.deadlineAt) });
     else { endClaim(state, claim, now, 'expired', 'Claim lease expired', true); expired.push(claim); }
   }
   return expired;
 }
 
-/** Returns the claims of a turn, or of every turn, to the queue. `counted`: the turn broke down by itself (see `endClaim`). */
+/**
+ * Returns the claims of a turn, or of every turn, to the queue. `counted`: the turn broke down by itself (see
+ * `endClaim`). A claim the landing queue holds (`landing`) does not end with the turn that submitted it.
+ */
 export function releaseWorkClaims(state: WorkflowView, now: number, reason: string, taskId?: string, attemptId?: string, counted = false): void {
   for (const claim of state.workQueue?.claims ?? []) {
+    if (claim.landing && taskId) continue;
     if (claim.status === 'active' && (!claim.frozen || attemptId === claim.attemptId)
       && (!taskId || claim.taskId === taskId) && (!attemptId || claim.attemptId === attemptId)) {
       endClaim(state, claim, now, 'cancelled', reason, true, counted);
@@ -571,7 +578,7 @@ export function releaseWorkClaims(state: WorkflowView, now: number, reason: stri
 
 export function freezeWorkClaims(state: WorkflowView, reason: string, taskId?: string): void {
   for (const claim of state.workQueue?.claims ?? []) {
-    if (claim.status === 'active' && !claim.frozen && (!taskId || claim.taskId === taskId))
+    if (claim.status === 'active' && !claim.frozen && !claim.landing && (!taskId || claim.taskId === taskId))
       emit(state, { type: 'claim_frozen', claimId: claim.id, reason });
   }
 }
@@ -583,7 +590,7 @@ export function freezeWorkClaims(state: WorkflowView, reason: string, taskId?: s
  */
 export function holdWorkClaims(state: WorkflowView, until: number): void {
   for (const claim of state.workQueue?.claims ?? []) {
-    if (claim.status === 'active' && !claim.frozen) emit(state, { type: 'claim_held', claimId: claim.id, until });
+    if (claim.status === 'active' && !claim.frozen && !claim.landing) emit(state, { type: 'claim_held', claimId: claim.id, until });
   }
 }
 
@@ -695,6 +702,8 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
   const limit = boundedInteger(args.limit, 16, 1, 64);
   const counts = { pending: 0, claimed: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const item of items) counts[item.status]++;
+  // Of the claimed items, the ones no member is at: their commits are with the landing queue.
+  const submitted = (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active' && claim.landing && (name === undefined || (itemById(state, claim.itemId).queue ?? 'default') === name)).length;
   const flow = now === undefined ? undefined : workFlow(state, name, now);
   // Pending items a member could claim now; the rest wait on dependencies, resources held by claimed items or attempts,
   // or were set aside. Gates are conditions and are counted apart.
@@ -707,7 +716,7 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     for (const [status, count] of Object.entries(totals)) { counts[status as keyof typeof counts] += count; archived += count; }
   }
   const controls = (name === undefined ? queueNames(state) : [name]).map(name => queueControl(state, name));
-  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, claimable, blocked, ...(onHold ? { onHold } : {}), ...(heldReady ? { heldReady } : {}), ...(stuck ? { stuck } : {}), ...(gates ? { gates } : {}),
+  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, ...(submitted ? { submitted } : {}), claimable, blocked, ...(onHold ? { onHold } : {}), ...(heldReady ? { heldReady } : {}), ...(stuck ? { stuck } : {}), ...(gates ? { gates } : {}),
     ...(flow ? { flow } : {}), closed: controls.every(control => control?.closedAt !== undefined),
     closedAt: name === undefined ? state.workQueue?.closedAt : queueControl(state, name)?.closedAt,
     offset, nextOffset: offset + limit < items.length ? offset + limit : null,
@@ -757,6 +766,8 @@ export function searchWork(state: WorkflowView, args: Record<string, unknown> = 
 function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number): ClaimView {
   const id = scriptText(args.claimId, 'claimId', 100);
   const claim = state.workQueue?.claims.find(claim => claim.id === id);
+  if (claim?.status === 'active' && claim.landing && claim.agentId === task.agentId) throw new Error('This item is with the landing queue, which has your commits: '
+    + 'it is completed when they land and comes back to you when they are turned back. Claim your next item');
   if (!claim || claim.status !== 'active' || claim.frozen || claim.heldUntil !== undefined || claim.leaseUntil <= now || claim.agentId !== task.agentId
     || claim.taskId !== task.taskId || claim.attemptId !== attemptId || claim.generation !== args.generation) {
     throw new Error('Claim is stale, expired or belongs to another execution attempt');
@@ -790,11 +801,111 @@ export function holdClaim(state: WorkflowView, task: TaskView, attemptId: string
   emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(Math.max(claim.leaseUntil, now + leaseMs), state.deadlineAt) });
 }
 
+/**
+ * A lease the engine holds for a submission that is with the landing queue. The queue renews it while it has the
+ * submission, so a lease that ran out says the queue lost it.
+ */
+const SUBMITTED_LEASE_MS = 600_000;
+const SUBMISSION_LOST = 'The landing queue lost this submission before it had an answer (the bridge restarted, or the queue failed). The commits are untouched: bring them back and submit again.';
+
+/** A landing report as an item keeps it: long text is cut to its end, where a command that failed says why. */
+function clipped(report: unknown): unknown {
+  for (let keep = 8000; ; keep = Math.floor(keep / 2)) {
+    const cut = JSON.parse(JSON.stringify(report ?? null, (_key, value: unknown) => typeof value === 'string' && value.length > keep ? '…' + value.slice(-keep) : value)) as unknown;
+    if (keep < 200 || JSON.stringify(cut).length <= 16_000) return cut;
+  }
+}
+
+/**
+ * Returns an item whose commits the landing queue did not land to the member that submitted them: the item is that
+ * member's again (it is handed out to it before other work), keeps what the queue answered, and the member is told.
+ * It does not use up an attempt: the member did not give the item up.
+ */
+function turnBack(state: WorkflowView, claim: ClaimView, now: number, back: { status: string; reason?: string; report?: unknown }): void {
+  const { targetCommit, headCommit } = claim.landing!, commits = `${targetCommit}..${headCommit}`;
+  const item = itemById(state, claim.itemId), member = state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
+  const reason = back.reason?.trim().slice(0, 2000);
+  const returned: WorkLandingReturn = { at: now, status: back.status, ...(reason ? { reason } : {}), commits, ...(back.report === undefined ? {} : { report: clipped(back.report) }) };
+  endClaim(state, claim, now, 'released', `The landing queue turned back the commits ${commits} (${back.status})${reason ? ': ' + reason.split('\n')[0]!.slice(0, 300) : ''}`, true);
+  // After the claim has ended: the item moved, and did not come round with nothing done.
+  emit(state, { type: 'work_updated', itemId: item.id, ...(member ? { assignee: member } : {}), landing: returned, at: now });
+  capacity(state, returned);
+  if (member && item.status === 'pending') tellMember(state, member, `The landing queue turned back the commits you submitted for work item "${item.key}" (${back.status})${reason ? ': ' + reason.split('\n')[0]!.slice(0, 300) : ''}. `
+    + `The item is yours again: finish what you are doing, then claim_work hands it to you before other work, with what the queue answered in item.landing. Your commits are ${commits}; git cherry-pick brings them into your worktree.`, now);
+}
+
+/** The claim of a submission the landing queue holds, named as the member named it. */
+function submission(state: WorkflowView, args: Record<string, unknown>): ClaimView {
+  const claim = state.workQueue?.claims.find(claim => claim.id === args.claimId);
+  if (!claim || claim.status !== 'active' || !claim.landing || claim.generation !== args.generation) throw new Error('The work item is no longer with the landing queue');
+  return claim;
+}
+
+/**
+ * Hands the caller's claim to the landing queue. Its commits passed what is checked in its own worktree and wait for a
+ * train; the member goes on to its next item, and the engine holds the claim until the queue has answered
+ * (`completeSubmission`, `returnSubmission`). The answer is recorded for `operationId`, so a repeated call reads it.
+ */
+export function submitClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number,
+  landing: Omit<NonNullable<WorkClaim['landing']>, 'since'>, worktree: string): unknown {
+  const operationId = scriptText(args.operationId, 'operationId', 160);
+  const claim = ownedClaim(state, task, attemptId, args, now), item = itemById(state, claim.itemId);
+  if ((state.workQueue?.operations ?? []).length >= WORK_MAX_OPERATIONS) throw new Error('Work operation limit reached');
+  emit(state, { type: 'claim_submitted', claimId: claim.id, landing: { since: now, ...landing } });
+  // A renewal, not the hand-over, is what a replay reads the lease from.
+  emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(now + SUBMITTED_LEASE_MS, state.deadlineAt) });
+  const response = { status: 'submitted', itemId: item.id, key: item.key, ...landing, worktree };
+  emit(state, { type: 'work_operation_recorded', operation: { key: `${task.taskId}:${attemptId}:${operationId}`,
+    digest: workflowDigest({ method: 'submit_work', claimId: claim.id, generation: claim.generation }), response } });
+  capacity(state, response);
+  return response;
+}
+
+/** Keeps a submission with the landing queue for one more lease; throws once the item is no longer the queue's to land. */
+export function holdSubmission(state: WorkflowView, args: Record<string, unknown>, now: number): void {
+  emit(state, { type: 'claim_renewed', claimId: submission(state, args).id, leaseUntil: Math.min(now + SUBMITTED_LEASE_MS, state.deadlineAt) });
+}
+
+/** The commits of a submission landed: its item is completed, as the work of the member that submitted it. */
+export function completeSubmission(state: WorkflowView, args: Record<string, unknown>, result: unknown, now: number): unknown {
+  const claim = submission(state, args), item = itemById(state, claim.itemId);
+  emit(state, { type: 'work_completed', claimId: claim.id, result: json(result, 'Work result'), at: now });
+  capacity(state, result);
+  return { itemId: item.id, status: item.status, generation: item.generation };
+}
+
+/** The landing queue did not land a submission: see `turnBack`. */
+export function returnSubmission(state: WorkflowView, args: Record<string, unknown>, now: number, back: { status: string; reason?: string; report?: unknown }): void {
+  turnBack(state, submission(state, args), now, back);
+}
+
+/**
+ * Whether the landing queue holds work of these queues (of any, when none is named). Such work is in flight though no
+ * member is at it: its answer completes an item or brings one back.
+ */
+export function submittedWork(state: WorkflowView, names?: readonly string[]): boolean {
+  return state.workQueue?.claims.some(claim => claim.status === 'active' && claim.landing
+    && (!names || names.includes(itemById(state, claim.itemId).queue ?? 'default'))) ?? false;
+}
+
+/**
+ * The landing queue is held in memory, so a restart loses what waited in it. Every submission goes back to its member,
+ * whose commits are where it left them.
+ */
+export function returnSubmissions(state: WorkflowView, now: number): number {
+  const lost = state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.landing) ?? [];
+  for (const claim of lost) turnBack(state, claim, now, { status: 'lost', reason: SUBMISSION_LOST });
+  return lost.length;
+}
+
 export function workContext(state: WorkflowView, task: TaskView): unknown {
-  const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && claim.taskId === task.taskId);
+  const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && !claim.landing && claim.taskId === task.taskId);
   const subscribed = memberQueue(state, state.agents?.find(agent => agent.agentId === task.agentId)?.key);
+  // What the member handed to the landing queue and is not at work on: these complete, or come back, by themselves.
+  const submitted = state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.landing && claim.agentId === task.agentId).map(claim => itemById(state, claim.itemId).key) ?? [];
   return state.workQueue ? { total: state.workQueue.items.length + (state.archivedRecords?.workItem ?? 0), queue: subscribed ?? 'default',
-    claim: claim ? { ...claim, item: workStatus(state, { itemId: claim.itemId }) } : null } : undefined;
+    claim: claim ? { ...claim, item: workStatus(state, { itemId: claim.itemId }) } : null,
+    ...(submitted.length ? { submitted: submitted.slice(0, 16), ...(submitted.length > 16 ? { moreSubmitted: submitted.length - 16 } : {}) } : {}) } : undefined;
 }
 
 /** Called synchronously after kernel authorization and lease expiry handling. */
@@ -831,7 +942,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
     const name = queueName(args.queue ?? subscribed);
     if (subscribed && name !== subscribed) throw new Error('A member that consumes a queue cannot claim from another queue');
     const claims = state.workQueue?.claims ?? [];
-    const held = claims.find(claim => claim.status === 'active' && claim.agentId === task.agentId);
+    const held = claims.find(claim => claim.status === 'active' && !claim.landing && claim.agentId === task.agentId);
     if (held && (held.taskId !== task.taskId || held.attemptId !== attemptId)) throw new Error('Member has a claim in another attempt');
     if (held && (itemById(state, held.itemId).queue ?? 'default') !== name) throw new Error('Member already has a claim in another queue');
     let claim: Pick<WorkClaim, 'id' | 'generation'> | undefined = held;

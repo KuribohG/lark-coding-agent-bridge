@@ -448,12 +448,37 @@ export interface WorkflowWorkItem {
   progress: { version: number; state: unknown; updatedAt?: number };
   result?: unknown;
   error?: string;
+  /**
+   * What the landing queue answered when it last turned back commits a member had handed to it for this item and gone
+   * on from (see `WorkClaim.landing`). The item is back with that member, which reads here what to repair and where
+   * its commits are. Gone once the item is completed.
+   */
+  landing?: WorkLandingReturn;
   createdAt: number;
   updatedAt: number;
 }
 
+/** The answer of the landing queue to commits it did not land, as the item they were for keeps it. */
+export interface WorkLandingReturn {
+  at: number;
+  /** The status of the landing report, or `lost` when the queue did not get to answer (a restart, a failure of its own). */
+  status: string;
+  reason?: string;
+  /** The member's commits as `base..head`: `git cherry-pick` brings them back into a worktree. */
+  commits: string;
+  /** The landing report, with long command output cut to its end. */
+  report?: unknown;
+}
+
 export interface WorkClaim {
   frozen?: boolean;
+  /**
+   * The member handed the commits for this item to the landing queue and went on to other work. The engine holds the
+   * claim from then on: it is not the item the member is at work on, does not end with the member's turn, and cannot
+   * be used by the member. It completes the item when the commits land and returns the item to the member when the
+   * queue turns them back.
+   */
+  landing?: { since: number; targetCommit: string; headCommit: string; commits: number };
   /**
    * A host restart cut short the turn that holds this claim. Until its member's next attempt adopts the claim, or
    * this time passes, the claim keeps its item, cannot be used, and does not expire by lease.
@@ -800,8 +825,13 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   workspaceOrigin?(state: WorkspaceStateView, workspaceId: string): Promise<{ repo: string; isolation?: 'clone' }>;
   /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
   tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;
-  /** Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). */
-  land?(state: WorkspaceStateView, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
+  /**
+   * Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). Where the
+   * landing lets members go on without the answer, `submitted` is called with a LandSubmitted once the submission has
+   * joined the queue, and the report follows whenever the queue has it.
+   */
+  land?(state: WorkspaceStateView, input: { workspace: string; taskId: string;
+    submitted?: (info: { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }) => void }, signal: AbortSignal): Promise<unknown>;
   /** Where the landing in progress in that worktree is, as a LandProgress (workspace-types.ts); nothing when none is. */
   landProgress?(state: WorkspaceStateView, input: { workspace: string; taskId: string }): unknown;
   /** Reports the landing and applies the main agent's changes to it; resolves to a LandingChange (workspace-types.ts). */

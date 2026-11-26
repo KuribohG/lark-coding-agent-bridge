@@ -75,6 +75,12 @@ export interface WorkspaceLanding {
   protect?: Array<{ paths: string[]; allow: string[] }>;
   /** Submissions one train carries at most. */
   batch: number;
+  /**
+   * A member that submits the commits of a work item does not wait for the train: once they have passed what is checked
+   * in its own worktree it is answered `submitted` and takes its next item, and the item comes back to it if the queue
+   * turns the commits back (see `LandSubmitted`).
+   */
+  async?: boolean;
 }
 
 /**
@@ -87,6 +93,7 @@ export interface LandingOverride {
   precheck?: WorkspaceCommands;
   protect?: NonNullable<WorkspaceLanding['protect']>;
   batch?: number;
+  async?: boolean;
 }
 
 /**
@@ -110,6 +117,8 @@ export interface LandingView {
   precheck?: WorkspaceCommands;
   protect?: WorkspaceLanding['protect'];
   batch: number;
+  /** Members hand a work item's commits to the queue and go on to the next item without waiting for the train. */
+  async: boolean;
   /** The settings that come from configure_landing rather than the script. */
   overridden: string[];
   branches: Array<{ repository: string; head: string | null; landed?: string; waiting: number; halted?: string;
@@ -135,6 +144,13 @@ export interface LandingChange {
   settled?: Array<{ repository: string; branch: 'restored' | 'adopted'; head: string; kept?: string }>;
   landing: LandingView;
 }
+
+/**
+ * A submission that joined the queue of an `async` landing, for the member that goes on without its answer. The
+ * commits `targetCommit..headCommit` are the queue's now, by their IDs; the member's worktree was moved back to
+ * `targetCommit`, the tip of the landing branch, unless `worktree` says it was `kept` as it stood.
+ */
+export interface LandSubmitted { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }
 
 export type LandReport = (
   /** The branch head now contains the work, and the worktree was moved to it. */

@@ -1,6 +1,6 @@
 import type {
   DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MainWake, MailboxReceipt, OpenAsk, PostResolution, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
-  WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowTodo, WorkflowWait, WorkflowWorkItem,
+  WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowTodo, WorkflowWait, WorkflowWorkItem, WorkLandingReturn,
 } from './types';
 import type { RecordKind } from './records';
 
@@ -146,6 +146,8 @@ export type DomainEvent =
    * declares it done without a claim and `amend` rewrites what it asks for.
    */
   | { type: 'work_updated'; itemId: string; priority?: number; hold?: boolean; assignee?: string | null; at: number;
+      /** What the landing queue answered when it turned the item's commits back. */
+      landing?: WorkLandingReturn;
       held?: { by: string; at: number; reason?: string }; dependsOn?: string[]; supersededBy?: string;
       settled?: { by: string; result: unknown };
       /** What the item asks for, rewritten while nobody had claimed it. */
@@ -155,6 +157,8 @@ export type DomainEvent =
   | { type: 'claim_renewed'; claimId: string; leaseUntil: number }
   /** A host restart interrupted the claim's turn: the claim waits until `until` for its member's next attempt. */
   | { type: 'claim_held'; claimId: string; until: number }
+  /** The member handed the item's commits to the landing queue and went on; the engine holds the claim until the queue answers. */
+  | { type: 'claim_submitted'; claimId: string; landing: NonNullable<WorkClaim['landing']> }
   /** The member's next attempt took over the claim a restart had left held. */
   | { type: 'claim_adopted'; claimId: string; by: { taskId: string; attemptId: string } }
   /** A claim that ended without completing its item; `retry` returns the item to the queue while attempts remain. */

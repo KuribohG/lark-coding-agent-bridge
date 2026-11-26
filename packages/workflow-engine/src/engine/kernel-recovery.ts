@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { freezeWorkClaims, holdWorkClaims, releaseWorkClaims } from './work-queue';
+import { freezeWorkClaims, holdWorkClaims, releaseWorkClaims, returnSubmissions } from './work-queue';
 import { workerSelection } from './execution';
 import { scriptArgs, scriptText, SCRIPT_MAX_REVISIONS } from './script-contract';
 import { acknowledge, addArtifact, BUSY, sameRoot } from './kernel-state';
@@ -34,6 +34,8 @@ export class RestartRecovery {
         emit(state, { type: 'workflow_interrupted', ...(state.status !== 'interrupted'
           ? { restart: { since, resume: !state.parent && resumable(state) } } : {}) });
       }
+      // The landing queue did not survive the restart: what members had handed to it goes back to them.
+      if (!['completed', 'cancelled'].includes(state.status)) returnSubmissions(state, this.ctx.now());
       if (governed) freezeWorkClaims(state, 'Host restart; execution settlement requires reconciliation');
       else if (keep) holdWorkClaims(state, this.ctx.now() + CLAIM_ADOPTION_MS);
       else this.dropClaims(state);

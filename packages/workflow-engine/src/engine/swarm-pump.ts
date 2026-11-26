@@ -9,7 +9,7 @@ import { openingPrompt, turnBrief, type BriefFacts } from './swarm-brief';
 import { answersFor, chainAbove, coordinates, leadsAbove, MEMBER_BUSY, plannedBy, plansQueue, queueLead, quoted, takesTurns, turnCount, type ItemView, type MemberView, type SwarmView } from './swarm';
 import { clearTodos, deferredOf, holderOf, openTodos, reconcileTodos, type Situation, todosOf, todoView, toldSince } from './todos';
 import { answersShown } from './turn-mail';
-import { availableWork, deadDependency, itemsByKey, keptFor, queueStanding, unfinishedWork, waitsOn, workFlow, workItem } from './work-queue';
+import { availableWork, deadDependency, itemsByKey, keptFor, queueStanding, submittedWork, unfinishedWork, waitsOn, workFlow, workItem } from './work-queue';
 import { queueControl } from './work-routing';
 import type { Immutable, NativeIdKind, WorkflowSwarm, WorkflowTodo, WorkflowView } from './types';
 
@@ -77,7 +77,7 @@ function survey(state: WorkflowView, swarm: SwarmView, now: number): Survey {
   const turnsLeft = (member: MemberView) => coordinates(swarm, member) || member.turns < swarm.maxTurns;
   // Work a queue member could claim now, less the turns already running that have not claimed yet.
   const queues = [...new Set(swarm.members.flatMap(member => member.queue && !member.stopped ? [member.queue] : []))];
-  const claiming = new Set(queues.length ? (state.workQueue?.claims ?? []).flatMap(claim => claim.status === 'active' ? [claim.taskId] : []) : []);
+  const claiming = new Set(queues.length ? (state.workQueue?.claims ?? []).flatMap(claim => claim.status === 'active' && !claim.landing ? [claim.taskId] : []) : []);
   const work = new Map(queues.map(name => {
     const available = availableWork(state, name);
     // An item that is for one member is that member's to claim while it can be woken; the others are not woken for it.
@@ -227,7 +227,7 @@ function situations(state: WorkflowView, surveys: readonly Survey[], now: number
   const table = new Map((state.todos?.open ?? []).map(todo => [todo.subject, todo]));
   for (const each of surveys) {
     const hooked = found.some(situation => situation.swarm === each.swarm.id && situation.kind !== 'ask' && !table.get(situation.subject)?.deferred);
-    found.push(...idle(each, hooked, table));
+    found.push(...idle(state, each, hooked, table));
   }
   return new Map(found.map(({ swarm: _swarm, ...situation }) => [situation.subject, situation]));
 }
@@ -294,9 +294,11 @@ function unstaffed(state: WorkflowView, { swarm, busy, turnsLeft }: Survey): Arr
  * A swarm in which no member has anything to do and nobody is asked to decide anything. With a lead it is the lead's
  * to say whether the goal is met; it does not end by going quiet. Once told, it stands while the lead looks into it.
  */
-function idle({ swarm, busy, stirring }: Survey, hooked: boolean, table: ReadonlyMap<string, Immutable<WorkflowTodo>>): Situation[] {
+function idle(state: WorkflowView, { swarm, queues, busy, stirring }: Survey, hooked: boolean, table: ReadonlyMap<string, Immutable<WorkflowTodo>>): Situation[] {
   const lead = swarm.members.find(member => member.name === swarm.lead && !member.stopped);
   if (swarm.finish || !lead || hooked) return [];
+  // What members handed to the landing queue is still being worked on, by the queue.
+  if (submittedWork(state, queues)) return [];
   const subject = `idle:${swarm.id}`;
   if (swarm.members.some(member => !coordinates(swarm, member) && stirring(member))) return [];
   if (!table.has(subject) && swarm.members.some(member => coordinates(swarm, member) && (busy(member) || !member.taskId))) return [];
@@ -478,6 +480,8 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
       if (swarm.finish) { end('finished'); return changed; }
       // A member waiting for its own wake-up has work in flight, so the swarm is neither idle nor done.
       if (swarm.members.some(member => !member.stopped && member.wakeAt !== undefined && turnsLeft(member))) return changed;
+      // So has the landing queue with what members handed to it: its answer completes an item or brings it back.
+      if (submittedWork(state, queues)) return changed;
       // Idle members are not a verdict: a swarm with a lead ends only when the lead finishes it. What it waits for
       // now is someone's to-do (`idle`, or whatever else is open), which goes up while it stays open.
       if (lead) return changed;

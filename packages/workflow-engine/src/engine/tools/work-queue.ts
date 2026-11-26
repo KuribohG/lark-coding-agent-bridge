@@ -1,6 +1,6 @@
 import { CONTROL_ARGS } from './control-args';
 import { LANDING_HALTED, pushEvent, requireState } from '../kernel-state';
-import { assigned, closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
+import { assigned, closeWorkQueue, completeSubmission, enqueueFromMember, enqueueWork, holdClaim, holdSubmission, mutateWork, returnSubmission, submitClaim, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
 import { queueName } from '../work-routing';
 import { boundedInteger, scriptText } from '../script-contract';
 import { workAuthority } from '../swarm';
@@ -66,6 +66,8 @@ interface Submission {
   state: ReturnType<KernelContext['store']['workspaceView']>;
   since: number;
   answer: Promise<unknown>;
+  /** Settles with the answer for a member that goes on without waiting, once the landing queue holds its item. */
+  handed: Promise<unknown>;
   settled: boolean;
   /** A call has returned the answer. */
   read: boolean;
@@ -76,6 +78,10 @@ const submissions = new WeakMap<KernelContext, Map<string, Submission>>();
 /**
  * Lands the commits of the member's worktree and, when it holds a claim, completes that work item with the landing.
  * A rejected landing leaves the claim with the member, who repairs the worktree and submits again.
+ *
+ * Where the landing is `async`, a submission that names a claim is the member's only until it has joined the queue:
+ * the claim passes to the engine, the call answers `submitted` and the member takes its next item. The engine
+ * completes the item when the commits land and returns it to the member when the queue turns them back.
  */
 const submitWork: WorkflowTool = {
   name: 'submit_work',
@@ -108,46 +114,79 @@ const submitWork: WorkflowTool = {
           return { workspace: task.workspaceId, state: ctx.store.workspaceView(state) };
         });
         if ('prior' in start) return { prior: start.prior };
-        const hold = () => bound((state, task) => {
+        // Until the landing queue holds the item the claim is the member's, and the landing stops when its turn is gone.
+        let engine = false;
+        const inState = <T>(change: (state: WorkflowView) => T): T => ctx.store.transact(() => change(requireState(ctx.store.state(caller.scopeId, workflowId))), 'landing:' + caller.taskId);
+        const hold = () => engine ? inState(current => { active(ctx, current); holdSubmission(current, claim!, ctx.now()); }) : bound((state, task) => {
           active(ctx, state);
           if (claim) holdClaim(state, task, caller.attemptId, claim, ctx.now(), LAND_LEASE_MS);
         });
-        // Checks may outlast any lease: keep the claim while they run, and stop landing once the member's turn is gone.
+        // Checks may outlast any lease: keep the claim while they run, and stop landing once nobody holds it any more.
         const controller = new AbortController();
         const timer = setInterval(() => { try { hold(); } catch (error) { controller.abort(error); } }, LAND_LEASE_MS / 4);
         timer.unref();
+        let hand!: (answer: unknown) => void;
+        const handed = new Promise<unknown>(resolve => { hand = resolve; });
+        // The submission joined an async queue: the claim passes to the engine and the member is answered at once.
+        const submitted = claim && ((info: { targetCommit: string; headCommit: string; commits: number; worktree: string }) => {
+          try {
+            const answered = bound((state, task) => submitClaim(state, task, caller.attemptId, { operationId, ...claim }, ctx.now(),
+              { targetCommit: info.targetCommit, headCommit: info.headCommit, commits: info.commits }, info.worktree));
+            engine = true;
+            if (book.get(key) === begun) book.delete(key);
+            hand(answered);
+          } catch (error) {
+            // The worktree may have been moved already: say where the commits are.
+            controller.abort(new Error(`The landing queue could not take the item over (${error instanceof Error ? error.message : String(error)}). `
+              + `Your commits are ${info.targetCommit}..${info.headCommit}${info.worktree === 'reset' ? `, and your worktree was moved back to ${info.targetCommit}: git cherry-pick brings them back` : ''}`));
+          }
+        });
         const answer = (async () => {
           let report;
-          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId }, controller.signal) as { status: string; headCommit?: string; commits?: number }; }
+          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId, ...(submitted ? { submitted } : {}) }, controller.signal) as { status: string; headCommit?: string; commits?: number; reason?: string }; }
+          catch (error) {
+            // The queue gave the submission up, or was closed. A claim the engine holds goes back to its member; when
+            // the service is closing the restart does that, and a claim that someone ended has nothing left to return.
+            if (engine && !ctx.closed) try { inState(current => returnSubmission(current, claim!, ctx.now(), { status: 'failed', reason: error instanceof Error ? error.message : String(error) })); } catch { /* ended meanwhile */ }
+            throw error;
+          }
           finally { clearInterval(timer); }
           // What the landing queue found out about the branch is for the main agent; a halted branch says it until it is heard.
           const { notice, ...rest } = report as typeof report & { notice?: string };
           const halted = rest.status === 'halted';
           if (notice) {
-            try {
-              bound(state => {
-                // A halt stands until the main agent restores or adopts the branch, which settles the notice (landing.ts).
-                if (!state.events.some(event => event.kind === 'landing_attention' && !event.acknowledged && event.summary === notice)) pushEvent(state, { kind: 'landing_attention', summary: notice, ...(halted ? { subject: LANDING_HALTED } : {}) }, ctx.now);
-              });
-            } catch { /* the member's turn is gone; the next report carries a standing notice again */ }
+            // A halt stands until the main agent restores or adopts the branch, which settles the notice (landing.ts).
+            const raise = (state: WorkflowView) => {
+              if (!state.events.some(event => event.kind === 'landing_attention' && !event.acknowledged && event.summary === notice)) pushEvent(state, { kind: 'landing_attention', summary: notice, ...(halted ? { subject: LANDING_HALTED } : {}) }, ctx.now);
+            };
+            try { if (engine) inState(raise); else bound(raise); }
+            catch { /* the member's turn is gone; the next report carries a standing notice again */ }
           }
           report = rest;
+          const result = args.result ?? { headCommit: report.headCommit, commits: report.commits };
+          if (engine) {
+            // Nobody waits for this answer: the item itself carries it on.
+            try {
+              return report.status === 'landed' ? { ...report, item: inState(current => completeSubmission(current, claim!, result, ctx.now())) }
+                : (inState(current => returnSubmission(current, claim!, ctx.now(), { status: report.status, reason: report.reason, report })), report);
+            } catch (error) { ctx.log.warn('workflow.landing.submission_unsettled', { workflowId, taskId: caller.taskId, status: report.status, error: error instanceof Error ? error.message : String(error) }); return report; }
+          }
           if (report.status !== 'landed' || !claim) return report;
-          const item = bound((state, task) => mutateWork(state, task, caller.attemptId, 'complete_work',
-            { operationId, ...claim, result: args.result ?? { headCommit: report.headCommit, commits: report.commits } }, ctx.now()));
+          const item = bound((state, task) => mutateWork(state, task, caller.attemptId, 'complete_work', { operationId, ...claim, result }, ctx.now()));
           return { ...report, item };
         })();
-        const begun: Submission = { operationId, attemptId: caller.attemptId, ...(held ? { claim: held } : {}), workspace: start.workspace, state: start.state, since: Date.now(), answer, settled: false, read: false };
+        const begun: Submission = { operationId, attemptId: caller.attemptId, ...(held ? { claim: held } : {}), workspace: start.workspace, state: start.state, since: Date.now(), answer, handed, settled: false, read: false };
         const settle = () => { begun.settled = true; };
         answer.then(settle, settle);
         book.set(key, begun);
         return begun;
       })();
-      if ('prior' in submission) return { status: 'landed', item: submission.prior };
+      // A repeated call reads what its first one was answered: the item completed, or handed to the landing queue.
+      if ('prior' in submission) return (submission.prior as { status?: unknown } | null)?.status === 'submitted' ? submission.prior : { status: 'landed', item: submission.prior };
       let timer: NodeJS.Timeout | undefined;
       // The call that waits does not keep a closing service alive.
       const waited = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), waitMs); timer.unref(); });
-      const answered = await Promise.race([submission.answer.then(value => ({ value }), (error: unknown) => ({ error })), waited]);
+      const answered = await Promise.race([submission.answer.then(value => ({ value }), (error: unknown) => ({ error })), submission.handed.then(value => ({ value })), waited]);
       clearTimeout(timer);
       if (!answered) {
         // Nothing is wrong: the submission is where `stage` says, and the same call goes on waiting for it.
@@ -190,6 +229,14 @@ const MEMBER_INSTRUCTIONS = [
     + 'retrying means the queue itself failed and runs again with your submission kept: it needs nothing from you. '
     + 'The answer is kept until you have read it, so a call that was cut off loses nothing: repeat it with the same operationId. Only submit_work advances the landing branch: never commit, update-ref or push to it. '
     + 'The batch is checked in a worktree of the queue\'s own (a train-… directory that git worktree list shows): never run a command in it, not even git status, which locks its index and stops the landing for everyone.',
+  'Going on without the answer: a workflow may let its members hand their commits to the queue and take the next item. A submit_work that names claimId is then answered '
+    + '{status:"submitted",key,targetCommit,headCommit,commits,worktree} as soon as your commits have passed what is checked in your worktree and joined the queue; '
+    + 'a conflict, a rejection and a failed precheck are still answered at once, as described below. The item is the queue\'s from then on: do not wait for it, do not submit it again, and do not complete, fail or release it. '
+    + 'Your worktree is back at targetCommit, the tip of the landing branch, without those commits (worktree:"kept" says it could not be moved: run git reset --hard <targetCommit> yourself). '
+    + 'Call claim_work for your next item and start it there. The item completes by itself when the commits land, and items that wait on it are handed out only then: do not start work that needs commits that have not landed. '
+    + 'When the queue turns the commits back you are told, and the item is yours again: claim_work hands it to you before other work, with item.landing = {status,reason?,commits,report}. '
+    + 'Bring the commits back with git cherry-pick <commits> (a range, base..head), repair what status and report say as described below, commit and submit again. '
+    + 'status "lost" or "failed" says the queue did not get to check them: cherry-pick them and submit again. An item of another member that carries item.landing is taken up the same way, from that member\'s commits.',
   'When a landing is turned back the claim stays yours while you repair: submit again with a new operationId, or use release_claim or fail_work when you cannot. '
     + '{status:"conflict",targetCommit,detail}: your commits conflict with what has landed. Rebase onto targetCommit, resolve the conflict and submit again. '
     + 'Do not merge by hand a file that a command generates (a registry, a manifest, an index): take its version from targetCommit, run the command again and commit what it writes. '

@@ -101,7 +101,8 @@ function workLines(state: WorkflowState, item: WorkflowWorkItem): string[] {
     ...(item.queue || item.priority || item.dependsOn?.length ? [`  队列：${compact(item.queue ?? 'default', 64)}，优先级 ${item.priority ?? 0}，依赖 ${compact(item.dependsOn?.join('、') || '无', 240)}`] : []),
     ...(item.origin || item.assignee || item.doneBy ? ['  ' + [...(item.origin ? [`出自：${compact(item.origin, 100)}`] : []), ...(item.assignee ? [`指定给：${compact(item.assignee, 50)}`] : []),
       ...(item.doneBy ? [`完成者：${compact(item.doneBy, 50)}`] : [])].join('，')] : []),
-    ...(claim ? [`  负责成员：${compact(owner ?? claim.agentId, 100)}，认领版本 ${claim.generation}，${claim.heldUntil !== undefined ? `重启后为其保留至 ${time(claim.heldUntil)}` : `租约至 ${time(claim.leaseUntil)}`}`] : []),
+    ...(claim ? [`  负责成员：${compact(owner ?? claim.agentId, 100)}，认领版本 ${claim.generation}，${claim.landing ? `提交已于 ${time(claim.landing.since)} 交给落地队列（${claim.landing.commits} 个 commit），成员已去做别的项` : claim.heldUntil !== undefined ? `重启后为其保留至 ${time(claim.heldUntil)}` : `租约至 ${time(claim.leaseUntil)}`}`] : []),
+    ...(item.landing ? [`  落地退回（${time(item.landing.at)}）：${compact(item.landing.status + (item.landing.reason ? '，' + item.landing.reason : ''), 300)}；提交 ${item.landing.commits}`] : []),
     ...(item.progress.updatedAt ? [`  进展保存于：${time(item.progress.updatedAt)}`] : []),
     ...(item.resources.length ? [`  资源归属：${compact(item.resources.join('、'), 240)}`] : []),
     ...(item.error ? [`  原因：${errorText(item.error)}`] : [])];

@@ -447,7 +447,8 @@ function memberIndex(state: WorkflowState): MemberIndex {
     name: names(state), unread, turns,
     tasks: new Map(state.tasks.map(task => [task.taskId, task])),
     sessions: new Map(state.sessions.map(session => [session.sessionRef, session])),
-    claims: new Map((state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => [claim.agentId, claim])),
+    // What a member handed to the landing queue is not what it is at work on.
+    claims: new Map((state.workQueue?.claims ?? []).filter(claim => claim.status === 'active' && !claim.landing).map(claim => [claim.agentId, claim])),
     items: new Map((state.workQueue?.items ?? []).map(item => [item.id, item])),
     checkpoints: new Map((state.checkpoints ?? []).map(checkpoint => [checkpoint.ref, checkpoint])),
     receipts: new Map((state.mailbox?.receipts ?? []).map(receipt => [receipt.id, receipt])),

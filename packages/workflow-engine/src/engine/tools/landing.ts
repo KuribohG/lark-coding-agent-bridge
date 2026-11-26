@@ -13,7 +13,7 @@ export const landingTools: WorkflowToolPlugin = {
     {
       name: 'configure_landing',
       main: {
-        kind: 'direct', doc: 'configure_landing(checks?,precheck?,protect?,batch?,reset?,branch?)',
+        kind: 'direct', doc: 'configure_landing(checks?,precheck?,protect?,batch?,async?,reset?,branch?)',
         run: async (ctx, state, args, change) => {
           if (state.script?.readOnly) throw new Error('Landing configuration is disabled in read-only workflows');
           // The landing is not part of the versioned state: an operationId or version passed out of habit is ignored.

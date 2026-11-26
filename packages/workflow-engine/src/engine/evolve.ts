@@ -454,6 +454,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       if (event.assignee !== undefined) found.assignee = event.assignee ?? undefined;
       if (event.dependsOn !== undefined) found.dependsOn = event.dependsOn.length ? event.dependsOn : undefined;
       if (event.supersededBy !== undefined) found.supersededBy = event.supersededBy;
+      if (event.landing) found.landing = event.landing;
       if (event.amend) {
         if (event.amend.title !== undefined) found.title = event.amend.title;
         if (Object.hasOwn(event.amend, 'input')) found.input = event.amend.input;
@@ -466,7 +467,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       if (event.amend || event.assignee || event.dependsOn !== undefined) found.idleClaims = undefined;
       if (event.settled) {
         found.status = 'completed'; found.result = event.settled.result; found.settledBy = event.settled.by;
-        found.error = undefined; found.hold = undefined; found.held = undefined;
+        found.error = undefined; found.hold = undefined; found.held = undefined; found.landing = undefined;
         if (!found.gate) flowed(state, found, event.at, 'completed');
       }
       found.updatedAt = event.at;
@@ -487,6 +488,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     }
     case 'claim_renewed': claim(state, event.claimId).leaseUntil = event.leaseUntil; return;
     case 'claim_held': claim(state, event.claimId).heldUntil = event.until; return;
+    case 'claim_submitted': claim(state, event.claimId).landing = event.landing; return;
     case 'claim_adopted': {
       const adopted = claim(state, event.claimId);
       adopted.taskId = event.by.taskId; adopted.attemptId = event.by.attemptId;
@@ -518,7 +520,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'work_completed': {
       const completed = claim(state, event.claimId);
       const found = item(state, completed.itemId);
-      found.result = event.result; found.status = 'completed'; found.updatedAt = event.at; found.claimId = undefined; found.error = undefined;
+      found.result = event.result; found.status = 'completed'; found.updatedAt = event.at; found.claimId = undefined; found.error = undefined; found.landing = undefined;
       completed.status = 'completed'; completed.endedAt = event.at;
       // Kept on the item, which outlives its claims: what is later found wrong with the result goes back to this member.
       const by = state.agents?.find(agent => agent.agentId === completed.agentId)?.key;

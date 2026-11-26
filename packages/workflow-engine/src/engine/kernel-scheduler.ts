@@ -89,7 +89,7 @@ export class WorkflowScheduler {
     if (abandoned.length) this.ctx.hosts.discardTasks(state.workflowId, abandoned.map(claim => claim.taskId));
     if (this.ctx.host.executionLedger) {
       for (const claim of state.workQueue?.claims ?? []) {
-        if (claim.status !== 'active' || claim.frozen || claim.leaseUntil > this.ctx.now()) continue;
+        if (claim.status !== 'active' || claim.frozen || claim.landing || claim.leaseUntil > this.ctx.now()) continue;
         const task = taskById(state, claim.taskId);
         if (task && task.attempts.at(-1)?.attemptId === claim.attemptId && (this.running.has(task.taskId) || task.quiescence === 'unknown')) {
           freezeWorkClaims(state, 'Lease expired; old native execution has not proved quiescence', task.taskId);
