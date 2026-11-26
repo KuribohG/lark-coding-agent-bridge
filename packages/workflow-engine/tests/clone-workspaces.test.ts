@@ -158,7 +158,7 @@ describe('clone workspaces', () => {
 
   it('validates the isolation option and refuses partial-clone sources', async () => {
     const h = await fixture();
-    await expect(h.op('create', 'bad', { isolation: 'copy' })).rejects.toThrow('"worktree" or "clone"');
+    await expect(h.op('create', 'bad', { isolation: 'copy' })).rejects.toThrow('"worktree", "clone" or "wsfs"');
     expect(await h.op<WorkspaceBinding>('create', 'plain', { isolation: 'worktree' })).not.toHaveProperty('isolation');
     const a = await h.member('a', 'clone'); await a.commit('a.txt', 'a\n'); a.idle();
     const change = await h.op<WorkspaceChange>('freeze', 'freeze', { workspace: a.ws.id });

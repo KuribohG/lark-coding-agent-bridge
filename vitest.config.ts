@@ -34,8 +34,10 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts", "packages/*/src/**/*.ts"],
-      // Re-export barrels have no logic of their own.
-      exclude: ["src/index.ts", "src/runtime/public.ts", "src/channels/*/index.ts", "src/workflows/index.ts", "packages/*/src/index.ts", "packages/*/src/cli.ts"],
+      // Re-export barrels have no logic of their own. The client of the wsfs daemon is tested only where the
+      // daemon was built and a FUSE filesystem can be mounted, which is not every machine these numbers come from.
+      exclude: ["src/index.ts", "src/runtime/public.ts", "src/channels/*/index.ts", "src/workflows/index.ts", "packages/*/src/index.ts", "packages/*/src/cli.ts",
+        "packages/workflow-engine/src/engine/workspace-wsfs.ts"],
       reporter: ["text-summary", "json-summary", "json", "html"],
       // CI publishes the report even when a test fails.
       reportOnFailure: true,

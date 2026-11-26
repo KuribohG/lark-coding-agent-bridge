@@ -41,12 +41,32 @@ The worker must commit intended changes and leave a clean index/worktree. `revie
 | --- | --- | --- |
 | `"worktree"` (default) | Its own directory, index and `HEAD`. | The repository's `.git`: branches and other refs, the stash, hooks, config, and Git's maintenance. One member's `git stash pop`, `git gc`, `git worktree prune` or branch update acts on everyone's. |
 | `"clone"` | A repository of its own: refs, index, stash, locks and config. | Only objects, which the clone reads from the source checkout through alternates. Nothing is copied, so a clone costs about what a worktree does. |
+| `"wsfs"` | A worktree whose files are not written: its directory shows the commit as it is read from the object database, and stores only what the member changes. | What a worktree shares. See [Workspaces served from the object database](#workspaces-served-from-the-object-database). |
 
 Use a clone when many members work at once or run Git commands beyond add and commit. Everything else is the same: the clone starts detached at the baseline, freezing, review, `submit_work` and cleanup work as they do for a worktree, and the landing branch is still in the source checkout. The bridge copies a clone's commits to the source when a change is frozen or submitted, and resets the clone to the landed head afterwards.
 
 Inside a clone the source checkout is the remote `bridge-source`, so `git fetch bridge-source` shows its branches (and the landing branch) as `bridge-source/<branch>`. The source's own remotes and their remote-tracking refs are carried over under their names. Members should not push to `bridge-source`.
 
 Limits: the source keeps a ref `refs/bridge-workflow/<workflow-id>/clones/<workspace-id>` on what each clone depends on, removed with the clone; do not delete the source checkout or prune those refs while clones exist. Repositories that are themselves partial clones are refused. Cleanup deletes the clone's directory, subject to the same conditions as a worktree.
+
+## Workspaces served from the object database
+
+A worktree or a clone of a large repository costs a checkout: every file of the commit is written before a member can start, and written again, file by file, each time the member's commits are rebased onto what others landed. `createWorkspace({key, isolation: "wsfs"})` and `staff_swarm({add, workspace: {isolation: "wsfs"}})` make a workspace that has no checkout. Its directory is served by `wsfs` ([packages/workspace-fs](../packages/workspace-fs/README.md)), a FUSE filesystem that reads files from the repository's object database as they are opened and keeps, as plain files, only what the workspace itself changed or built.
+
+- Making one writes an index and nothing else. On a repository of 125,000 files on a network filesystem, on a busy machine, 24 workspaces asked for at once were ready within three seconds; a worktree there takes about half a minute, written by 64 processes.
+- `submit_work` rebases the member's commits in the object database and moves the workspace to the result, and afterwards to the head of the landing branch; no file is written for either. On that repository a submission took four to five seconds up to the answer of the queue, with a check that does nothing. The files of the commits that landed are dropped from the workspace, so what it holds does not grow as the member follows the branch. Untracked files, a build directory among them, stay where they are.
+- The landing queue's own worktree is a workspace of the same kind, so the checks do not wait for a checkout either.
+- The member's Git works as in any linked worktree of the repository: branches, the stash and the object database are the repository's. A member that puts its `HEAD` on a branch of its own, or whose commits are not a plain line, is rebased by Git in the workspace as in a worktree; that works and writes the files that differ.
+
+One daemon serves the workspaces of one workflow in one repository, at `<worktrees>/<workflow-id>/wsfs-<repository>/<workspace-id>`. It is started with the first workspace and stopped with the last one that is cleaned up, and it is a process of its own: members keep working across a restart of the bridge. If it dies, the bridge starts it again within a few seconds of noticing, and nothing is lost, since a workspace's changes are plain files; commands that were running in its workspaces at that moment fail with `Transport endpoint is not connected`, and a member's shell has to enter its directory again.
+
+Requirements and limits:
+
+- Linux with `/dev/fuse` and `fusermount3` (package `fuse3`), and the `wsfs` binary. `pnpm install` builds it into `bin/wsfs` when `cargo` (Rust 1.93 or later) is on `PATH`; `WORKFLOW_WSFS_COMMAND` names another binary. Where any of these is missing the creation is refused with the reason, before anything is recorded, and the same key can be asked for with another isolation.
+- What the workspaces change is stored under `<worktrees>/<workflow-id>/wsfs-<repository>.state/`, on the filesystem the worktrees are on, so creating a file in a workspace costs what creating one there costs. `WORKFLOW_WSFS_STATE` names another root, for instance a directory on a local disk where a build is as fast as a local build and does not survive the machine. The setting is read when a workflow's first workspace in a repository is made.
+- A repository whose shared configuration turns sparse checkout on, a partial clone and a SHA-256 repository are refused. Like every workspace, one whose commit has submodules or checkout filters is refused too.
+- No hard links. Renaming a directory that holds committed files is refused as a rename across filesystems, and `mv` then copies and deletes. Files are served as the commit stores them, without end-of-line or encoding conversion.
+- Review snapshots and integration worktrees (`createWorkspace({key, change})`, `integrateChanges`) are plain worktrees.
 
 ## Starting before every worktree is written
 
@@ -80,7 +100,7 @@ Every operation requires an immutable, unique `key` (1–100 characters, no surr
 
 | API | Result and requirements |
 | --- | --- |
-| `createWorkspace({key,base?,repo?,isolation?,wait?})` | Workspace `{id,path,baseCommit,status,...}`. `base` is a full commit ID; omitted means resolve the authorized checkout's HEAD once and persist it. Requires a clean repository-root cwd, or `repo`. `isolation` is `"worktree"` (default) or `"clone"`, see above. The answer comes before the files are written, with `status: "preparing"`; `wait:true` waits for them. See above. |
+| `createWorkspace({key,base?,repo?,isolation?,wait?})` | Workspace `{id,path,baseCommit,status,...}`. `base` is a full commit ID; omitted means resolve the authorized checkout's HEAD once and persist it. Requires a clean repository-root cwd, or `repo`. `isolation` is `"worktree"` (default), `"clone"` or `"wsfs"`, see above. The answer comes before the files are written, with `status: "preparing"`; `wait:true` waits for them. See above. |
 | `createWorkspace({key,change})` | A separate reviewer worktree pinned to a frozen change ID. Mutually exclusive with `base`, `repo` and `isolation`. |
 | `agent(prompt,{key,workspace,...})` / `startAgent(prompt,{key,workspace,...})` | Run in the managed workspace ID. A persistent member cannot change workspace. Only one active task/check/inspection owns a worktree at a time. |
 | `freezeWorkspace({key,workspace})` | Immutable `{id,workspaceId,baseCommit,headCommit,tree,diffDigest,files}`. Rejects dirty/untracked files, unfinished Git operations, non-descendant or nonlinear candidate history, whitespace/conflict-marker errors, and a change whose list of paths is over 2 MB. Supervisor-prepared commits can also be frozen. |

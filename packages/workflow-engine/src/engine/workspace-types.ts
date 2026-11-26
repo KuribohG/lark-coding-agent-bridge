@@ -12,9 +12,11 @@ export interface WorkspaceBinding {
   /**
    * Absent for a worktree of `repository`, which shares its refs, stash and Git metadata with every other worktree.
    * A clone is a repository of its own at `path` that borrows the objects of `repository`; `repository` and
-   * `commonDir` still name the checkout it was made from, where its work is reviewed and landed.
+   * `commonDir` still name the checkout it was made from, where its work is reviewed and landed. A wsfs workspace
+   * is a worktree of `repository` like the first, whose files are not written: `path` is a directory of a mount
+   * that shows the commit as it is read from the object database, under the files the workspace changed.
    */
-  isolation?: 'clone';
+  isolation?: 'clone' | 'wsfs';
   changeId?: string;
   status: 'preparing' | 'ready' | 'removed';
   /** `hostKey` names the hosted worker process that runs here; it keeps the lease while no service is attached to it. */

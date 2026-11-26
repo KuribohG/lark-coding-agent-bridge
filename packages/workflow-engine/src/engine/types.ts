@@ -842,7 +842,7 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   workspacesWanted?(root: WorkflowRoot, workflowId: string, workspaceIds: string[]): void;
   workspace?(state: WorkspaceStateView, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** The repository a worktree of this workflow was made from and its isolation, as the `workspace` options that make another like it. */
-  workspaceOrigin?(state: WorkspaceStateView, workspaceId: string): Promise<{ repo: string; isolation?: 'clone' }>;
+  workspaceOrigin?(state: WorkspaceStateView, workspaceId: string): Promise<{ repo: string; isolation?: 'clone' | 'wsfs' }>;
   /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
   tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;
   /**

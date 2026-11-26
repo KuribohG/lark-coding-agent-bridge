@@ -644,6 +644,7 @@ await fixing;
 - `branch: "restore"` puts a halted branch back on the last landed commit and keeps the outside commits under `refs/bridge-workflow/<workflowId>/outside/<commit>`; `branch: "adopt"` has the queue vouch for the branch as it is.
 - `createWorkspace({key, repo})` makes the worktree from another checkout than the workflow's cwd: `repo` is the absolute path of its root. The landing branch is created in that repository.
 - `createWorkspace({key, isolation: 'clone'})` gives the member a repository of its own instead of a worktree, so its Git commands cannot reach other members' refs, stash or locks; see [worktree or clone](workflow-worktrees.md#worktree-or-clone).
+- `createWorkspace({key, isolation: 'wsfs'})` gives the member a worktree without a checkout: its files are read from the object database as they are opened, so it is ready in a fraction of a second on a repository of any size, and landing writes no file in it; see [workspaces served from the object database](workflow-worktrees.md#workspaces-served-from-the-object-database).
 - Nothing is pushed and the original checkout is not touched. Limits: 1024 worktrees per workflow, plus one train worktree per repository, removed with the last member worktree.
 
 The [packaged example](../workflow-definitions/scripted/examples/claim-and-land.js) takes `items`, `checks`, and optional `members`, `precheck`, `protect`, `repo`, `prompt` and `model`.

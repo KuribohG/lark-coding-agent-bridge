@@ -8,6 +8,7 @@ import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_HALT_POLL_MS, TRAIN_RETRY_
 import { boundedInteger, scriptText } from './script-contract';
 import { largeCheckout, writeCheckout, type CheckoutGit } from './workspace-checkout';
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
+import { WsfsMounts, type WsfsOwner } from './workspace-wsfs';
 import type { WorkflowProcesses } from './ports';
 import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandReport, LandSubmitted, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
@@ -166,6 +167,8 @@ export class WorkflowWorkspaces {
   private readonly awaited = new Map<string, number>();
   private closed = false;
   private readonly timing: TrainTiming;
+  /** The workspaces that wsfs serves from the object database, for `isolation: "wsfs"`. */
+  private readonly mounts: WsfsMounts;
   /** Whether this Git stacks commits without a worktree (`merge-tree --merge-base`, Git 2.40); found out on first use. */
   private grafts = true;
   /** Git for `writeCheckout`; one function for the life of the service, which is what it remembers this Git by. */
@@ -173,6 +176,7 @@ export class WorkflowWorkspaces {
 
   constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}) {
     this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, haltPollMs: TRAIN_HALT_POLL_MS, ...timing };
+    this.mounts = new WsfsMounts(directory, processes);
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
@@ -181,6 +185,9 @@ export class WorkflowWorkspaces {
       id TEXT PRIMARY KEY, workflow TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL,
       digest TEXT NOT NULL, done INTEGER NOT NULL, data TEXT NOT NULL, created INTEGER NOT NULL,
       UNIQUE(workflow,key));`);
+    // The daemons of wsfs workspaces outlive this service and are looked after by whichever one runs.
+    const served = this.db.prepare("SELECT data FROM workspace_records WHERE kind='workspace' AND json_extract(data,'$.isolation')='wsfs' AND COALESCE(json_extract(data,'$.status'),'')!='removed'").all() as Array<{ data: string }>;
+    for (const row of served) this.mounts.know(JSON.parse(row.data) as WorkspaceBinding);
   }
 
   private row(id: string, workflow: string, kind?: string): RecordRow {
@@ -332,7 +339,7 @@ export class WorkflowWorkspaces {
   }
 
   /** The checkout a worktree was made from and how it is kept apart from it, as the options that make another like it. */
-  origin(workflowId: string, id: string): { repo: string; isolation?: 'clone' } {
+  origin(workflowId: string, id: string): { repo: string; isolation?: 'clone' | 'wsfs' } {
     const ws = this.value<WorkspaceBinding>(id, workflowId, 'workspace');
     return { repo: ws.repository, ...(ws.isolation ? { isolation: ws.isolation } : {}) };
   }
@@ -343,12 +350,21 @@ export class WorkflowWorkspaces {
     if (ws.rootDigest !== workflowDigest(root) || ws.status !== 'ready') throw new Error('Workspace binding is unavailable or authorization changed');
     return this.located(ws, signal);
   }
-  /** Checks that the directory is the workspace's own checkout of its repository. */
+  /**
+   * Where a workspace is, under `directory`: this service derives the path and never takes one read back. A wsfs
+   * workspace is a directory of the mount its workflow has for the repository.
+   */
+  private home(ws: Pick<WorkspaceBinding, 'workflowId' | 'id' | 'commonDir' | 'isolation'>, directory = resolve(this.directory)): string {
+    return ws.isolation === 'wsfs' ? this.mounts.path(ws, directory) : join(directory, ws.workflowId, ws.id);
+  }
+  /** Checks that the directory is the workspace's own checkout of its repository, served again first when wsfs serves it. */
   private async located(ws: WorkspaceBinding, signal: AbortSignal): Promise<WorkspaceBinding> {
+    // The daemon that serves the workspace may have died since it was last used; whoever is bound to it finds it served.
+    if (ws.isolation === 'wsfs') await this.mounts.serve(ws);
     const top = await realpath((await this.git(ws.path, ['rev-parse', '--show-toplevel'], signal)).stdout.trim());
     const common = await realpath(resolve(ws.path, (await this.git(ws.path, ['rev-parse', '--git-common-dir'], signal)).stdout.trim()));
     if (top !== await realpath(ws.path) || common !== (ws.isolation === 'clone' ? join(top, '.git') : ws.commonDir)
-      || top !== join(await realpath(this.directory), ws.workflowId, ws.id)) throw new Error('Workspace path or repository identity changed');
+      || top !== this.home(ws, await realpath(this.directory))) throw new Error('Workspace path or repository identity changed');
     return ws;
   }
 
@@ -422,6 +438,7 @@ export class WorkflowWorkspaces {
    * run waiting. What was written stays, and is finished if the worktree is ever asked for again.
    */
   abandon(kept: () => ReadonlySet<string>): void {
+    this.mounts.tend(kept);
     let live: ReadonlySet<string> | undefined;
     for (const entry of this.making.values()) {
       if (entry.unwatched && !(live ??= kept()).has(entry.workflow)) entry.stop.abort(new Error('Workflow is no longer running'));
@@ -487,13 +504,13 @@ export class WorkflowWorkspaces {
    * Records the worktree a creation makes and writes its files. With `defer` it answers as soon as the record exists,
    * the worktree still being prepared: whoever is bound to it is held back until `standing` says its files are there.
    */
-  private async materialize(ctx: WorkspaceContext, op: RecordRow, seed: { repository: string; commonDir: string; baseCommit: string; kind: WorkspaceBinding['kind']; isolation?: 'clone'; changeId?: string }, checkout = seed.baseCommit, defer = false): Promise<WorkspaceBinding> {
+  private async materialize(ctx: WorkspaceContext, op: RecordRow, seed: { repository: string; commonDir: string; baseCommit: string; kind: WorkspaceBinding['kind']; isolation?: 'clone' | 'wsfs'; changeId?: string }, checkout = seed.baseCommit, defer = false): Promise<WorkspaceBinding> {
     // Removed worktrees are kept as records for replay and audit, but they no longer hold a directory or a slot.
     const count = (this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND COALESCE(json_extract(data,'$.status'),'')!='removed'").get(op.workflow) as { n: number }).n;
     const existing = this.db.prepare('SELECT id FROM workspace_records WHERE workflow=? AND key=?').get(op.workflow, `@${op.id}/workspace`);
     if (!existing && count >= MAX_WORKSPACES) throw new Error(`Workspace budget reached (${MAX_WORKSPACES} per workflow)`);
     const ws = this.internal<WorkspaceBinding>(op, 'workspace', 'workspace', id => ({ id, workflowId: op.workflow,
-      rootDigest: workflowDigest(ctx.state.root), path: join(resolve(this.directory), op.workflow, id), status: 'preparing', ...seed }));
+      rootDigest: workflowDigest(ctx.state.root), path: this.home({ workflowId: op.workflow, id, commonDir: seed.commonDir, isolation: seed.isolation }), status: 'preparing', ...seed }));
     if (ws.status === 'removed') throw new Error('Workspace was removed; use a new workspace key');
     if (ws.status === 'ready') {
       const bound = await this.binding(ctx.state.root, op.workflow, ws.id, ctx.signal);
@@ -521,19 +538,25 @@ export class WorkflowWorkspaces {
       // Started from a look at how the worktree stands, which cannot wait for the host's answer itself.
       await allowed?.();
       ends.throwIfAborted();
-      await mkdir(dirname(ws.path), { recursive: true, mode: 0o700 });
-      if (ws.isolation === 'clone') await this.clone(ws, checkout, ends);
+      // wsfs writes an index and no file of the checkout: the workspace shows the commit as its daemon reads it from
+      // the object database, so nothing waits for a turn to write here and nothing is left to compare afterwards.
+      let written = true;
+      if (ws.isolation === 'wsfs') await this.mounts.create(ws, checkout, ends);
       else {
-        // `worktree add` writes the `.git` file before it points HEAD at the commit. One that was stopped in between
-        // left a worktree no later command completes; it holds no work yet, so it is registered again. Forced twice,
-        // Git registers over what is left of a locked worktree whose directory is gone.
-        const registered = await access(join(ws.path, '.git')).then(() => true, () => false);
-        const whole = registered && (await this.git(ws.path, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], ends, true)).stdout.trim() === checkout;
-        if (registered && !whole) await rm(ws.path, { recursive: true, force: true });
-        // Only registration races with other Git commands; leave `worktree add` cheap and write the files separately.
-        if (!whole) await this.worktree(ws, ['add', '--force', '--force', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ends, false, rank);
+        await mkdir(dirname(ws.path), { recursive: true, mode: 0o700 });
+        if (ws.isolation === 'clone') await this.clone(ws, checkout, ends);
+        else {
+          // `worktree add` writes the `.git` file before it points HEAD at the commit. One that was stopped in between
+          // left a worktree no later command completes; it holds no work yet, so it is registered again. Forced twice,
+          // Git registers over what is left of a locked worktree whose directory is gone.
+          const registered = await access(join(ws.path, '.git')).then(() => true, () => false);
+          const whole = registered && (await this.git(ws.path, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], ends, true)).stdout.trim() === checkout;
+          if (registered && !whole) await rm(ws.path, { recursive: true, force: true });
+          // Only registration races with other Git commands; leave `worktree add` cheap and write the files separately.
+          if (!whole) await this.worktree(ws, ['add', '--force', '--force', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ends, false, rank);
+        }
+        written = await this.writeTree(ws.path, checkout, ends, rank);
       }
-      const written = await this.writeTree(ws.path, checkout, ends, rank);
       // Ready is what lets a member start in it, so it is said only of a checkout that was found to be the planned one.
       // One that many processes wrote was found so as they wrote it. Reading the status of every file again takes a
       // process of its own longer than writing them took all of those, with the next checkouts being written beside it.
@@ -587,7 +610,7 @@ export class WorkflowWorkspaces {
   }
   /** Deletes a clone's directory; the path is the one this service derives for the workspace, never one read back. */
   private async removeClone(ws: WorkspaceBinding): Promise<void> {
-    if (ws.isolation !== 'clone' || ws.path !== join(resolve(this.directory), ws.workflowId, ws.id)) throw new Error('Not a managed clone');
+    if (ws.isolation !== 'clone' || ws.path !== this.home(ws)) throw new Error('Not a managed clone');
     await rm(ws.path, { recursive: true, force: true, maxRetries: 3 });
   }
   /**
@@ -667,8 +690,8 @@ export class WorkflowWorkspaces {
     const id = (value: unknown) => scriptText(value, 'artifact ID', 100);
     if (kind === 'create') {
       if (args.change !== undefined && (args.base !== undefined || args.repo !== undefined || args.isolation !== undefined)) throw new Error('Choose base, repo and isolation, or change');
-      if (args.isolation !== undefined && args.isolation !== 'worktree' && args.isolation !== 'clone') throw new Error('isolation is "worktree" or "clone"');
-      const isolation = args.isolation === 'clone' ? { isolation: 'clone' as const } : {};
+      if (args.isolation !== undefined && args.isolation !== 'worktree' && args.isolation !== 'clone' && args.isolation !== 'wsfs') throw new Error('isolation is "worktree", "clone" or "wsfs"');
+      const isolation: { isolation?: 'clone' | 'wsfs' } = args.isolation === 'clone' || args.isolation === 'wsfs' ? { isolation: args.isolation } : {};
       if (args.change !== undefined) {
         const change = this.value<WorkspaceChange>(id(args.change), op.workflow, 'change');
         const source = this.value<WorkspaceBinding>(change.workspaceId, op.workflow, 'workspace');
@@ -683,8 +706,10 @@ export class WorkflowWorkspaces {
         const dirty = await this.uncommitted(repo.repository);
         // Whoever is refused is often not who left the files there: it is told which ones stand in the way and where.
         if (dirty.count) throw new Error(`Authorized checkout has uncommitted changes (${dirty.first.join(', ')}${dirty.count > 5 ? `, and ${dirty.count - 5} more` : ''}, in ${repo.repository}); choose a clean committed baseline first`);
-        // A clone reads the source's objects from disk; ones a partial clone would fetch on demand are not there.
-        if (isolation.isolation && (await this.git(repo.repository, ['config', '--get-regexp', '^(extensions\\.partialclone|remote\\..*\\.promisor)$'], ctx.signal, true)).stdout.trim()) throw new Error('Clone workspaces do not support partial-clone repositories');
+        // A clone reads the source's objects from disk, and so does wsfs; ones a partial clone would fetch on demand are not there.
+        if (isolation.isolation && (await this.git(repo.repository, ['config', '--get-regexp', '^(extensions\\.partialclone|remote\\..*\\.promisor)$'], ctx.signal, true)).stdout.trim()) throw new Error(`${isolation.isolation === 'wsfs' ? 'wsfs' : 'Clone'} workspaces do not support partial-clone repositories`);
+        // Refused before anything is recorded when wsfs cannot serve this repository here, so the key stays free for another isolation.
+        if (isolation.isolation === 'wsfs') await this.servable(repo, ctx.signal);
         seed = { ...repo, baseCommit: await this.revision(repo.repository, args.base, ctx.signal) }; this.save(op, seed);
       }
       await this.supportedTree(seed.repository, seed.baseCommit, ctx.signal);
@@ -791,7 +816,7 @@ export class WorkflowWorkspaces {
       this.idle(ws, ctx);
       this.failed.delete(ws.id);
       this.save(op, { removing: true });
-      if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
+      if (ws.isolation) await this.drop(ws, ctx.signal);
       else if (await access(join(ws.path, '.git')).then(() => true, () => false)) {
         const unlock = await this.worktree(ws, ['unlock', ws.path], ctx.signal, true);
         if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
@@ -800,10 +825,10 @@ export class WorkflowWorkspaces {
       this.putWorkspace({ ...ws, status: 'removed' });
       return { workspace: ws.id, removed: true };
     }
-    // A clone whose removal was interrupted may be half deleted; nothing in it is needed, so the removal is finished.
-    if (intent.removing && (ws.isolation === 'clone' || !await access(ws.path).then(() => true, () => false))) {
+    // A clone or a wsfs workspace whose removal was interrupted may be half deleted; nothing in it is needed, so the removal is finished.
+    if (intent.removing && (ws.isolation || !await access(ws.path).then(() => true, () => false))) {
       if (ws.busy && ws.busy.token !== intent.token) throw new Error('Workspace execution ownership changed');
-      if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
+      if (ws.isolation) await this.drop(ws, ctx.signal);
       else {
         const listed = (await this.worktree(ws, ['list', '--porcelain'], ctx.signal)).stdout;
         if (listed.split('\n').includes(`worktree ${ws.path}`)) throw new Error('Missing worktree is still registered; preserve for recovery');
@@ -818,7 +843,7 @@ export class WorkflowWorkspaces {
       // Cleanup discards the directory, uncommitted and unintegrated changes included: a member that cannot be
       // revived is better redone than kept around for work nobody may ever land.
       this.save(op, { removing: true, token });
-      if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
+      if (ws.isolation) await this.drop(ws, ctx.signal);
       else {
         const unlock = await this.worktree(ws, ['unlock', ws.path], ctx.signal, true);
         if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
@@ -830,10 +855,49 @@ export class WorkflowWorkspaces {
     } finally { this.end(ws, token); }
   }
 
-  /** Removes a clone and the source's ref on it. What the clone landed or froze is held by other refs. */
-  private async dropClone(ws: WorkspaceBinding, signal: AbortSignal): Promise<void> {
+  /** Removes a workspace that is not a plain worktree, with everything in it. */
+  private async drop(ws: WorkspaceBinding, signal: AbortSignal): Promise<void> {
+    // wsfs removes the workspace's files and its worktree record, and stops serving once its mount has no workspace.
+    if (ws.isolation === 'wsfs') { await this.mounts.remove(ws, signal); return; }
+    // What the clone landed or froze is held by other refs.
     await this.removeClone(ws);
     await this.git(ws.repository, ['update-ref', '-d', this.cloneRef(ws)], signal, true);
+  }
+  /** What wsfs cannot serve, of a repository that workspaces are about to be made from. */
+  private async servable(repo: { repository: string; commonDir: string }, signal: AbortSignal): Promise<void> {
+    await this.mounts.available();
+    if ((await this.git(repo.repository, ['rev-parse', '--show-object-format'], signal)).stdout.trim() !== 'sha1') throw new Error('wsfs workspaces need a SHA-1 repository');
+    // The workspace is a linked worktree and reads the repository's shared configuration. Git would leave files out
+    // of one it takes for sparse, and wsfs shows every file of the commit.
+    if ((await this.git(repo.repository, ['config', '--file', join(repo.commonDir, 'config'), '--type=bool', '--default=false', '--get', 'core.sparseCheckout'], signal, true)).stdout.trim() === 'true') throw new Error('wsfs workspaces do not support a repository whose shared configuration turns sparse checkout on');
+  }
+  /**
+   * Moves a workspace to `commit` as `git reset --hard` does, HEAD included. In a wsfs workspace whose HEAD is detached
+   * the daemon does it and no file is written: through the mount Git would write every file that differs, and the
+   * workspace would keep them all. Anything else is Git's own reset in the workspace, as is a move the daemon
+   * refused before it changed anything.
+   */
+  private async reset(ws: WorkspaceBinding, commit: string, signal: AbortSignal): Promise<void> {
+    if (ws.isolation === 'wsfs' && (await this.git(ws.path, ['symbolic-ref', '--quiet', 'HEAD'], signal, true)).code === 1) {
+      const moved = await this.mounts.move(ws, commit, signal);
+      if (moved) return;
+    }
+    await this.git(ws.path, ['reset', '--hard', '--quiet', commit], signal);
+  }
+  /**
+   * Rebases the commits of a wsfs workspace onto `onto` without writing a file: they are stacked in the object
+   * database (see `graft`) and the workspace is moved to the result. A rebase by Git in the workspace writes every
+   * file that differs between the two branch heads through the mount, and the workspace then keeps them all.
+   * Returns nothing when this is not the way to do it here (another isolation, HEAD on a branch, commits that are no
+   * plain line, a daemon that refuses), and the caller has Git rebase in the workspace.
+   */
+  private async rebased(ws: WorkspaceBinding, head: string, onto: string, signal: AbortSignal): Promise<{ head: string } | { conflict: string } | undefined> {
+    if (ws.isolation !== 'wsfs' || (await this.git(ws.path, ['symbolic-ref', '--quiet', 'HEAD'], signal, true)).code !== 1) return undefined;
+    const base = (await this.git(ws.repository, ['merge-base', head, onto], signal, true)).stdout.trim();
+    if (!SHA.test(base)) return undefined;
+    const stacked = await this.graft(ws.repository, onto, { base, head }, await this.identity(ws.path, signal), signal);
+    if (!stacked || 'conflict' in stacked) return stacked;
+    return await this.mounts.move(ws, stacked.head, signal) ? stacked : undefined;
   }
 
   private async refHead(repo: string, ref: string, signal: AbortSignal): Promise<string | null> {
@@ -967,10 +1031,14 @@ export class WorkflowWorkspaces {
     const nothing = { status: 'landed' as const, targetRef, headCommit: targetCommit, commits: 0 };
     if (await ancestor(before.headCommit, targetCommit)) return nothing;
     if (!await ancestor(targetCommit, before.headCommit)) {
-      const undo = () => this.git(ws.path, ['rebase', '--abort'], new AbortController().signal, true);
-      const rebased = await this.git(ws.path, [...await this.identity(ws.path, signal), 'rebase', targetCommit], signal, true, undefined, { keep: 'tail' }).catch(async error => { await undo(); throw error; });
-      if (rebased.code) await undo();
-      if (rebased.code) return { status: 'conflict', targetRef, targetCommit, detail: (rebased.stdout + rebased.stderr).slice(-4000) };
+      const stacked = await this.rebased(ws, before.headCommit, targetCommit, signal);
+      if (stacked && 'conflict' in stacked) return { status: 'conflict', targetRef, targetCommit, detail: stacked.conflict };
+      if (!stacked) {
+        const undo = () => this.git(ws.path, ['rebase', '--abort'], new AbortController().signal, true);
+        const rebased = await this.git(ws.path, [...await this.identity(ws.path, signal), 'rebase', targetCommit], signal, true, undefined, { keep: 'tail' }).catch(async error => { await undo(); throw error; });
+        if (rebased.code) await undo();
+        if (rebased.code) return { status: 'conflict', targetRef, targetCommit, detail: (rebased.stdout + rebased.stderr).slice(-4000) };
+      }
     }
     const pinned = await this.clean(ws, signal);
     if (pinned.headCommit === targetCommit) return nothing;
@@ -995,13 +1063,13 @@ export class WorkflowWorkspaces {
     // leave it: at the tip of the branch, without commits that may yet be turned back. One that cannot be moved is
     // left to the member, which is told so.
     const quiet = new AbortController().signal;
-    const moved = await this.git(ws.path, ['reset', '--hard', '--quiet', targetCommit], quiet, true).then(result => !result.code, () => false);
+    const moved = await this.reset(ws, targetCommit, quiet).then(() => true, () => false);
     flight.detach();
     try { input.submitted?.({ targetRef, targetCommit, headCommit: pinned.headCommit, commits, worktree: moved ? 'reset' : 'kept' }); }
     catch (error) {
       // Nobody answers for the commits (the claim they were submitted for ended meanwhile, say). The queue does not
       // take them, and the worktree gets them back for whoever works there next.
-      const back = !moved || await this.git(ws.path, ['reset', '--hard', '--quiet', pinned.headCommit], quiet, true).then(result => !result.code, () => false);
+      const back = !moved || await this.reset(ws, pinned.headCommit, quiet).then(() => true, () => false);
       if (back) throw error;
       throw new Error(`${error instanceof Error ? error.message : String(error)}. The commits are ${targetCommit}..${pinned.headCommit}, and the worktree was moved back to ${targetCommit}: git cherry-pick brings them back`);
     }
@@ -1172,8 +1240,13 @@ export class WorkflowWorkspaces {
     }
     this.putHead(ws, { targetRef, head });
   }
-  private async park(path: string, commit: string, signal: AbortSignal): Promise<void> {
-    await this.git(path, ['reset', '--hard', '--quiet', commit], signal);
+  /** Puts the train's worktree of `ws`'s repository at `commit`, with nothing in it that Git does not ignore. */
+  private async park(ws: WorkspaceBinding, path: string, commit: string, signal: AbortSignal): Promise<void> {
+    // wsfs moves its workspace without writing a file. Git resets any other, and one the daemon would not move.
+    const moved = ws.isolation === 'wsfs' && await this.mounts.move(this.trainOwner(ws), commit, signal)
+      // A move left unfinished is the train's own trouble, like a Git command that failed: it runs again.
+      .catch((error: Error) => { throw new GitFailure(error.message); });
+    if (!moved) await this.git(path, ['reset', '--hard', '--quiet', commit], signal);
     await this.git(path, ['clean', '-fd', '--quiet'], signal);
   }
   /**
@@ -1210,7 +1283,7 @@ export class WorkflowWorkspaces {
     const barred = (landing.protect ?? []).flatMap(rule => rule.paths.map(pathPattern));
     const hit = await this.touched(ws.repository, known.head, current, barred, signal);
     if (hit.count) return halt(`the outside commits change protected paths (${hit.files.slice(0, 8).join(', ')}${hit.count > 8 ? ', …' : ''})`);
-    await this.park(path, current, signal);
+    await this.park(ws, path, current, signal);
     const commands = [...landing.precheck ?? [], ...landing.commands];
     const results = await this.run(path, commands, signal, deadlineAt);
     const failed = results.find(result => result.code);
@@ -1243,7 +1316,7 @@ export class WorkflowWorkspaces {
     let said = false;
     const told = <T extends LandReport>(report: T): T => { if (!notice) return report; said = true; return { ...report, notice }; };
     const start = expected ?? batch[0]!.base;
-    const at = (commit: string) => this.park(path, commit, signal);
+    const at = (commit: string) => this.park(ws, path, commit, signal);
     const identity = await this.identity(path, signal);
     const stack: Candidate[] = [], heads = [start], again = new Set<Candidate>();
     for (const candidate of batch) {
@@ -1298,7 +1371,7 @@ export class WorkflowWorkspaces {
    * Returns the new head, or what Git said of the conflict. Returns nothing for commits this does not stack (a merge, a
    * message in another encoding, a Git without `merge-tree --merge-base`): the worktree picks those.
    */
-  private async graft(path: string, head: string, candidate: Candidate, identity: string[], signal: AbortSignal): Promise<{ head: string } | { conflict: string } | undefined> {
+  private async graft(path: string, head: string, candidate: Pick<Candidate, 'base' | 'head'>, identity: string[], signal: AbortSignal): Promise<{ head: string } | { conflict: string } | undefined> {
     // Nothing landed since the member rebased: its commits go on as they are.
     if (candidate.base === head) return { head: candidate.head };
     if (!this.grafts) return undefined;
@@ -1355,26 +1428,42 @@ export class WorkflowWorkspaces {
     }
     return undefined;
   }
-  /** The train's own worktree, one for each workflow and repository; it keeps the checks' build outputs between trains. */
-  private trainPath(ws: WorkspaceBinding): string {
-    return join(resolve(this.directory), ws.workflowId, `train-${workflowDigest(ws.commonDir).slice(0, 16)}`);
+  /**
+   * The train's own worktree, one for each workflow and repository; it keeps the checks' build outputs between trains.
+   * The train of a wsfs member is a wsfs workspace beside the members': a plain worktree is a checkout of every file,
+   * and each move of it has Git look at every one of them. A workflow whose members were made in both ways has a
+   * train of each kind, and they take turns like everything else that runs for the repository.
+   */
+  private trainPath(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir' | 'isolation'>): string {
+    return ws.isolation === 'wsfs' ? this.mounts.path(this.trainOwner(ws)) : join(resolve(this.directory), ws.workflowId, `train-${workflowDigest(ws.commonDir).slice(0, 16)}`);
+  }
+  /** The train as wsfs knows it. Its name is also that of its worktree record, which the repository shares with other workflows. */
+  private trainOwner(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>): WsfsOwner {
+    return { workflowId: ws.workflowId, id: `train-${ws.workflowId}`, commonDir: ws.commonDir };
   }
   private async trainWorktree(ws: WorkspaceBinding, signal: AbortSignal): Promise<string> {
     const path = this.trainPath(ws);
-    if (await access(join(path, '.git')).then(() => true, () => false)) await this.git(path, ['cherry-pick', '--abort'], signal, true);
+    // Asked of the daemon, which is started again if it died: its mount would only say that nothing is there.
+    const made = ws.isolation === 'wsfs' ? await this.mounts.has(this.trainOwner(ws)) : await access(join(path, '.git')).then(() => true, () => false);
+    if (made) await this.git(path, ['cherry-pick', '--abort'], signal, true);
+    else if (ws.isolation === 'wsfs') await this.mounts.create(this.trainOwner(ws), ws.baseCommit, signal);
     else {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
       await this.worktree(ws, ['add', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
     }
     return path;
   }
-  /** Removes the train's worktree once the last member worktree of its repository is gone. */
+  /** Removes the train's worktree, of either kind, once the last member worktree of its repository is gone. */
   private async retireTrain(ws: WorkspaceBinding, signal: AbortSignal): Promise<void> {
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.kind')='task' AND json_extract(data,'$.status')!='removed' AND json_extract(data,'$.commonDir')=?").get(ws.workflowId, ws.commonDir) as { n: number };
-    const path = this.trainPath(ws);
-    if (left.n || this.trains.has(`${ws.workflowId}:${ws.commonDir}`) || !await access(path).then(() => true, () => false)) return;
-    await this.worktree(ws, ['unlock', path], signal, true);
-    await this.worktree(ws, ['remove', '--force', path], signal, true);
+    if (left.n || this.trains.has(`${ws.workflowId}:${ws.commonDir}`)) return;
+    const path = this.trainPath({ ...ws, isolation: undefined });
+    if (await access(path).then(() => true, () => false)) {
+      await this.worktree(ws, ['unlock', path], signal, true);
+      await this.worktree(ws, ['remove', '--force', path], signal, true);
+    }
+    // With it goes the daemon, which serves no workspace of the workflow any more.
+    if (await this.mounts.used(ws)) await this.mounts.remove(this.trainOwner(ws), signal).catch(() => undefined);
   }
 
   /**
@@ -1446,7 +1535,7 @@ export class WorkflowWorkspaces {
     const head = await this.refHead(ws.repository, targetRef, signal);
     if (!head) return undefined;
     const path = await this.trainWorktree(ws, signal);
-    await this.park(path, head, signal);
+    await this.park(ws, path, head, signal);
     const results = tail(await this.run(path, commands, signal, deadlineAt));
     const refusal = (reason: string) => ({ repository: ws.repository, headCommit: head, reason, commands: results });
     if (results.length !== commands.length || results.some(result => result.code)) return refusal('The landing branch fails these commands as it is, so every submission would be blamed for it. Nothing was changed: land the repair under the current checks first, then change them.');
@@ -1496,6 +1585,7 @@ export class WorkflowWorkspaces {
 
   async close(): Promise<void> {
     this.closed = true; this.stopping.abort(new Error('Workspace service is closed'));
+    this.mounts.close();
     await Promise.allSettled([...this.pending]); this.db.close();
   }
 }
