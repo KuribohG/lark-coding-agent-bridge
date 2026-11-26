@@ -137,6 +137,29 @@ describe('worktrees whose files are written after their creation has answered', 
     expect(listed[0]).toContain(`locked bridge-workflow:${ws.id}`);
   }, 30_000);
 
+  it('gives the next turn to a worktree somebody waits for, then to those it is told are wanted, then to the others', async () => {
+    const h = await fixture();
+    // A repository's worktrees are registered one at a time: while the first registration is held, the others wait their turn.
+    const adds = () => h.held.ran.filter(args => args.includes('worktree') && args.includes('add'));
+    let held: readonly string[] | undefined;
+    h.held.hold(args => args.includes('worktree') && args.includes('add') && (held ??= args) === args);
+    const made = [await h.op<WorkspaceBinding>('create', 'a', { wait: false })];
+    await vi.waitFor(() => expect(adds()).toHaveLength(1));
+    for (const key of ['b', 'c', 'd', 'e']) made.push(await h.op<WorkspaceBinding>('create', key, { wait: false }));
+    await new Promise(done => setTimeout(done, 300));
+    const [a, b, c, d, e] = made as [WorkspaceBinding, WorkspaceBinding, WorkspaceBinding, WorkspaceBinding, WorkspaceBinding];
+    h.manager.want(h.workflow, [d.id, c.id]);
+    const waited = h.manager.prepared(h.root, h.workflow, e.id, signal());
+    await h.held.release();
+    expect((await waited).id).toBe(e.id);
+    await vi.waitFor(() => expect(adds()).toHaveLength(5), { timeout: 10_000 });
+    expect(adds().map(args => made.find(ws => args.includes(ws.path))!.id)).toEqual([a, e, d, c, b].map(ws => ws.id));
+    await vi.waitFor(() => expect(made.map(ws => h.standing(ws))).toEqual(made.map(() => 'ready')), { timeout: 10_000 });
+    // What a workflow wants is replaced by what it says next, and forgotten with the workflow.
+    h.manager.want(h.workflow, []);
+    h.manager.abandon(() => new Set());
+  }, 30_000);
+
   it.each(['worktree', 'clone'] as const)('cleans up a %s that is still being prepared, stopping whoever writes it', async isolation => {
     const h = await fixture(); h.held.hold(writes);
     const ws = await h.op<WorkspaceBinding>('create', 'a', { wait: false, ...(isolation === 'clone' ? { isolation } : {}) });

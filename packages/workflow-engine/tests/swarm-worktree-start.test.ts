@@ -199,6 +199,31 @@ describe('a swarm whose worktrees are still being written', () => {
     expect(await exists(join(h.specs[0]!.workspace!.path, 'README'))).toBe(true);
   }, 30_000);
 
+  it.each([
+    ['the member that has work', 'w3', `await enqueueWork({key:"item", title:"Item", input:1, assignee:"w3"});
+      return await swarm("Claim and finish the queued work", {key:"crew", maxTurns:4, members: spaces.map((space, n) => ({name:"w" + n, queue:"default", workspace: space.id}))});`],
+    ['the lead, who plans before anyone has work', 'w3', `return await swarm("Plan the work and hand it out", {key:"crew", maxTurns:4, lead:{name:"w3", workspace: spaces[3].id},
+        members: spaces.slice(0, 3).map((space, n) => ({name:"w" + n, workspace: space.id}))});`],
+  ])('gives the next worktree to %s, ahead of the members with nothing to do yet', async (_who, wanted, rest) => {
+    const h = await harness();
+    // A repository's worktrees are registered one at a time: while the first registration is held, the others wait their turn.
+    const adds = () => h.held.ran.filter(args => args.includes('worktree') && args.includes('add'));
+    let held: readonly string[] | undefined;
+    h.held.hold(args => args.includes('worktree') && args.includes('add') && (held ??= args) === args);
+    await h.run(`const spaces = [];
+      for (const n of [0, 1, 2, 3]) spaces.push(await createWorkspace({key:"w" + n}));
+      ${rest}`);
+    await h.until(() => expect(h.state().swarms?.[0]?.members).toHaveLength(4));
+    await h.settle();
+    expect(adds()).toHaveLength(1);
+    await h.held.release();
+    await h.until(() => expect(h.started(wanted)).toHaveLength(1));
+    await h.until(() => expect(adds()).toHaveLength(4));
+    const made = h.worktrees();
+    // The second to be registered is the last that was asked for: the one with something to do.
+    expect(made.find(ws => adds()[1]!.includes(ws.path))!.id).toBe(h.member(wanted).workspace);
+  }, 30_000);
+
   it('answers a script before the files are written, unless the script asks to wait for them', async () => {
     const h = await harness(); h.held.hold(writes);
     // What each creation answered is in the key of the item the script enqueues after it; the turn keeps the script running.

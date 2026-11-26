@@ -70,9 +70,9 @@ export const WORKSPACE_CHECKOUT_SLOTS = 64;
  */
 export const WORKSPACE_CHECKOUT_PROCESSES = 64;
 /**
- * Large checkouts that are written at once; the others wait, in about the order they were asked for. The worktrees of a
- * swarm then become ready one after another, and each member starts as its own is, where writing all of them at once
- * would have every member wait for the last file of the slowest.
+ * Large checkouts that are written at once; the others wait, those somebody has work to do in ahead of the rest. The
+ * worktrees of a swarm then become ready one after another, and each member starts as its own is, where writing all
+ * of them at once would have every member wait for the last file of the slowest.
  */
 export const WORKSPACE_LARGE_CHECKOUTS = 1;
 /**

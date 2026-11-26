@@ -340,7 +340,7 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
   const options = { ...origin, ...given };
   const made = await Promise.all(names.map(async name => {
     // The call does not wait for the files of each worktree: the members are added at once, and each takes its first
-    // turn when its own worktree is ready, in about the order they are named.
+    // turn when its own worktree is ready. Those with work waiting have theirs written first (see `want`).
     const created = await ctx.host.workspace!(view, { kind: 'create', key: `staff/${swarm.id}/${name}`, wait: false, ...options }, signal) as { id?: unknown };
     if (typeof created?.id !== 'string') throw new Error('Workspace creation did not return an ID');
     return [name, created.id] as const;

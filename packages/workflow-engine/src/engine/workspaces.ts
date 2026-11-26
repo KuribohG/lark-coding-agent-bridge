@@ -24,31 +24,44 @@ const CHECK_TIMEOUT_MAX_MS = 4 * 3_600_000;
  * bounds a hung Git without failing a large repository on a network filesystem.
  */
 const GIT_TIMEOUT_MS = 3_600_000;
-// Git registers a new worktree in several steps. Concurrent commands can observe a partial entry.
-const worktreeCommands = new Map<string, Promise<CommandResult>>();
+// Git registers a new worktree in several steps. Concurrent commands can observe a partial entry, so those of one
+// repository run one at a time.
+const worktreeCommands = new Map<string, Slots>();
 /** The checkout a clone was made from, as the clone's remote. */
 export const CLONE_REMOTE = 'bridge-source';
 /** Where a clone offers the commit the source is about to fetch. */
 const CLONE_PUBLISH_REF = 'refs/bridge-workflow/publish';
 const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' });
 
-/** A counting semaphore: callers beyond the bound wait for a free slot instead of all running at once. */
+/**
+ * A counting semaphore: callers beyond the bound wait for a free slot instead of all running at once. A slot that
+ * frees goes to the caller whose `rank` is lowest at that moment, and among equals to the one that has waited
+ * longest; a caller without a rank comes after every one that has a number to show.
+ */
 class Slots {
   private free: number;
-  private readonly waiting: Array<{ grant: () => void; cancel: () => void }> = [];
-  constructor(size: number) { this.free = size; }
-  async acquire(signal: AbortSignal): Promise<() => void> {
+  private readonly waiting: Array<{ grant: () => void; cancel: () => void; rank?: () => number }> = [];
+  constructor(private readonly size: number) { this.free = size; }
+  /** Nobody holds a slot or waits for one. */
+  get idle(): boolean { return this.free === this.size && !this.waiting.length; }
+  async acquire(signal: AbortSignal, rank?: () => number): Promise<() => void> {
     signal.throwIfAborted();
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
-      const next = this.waiting.shift();
+      let first = 0, best = this.waiting[0]?.rank?.() ?? Infinity;
+      for (let at = 1; at < this.waiting.length; at++) {
+        const found = this.waiting[at]!.rank?.() ?? Infinity;
+        if (found < best) { best = found; first = at; }
+      }
+      const [next] = this.waiting.splice(first, 1);
       if (next) next.grant(); else this.free++;
     };
     if (this.free > 0) { this.free--; return release; }
     return new Promise<() => void>((resolve, reject) => {
       const waiter = {
+        rank,
         grant: () => { signal.removeEventListener('abort', abort); resolve(release); },
         cancel: () => { const at = this.waiting.indexOf(waiter); if (at >= 0) this.waiting.splice(at, 1); reject(signal.reason); },
       };
@@ -61,8 +74,9 @@ class Slots {
 /** Writing a fresh worktree touches every file in the checkout, so it runs in a bounded pool shared by all workflows. */
 const checkoutSlots = new Slots(WORKSPACE_CHECKOUT_SLOTS);
 /**
- * Large checkouts are written by many processes each and a few at a time, in about the order they were asked for:
- * the worktrees of a swarm then become ready one after another from the first minute, not all at the end.
+ * Large checkouts are written by many processes each and a few at a time, those somebody has work to do in first
+ * and the others in about the order they were asked for: the worktrees of a swarm then become ready one after
+ * another from the first minute, not all at the end.
  */
 const largeCheckouts = new Slots(WORKSPACE_LARGE_CHECKOUTS);
 
@@ -146,6 +160,10 @@ export class WorkflowWorkspaces {
   private readonly readied = new Set<string>();
   /** Called when a worktree nobody waited for is ready or has failed, so that whoever is held back for it looks again. */
   private readonly watchers = new Set<() => void>();
+  /** The worktrees each workflow wants written before its others, with their place in that order (see `want`). */
+  private readonly wanted = new Map<string, Map<string, number>>();
+  /** How many callers are waiting for each worktree's files right now. */
+  private readonly awaited = new Map<string, number>();
   private closed = false;
   private readonly timing: TrainTiming;
   /** Whether this Git stacks commits without a worktree (`merge-tree --merge-base`, Git 2.40); found out on first use. */
@@ -221,17 +239,15 @@ export class WorkflowWorkspaces {
     if (result.code && !allowFailure) throw new GitFailure(`Git ${name.slice(4) || args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
     return result;
   }
-  private async worktree(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir'>, args: string[], signal: AbortSignal, allowFailure = false): Promise<CommandResult> {
-    const previous = worktreeCommands.get(ws.commonDir) ?? Promise.resolve();
-    const pending = previous.catch(() => undefined).then(() => {
-      signal.throwIfAborted();
-      return this.git(ws.repository, ['worktree', ...args], signal, allowFailure);
-    });
-    worktreeCommands.set(ws.commonDir, pending);
+  private async worktree(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir'>, args: string[], signal: AbortSignal, allowFailure = false, rank?: () => number): Promise<CommandResult> {
+    let turns = worktreeCommands.get(ws.commonDir);
+    if (!turns) worktreeCommands.set(ws.commonDir, turns = new Slots(1));
+    const release = await turns.acquire(signal, rank);
     try {
-      return await pending;
+      return await this.git(ws.repository, ['worktree', ...args], signal, allowFailure);
     } finally {
-      if (worktreeCommands.get(ws.commonDir) === pending) worktreeCommands.delete(ws.commonDir);
+      release();
+      if (turns.idle && worktreeCommands.get(ws.commonDir) === turns) worktreeCommands.delete(ws.commonDir);
     }
   }
   private async revision(repo: string, value: unknown, signal: AbortSignal): Promise<string> {
@@ -377,8 +393,26 @@ export class WorkflowWorkspaces {
       let wake!: () => void;
       const aborted = new Promise<void>(done => { wake = done; });
       signal.addEventListener('abort', wake, { once: true });
-      try { await Promise.race([under.done.then(() => undefined, () => undefined), aborted]); } finally { signal.removeEventListener('abort', wake); }
+      // Somebody is held up by this worktree, so it is written before those nobody is waiting for.
+      this.awaited.set(id, (this.awaited.get(id) ?? 0) + 1);
+      try { await Promise.race([under.done.then(() => undefined, () => undefined), aborted]); } finally {
+        signal.removeEventListener('abort', wake);
+        const others = this.awaited.get(id)! - 1;
+        if (others) this.awaited.set(id, others); else this.awaited.delete(id);
+      }
     }
+  }
+  /**
+   * Names the worktrees of a workflow to write first, most urgent first: those of the members that have something to
+   * do and are held back only by their worktree. It replaces what the workflow named before. The others follow in
+   * the order they were asked for, so nothing waits idle for a turn that somebody with work could use.
+   */
+  want(workflowId: string, ids: readonly string[]): void {
+    if (ids.length) this.wanted.set(workflowId, new Map(ids.map((id, at) => [id, at]))); else this.wanted.delete(workflowId);
+  }
+  /** Where a worktree stands among those waiting to be written: lower is sooner. */
+  private urgency(workflowId: string, id: string): number {
+    return this.awaited.has(id) ? -1 : this.wanted.get(workflowId)?.get(id) ?? Infinity;
   }
   /**
    * Stops writing worktrees no creation waits for unless their workflow is among `kept`, which is asked for only
@@ -390,6 +424,7 @@ export class WorkflowWorkspaces {
     for (const entry of this.making.values()) {
       if (entry.unwatched && !(live ??= kept()).has(entry.workflow)) entry.stop.abort(new Error('Workflow is no longer running'));
     }
+    for (const workflow of this.wanted.keys()) if (!(live ??= kept()).has(workflow)) this.wanted.delete(workflow);
   }
   begin(ws: WorkspaceBinding, taskId?: string): string {
     return this.db.transaction(() => {
@@ -478,6 +513,8 @@ export class WorkflowWorkspaces {
     if (under) return under.done;
     const stop = new AbortController();
     const ends = AbortSignal.any([stop.signal, this.stopping.signal, ...(signal ? [signal] : [])]);
+    // A creation somebody waits for goes before the others; so does a worktree a member with work is waiting for.
+    const rank = signal ? () => -1 : () => this.urgency(op.workflow, ws.id);
     const done = (async () => {
       // Started from a look at how the worktree stands, which cannot wait for the host's answer itself.
       await allowed?.();
@@ -492,9 +529,9 @@ export class WorkflowWorkspaces {
         const whole = registered && (await this.git(ws.path, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], ends, true)).stdout.trim() === checkout;
         if (registered && !whole) await rm(ws.path, { recursive: true, force: true });
         // Only registration races with other Git commands; leave `worktree add` cheap and write the files separately.
-        if (!whole) await this.worktree(ws, ['add', '--force', '--force', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ends);
+        if (!whole) await this.worktree(ws, ['add', '--force', '--force', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ends, false, rank);
       }
-      await this.writeTree(ws.path, checkout, ends);
+      await this.writeTree(ws.path, checkout, ends, rank);
       // Ready is what lets a member start in it, so it is said only of a checkout that was found to be the planned one.
       await this.located(ws, ends);
       if ((await this.clean(ws, ends)).headCommit !== checkout) throw new Error('Recovered worktree does not match its planned revision');
@@ -565,15 +602,15 @@ export class WorkflowWorkspaces {
    * so filters and modes match, and repeating it on a worktree whose files are already there changes nothing. A large
    * checkout is first offered to `writeCheckout`, which has many processes write it, one checkout at a time.
    */
-  private async writeTree(path: string, commit: string, signal: AbortSignal): Promise<void> {
-    let release = await checkoutSlots.acquire(signal), large = false;
+  private async writeTree(path: string, commit: string, signal: AbortSignal, rank?: () => number): Promise<void> {
+    let release = await checkoutSlots.acquire(signal, rank), large = false;
     try { large = await largeCheckout(this.checkoutGit, path, commit, signal); } finally { release(); }
     if (large) {
       // Only a large checkout waits its turn here: a small one is not kept behind the minutes several of these take.
-      release = await largeCheckouts.acquire(signal);
+      release = await largeCheckouts.acquire(signal, rank);
       try { if (await writeCheckout(this.checkoutGit, path, commit, WORKSPACE_CHECKOUT_PROCESSES, signal)) return; } finally { release(); }
     }
-    release = await checkoutSlots.acquire(signal);
+    release = await checkoutSlots.acquire(signal, rank);
     try { await this.git(path, ['read-tree', '--reset', '-u', commit], signal); } finally { release(); }
   }
 

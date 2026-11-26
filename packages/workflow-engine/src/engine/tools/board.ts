@@ -91,7 +91,7 @@ export const swarmTools: WorkflowToolPlugin = {
       + 'Its first turn shows it the task, its role and brief. queue makes it consume that work queue, and it then starts when the queue has work it can claim. '
       + 'workspace (true, or {base?,repo?,isolation?}) gives each added member a Git worktree of its own, made like the worktree of the member like names: from the same repository, at its HEAD unless base names a commit, and with the same isolation. '
       + 'repo (an absolute path to the root of a checkout) names another repository, and is needed when that member has no worktree and the cwd of the workflow is not a checkout; isolation: "clone" makes each a repository of its own that does not share .git. '
-      + 'The call answers once the worktrees are recorded and the members added; their files are written afterwards, one worktree after another in about the order of add, and each member takes its first turn when its own worktree is ready. '
+      + 'The call answers once the worktrees are recorded and the members added; their files are written afterwards, one worktree after another, those of the members that have work waiting first, and each member takes its first turn when its own worktree is ready. '
       + 'A member whose worktree could not be written stops as failed with the reason: revive has it written again, cleanup removes what was made of it. '
       + 'Without workspace the new members run in the root directory, where members that change code in parallel overwrite one another, and they cannot use submit_work. '
       + 'move (an array of names, with queue) makes members that consume one queue consume queue instead, for when one queue has more work than members and another has members without work: '

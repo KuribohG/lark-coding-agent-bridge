@@ -140,6 +140,9 @@ export class WorkflowRuntime {
         try { manager = this.workspaceManager(); } catch { return 'ready'; }
         return manager.standing(root, workflowId, id, () => this.workspacePolicy(root));
       },
+      workspacesWanted: (_root, workflowId, ids) => {
+        try { this.workspaceManager().want(workflowId, ids); } catch { /* No service, so no worktree whose turn this could move. */ }
+      },
       workspace: async (state, input, signal) => {
         await this.workspacePolicy(state.root);
         signal.throwIfAborted();

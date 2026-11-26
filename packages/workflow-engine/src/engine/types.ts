@@ -834,6 +834,12 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
    * turns are scheduled, so it answers at once and changes nothing in the workflow.
    */
   workspaceStanding?(root: WorkflowRoot, workflowId: string, workspaceId: string): WorktreeStanding;
+  /**
+   * The worktrees of a workflow to write before its others, most urgent first: those of the swarm members that have
+   * something to do and are held back only by their worktree. Told on every scheduling pass in place of what was
+   * told before, so like `workspaceStanding` it answers at once.
+   */
+  workspacesWanted?(root: WorkflowRoot, workflowId: string, workspaceIds: string[]): void;
   workspace?(state: WorkspaceStateView, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** The repository a worktree of this workflow was made from and its isolation, as the `workspace` options that make another like it. */
   workspaceOrigin?(state: WorkspaceStateView, workspaceId: string): Promise<{ repo: string; isolation?: 'clone' }>;

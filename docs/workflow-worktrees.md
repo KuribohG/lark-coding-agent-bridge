@@ -53,12 +53,12 @@ Limits: the source keeps a ref `refs/bridge-workflow/<workflow-id>/clones/<works
 Writing the files is what makes a workspace slow on a large repository, and a swarm does not need every member's worktree before its first member can work. `createWorkspace({key})` therefore answers as soon as the worktree is recorded, with `status: "preparing"`, and its files are written afterwards. The ID is given to a swarm member like any other: the swarm holds that member back and wakes it when its worktree is ready. Members whose worktrees are ready work meanwhile, and the work items go to them, since a member that has not been woken has claimed nothing.
 
 ```js
-const names = ['lead', 'w1', 'w2'];
-const spaces = await parallel(names.map(name => () => createWorkspace({key: 'ws-' + name})));
-return await swarm(goal, {key: 'crew', lead: 'lead', members: names.map((name, n) => ({name, queue: 'default', workspace: spaces[n].id}))});
+const names = ['w1', 'w2', 'w3'];
+const [own, ...spaces] = await parallel(['lead', ...names].map(name => () => createWorkspace({key: 'ws-' + name})));
+return await swarm(goal, {key: 'crew', lead: {name: 'lead', workspace: own.id}, members: names.map((name, n) => ({name, workspace: spaces[n].id}))});
 ```
 
-Worktrees are written in about the order they were asked for: two asked for within seconds of each other may swap. Ask for the lead's first: a swarm with a lead hands out nothing until the lead has planned.
+The worktrees that are written first are those somebody has work to do in. On every scheduling pass the swarm names the members that have something to do and are held back only by their worktree: a lead that is to plan, a member with an item kept for it or with messages, and of the members of a queue as many as it has items nobody was woken for. Their worktrees take the next turns, the leads' before the others', both to be registered and to have their files written; so does a worktree that `agent()` or `freezeWorkspace` is waiting for. The others follow in about the order they were asked for, so no turn goes unused. The order follows the work: when the lead enqueues items, the members that can claim them move ahead.
 
 - A checkout of 2,000 files or more is written by 64 Git processes, each a stretch of its files, and one such checkout at a time. One Git process writes a checkout file by file, and on a network filesystem each file takes several round trips whatever else runs beside it: 134,000 files took twenty minutes that way, with one other checkout running or with sixty-three, and half a minute with 64 processes on the one checkout. The worktrees of a swarm therefore become ready one after another from the first minute. Smaller checkouts and sparse ones are written by Git alone as before, and do not wait for a large checkout's turn.
 - A worktree whose files cannot be written makes its member stop as failed, with the reason. Whoever answers for the swarm's members is told as for any failed member: `staff_swarm({revive})` has the files written again, and `cleanup` removes what was made.

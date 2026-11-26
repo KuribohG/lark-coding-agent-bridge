@@ -135,7 +135,7 @@ const running = (state: WorkflowView) => state.status === 'active' && state.scri
 
 /** Schedules the turns of every running swarm, keeps the to-dos in step and settles the swarms with nothing left to do. Returns whether anything changed. */
 export function pumpSwarms(state: WorkflowView, nativeIdKind: (agentKind: string) => NativeIdKind, now: number, additionalTurnsAllowed = Infinity,
-  worktree?: (workspaceId: string) => WorktreeStanding): boolean {
+  worktree?: (workspaceId: string) => WorktreeStanding, first?: (workspaceIds: string[]) => void): boolean {
   if (state.status !== 'active') return false;
   // A script that has ended leaves nothing for anyone to see to. One that is paused or about to run again keeps its
   // to-dos, with who was told of them and when.
@@ -166,11 +166,14 @@ export function pumpSwarms(state: WorkflowView, nativeIdKind: (agentKind: string
     // briefed with how it reads now.
     holds = situations(state, surveys, now);
   }
+  const wanted: string[] = [];
   for (const found of surveys) {
     const before = found.swarm.turns.length;
-    changed = schedule(state, found, holds, nativeIdKind, now, additionalTurnsAllowed) || changed;
+    changed = schedule(state, found, holds, nativeIdKind, now, additionalTurnsAllowed, wanted) || changed;
     additionalTurnsAllowed -= found.swarm.turns.length - before;
   }
+  // Told on every pass, so the order follows the work as it is enqueued, claimed and finished.
+  if (worktree && surveys.some(found => found.swarm.members.some(member => member.workspace))) first?.(wanted);
   return changed;
 }
 
@@ -451,7 +454,8 @@ function openGates(state: WorkflowView, queues: readonly string[]): boolean {
 }
 
 /** Wakes the members of one swarm that have something to do, and ends the swarm when nothing is left to wait for. */
-function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string, Situation>, nativeIdKind: (agentKind: string) => NativeIdKind, now: number, additionalTurnsAllowed: number): boolean {
+function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string, Situation>, nativeIdKind: (agentKind: string) => NativeIdKind, now: number, additionalTurnsAllowed: number,
+  wanted: string[]): boolean {
   const { swarm, queues, work, waiting, busy, unread, turnsLeft, hasWork } = found;
   if (swarm.status !== 'running') return false;
   let changed = false;
@@ -546,6 +550,7 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
         queues: standing(member), ...boardNews(state, agent?.boardSeq ?? 0, coordinates(swarm, member)) };
     };
     let slots = state.definition.maxConcurrentWorkers - state.tasks.filter(task => BUSY.has(task.status)).length;
+    const woken = new Set<string>();
     for (const member of swarm.members) {
       if (slots <= 0) break;
       if (!wakeable(member)) continue;
@@ -582,6 +587,7 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
         record({ type: 'swarm_member_stopped', swarmId: swarm.id, member: member.name, reason: 'failed', detail: ('cannot be scheduled: ' + (error instanceof Error ? error.message : String(error))).slice(0, 500) });
         continue;
       }
+      woken.add(member.name);
       // The outcomes in the brief of this turn have reached their lead.
       if (shown?.results.length) { record({ type: 'swarm_results_seen', swarmId: swarm.id, items: shown.results.map(entry => entry.item.id) }); owed.delete(member.name); }
       // A turn woken for something else is not demand for a work item.
@@ -592,6 +598,18 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
       if (!retry) additionalTurnsAllowed--;
       slots--;
     }
+    // The worktrees to write first are those of the members that have something to do and are held back only by
+    // their worktree, the leads before the others. The work of a queue asks for as many members as it has items
+    // nobody was woken for: a member that could be woken takes one before a member whose worktree is not ready, and
+    // that one before the next, so a queue with three items does not put thirty worktrees ahead of another queue's.
+    const held: MemberView[] = [];
+    for (const member of swarm.members) {
+      if (woken.has(member.name) || !wakeable(member)) continue;
+      if (waiting.has(member.name)) held.push(member);
+      const queued = member.queue ? work.get(member.queue) : undefined;
+      if (queued && queued.slots > 0 && !queued.kept.get(member.name)?.length) queued.slots--;
+    }
+    wanted.push(...[...held.filter(member => coordinates(swarm, member)), ...held.filter(member => !coordinates(swarm, member))].map(member => member.workspace!));
   } catch (error) { end('failed', error instanceof Error ? error.message : String(error)); }
   return changed;
 }

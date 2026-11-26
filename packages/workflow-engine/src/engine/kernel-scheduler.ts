@@ -313,7 +313,8 @@ export class WorkflowScheduler {
       store.transact(() => {
         settleEventWaits(state, ctx.now());
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state),
-          ctx.host.workspaceStanding && (id => ctx.host.workspaceStanding!(state.root, state.workflowId, id)));
+          ctx.host.workspaceStanding && (id => ctx.host.workspaceStanding!(state.root, state.workflowId, id)),
+          ctx.host.workspacesWanted && (ids => ctx.host.workspacesWanted!(state.root, state.workflowId, ids)));
         pumpMainWake(state, ctx.now());
         // While the script runs, what has long settled leaves the state; once it stops, what remains stays for review.
         if (state.script?.status === 'running' && ctx.now() - (this.archivedAt.get(state.workflowId) ?? 0) >= ARCHIVE_EVERY_MS) {
