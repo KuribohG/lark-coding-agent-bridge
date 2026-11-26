@@ -142,6 +142,9 @@ export class WorkflowKernel {
     return owners;
   }
 
+  /** The workflows that have not ended, whether or not their journal can be read. */
+  unfinished(): Set<string> { return new Set(this.ctx.store.openIds()); }
+
   queuedScripts(): WorkflowState[] {
     return this.ctx.scripts.queuedScripts().map(state => this.ctx.store.public(state));
   }

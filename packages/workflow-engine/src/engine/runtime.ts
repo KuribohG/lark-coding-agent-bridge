@@ -129,9 +129,17 @@ export class WorkflowRuntime {
       repairJson: deps.repairJson,
       log: this.log,
       resolveWorker: (root, selection) => this.resolveWorker(root, selection),
-      resolveWorkspace: async (root, workflowId, id) => {
+      resolveWorkspace: async (root, workflowId, id, preparing) => {
         await this.workspacePolicy(root);
-        await this.workspaceManager().binding(root, workflowId, id, new AbortController().signal);
+        const manager = this.workspaceManager();
+        if (preparing && manager.preparing(root, workflowId, id)) return;
+        await manager.prepared(root, workflowId, id, new AbortController().signal, () => this.workspacePolicy(root));
+      },
+      workspaceStanding: (root, workflowId, id) => {
+        // A host that cannot open the service has made no worktree to wait for; the turn says what is wrong with it.
+        let manager: WorkflowWorkspaces;
+        try { manager = this.workspaceManager(); } catch { return 'ready'; }
+        return manager.standing(root, workflowId, id, () => this.workspacePolicy(root));
       },
       workspace: async (state, input, signal) => {
         await this.workspacePolicy(state.root);
@@ -210,6 +218,8 @@ export class WorkflowRuntime {
       if (this.closed) return;
       void this.releaseOrphanHosts();
       this.reclaimScratch();
+      // A workflow that was cancelled or has ended needs none of the worktrees still being written for it.
+      this.workspaces?.abandon(() => this.kernel.unfinished());
       this.startScripts();
     } finally {
       this.ticking = false;
@@ -632,8 +642,13 @@ export class WorkflowRuntime {
   private workspaceManager(): WorkflowWorkspaces {
     if (this.closed) throw new Error('Workflow service is closed');
     if (!this.deps.workspaceRoot && this.deps.path === ':memory:') throw new Error('In-memory workflows require an explicit workspaceRoot');
-    return this.workspaces ??= new WorkflowWorkspaces(this.deps.path === ':memory:' ? ':memory:' : this.deps.path + '.workspaces.sqlite',
-      this.deps.workspaceRoot ?? join(dirname(this.deps.path), 'worktrees'), this.deps.processes);
+    if (!this.workspaces) {
+      this.workspaces = new WorkflowWorkspaces(this.deps.path === ':memory:' ? ':memory:' : this.deps.path + '.workspaces.sqlite',
+        this.deps.workspaceRoot ?? join(dirname(this.deps.path), 'worktrees'), this.deps.processes);
+      // A member that was held back for its worktree is scheduled as soon as the worktree is ready, or stopped for its failure.
+      this.workspaces.watch(() => this.requestAdmission());
+    }
+    return this.workspaces;
   }
 
   private async workspacePolicy(root: WorkflowRoot, worker?: WorkerExecution): Promise<void> {

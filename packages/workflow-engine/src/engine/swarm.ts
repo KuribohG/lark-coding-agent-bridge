@@ -298,8 +298,9 @@ export function staffSelection(state: WorkflowView, input: Record<string, unknow
  * The worktrees `staff_swarm` makes for the members it adds, one per name; undefined when it asks for none. A member
  * that is added without one runs in the workflow's own checkout, where editing code races the main agent and the
  * other members, and cannot submit work through a landing branch. Creation is the host operation behind the script's
- * `createWorkspace`, keyed by swarm and member, so a retried call reuses the worktree it already made; `staffSwarm`
- * binds the IDs in the change that adds the members.
+ * `createWorkspace` with `wait: false`, keyed by swarm and member, so a retried call reuses the worktree it already
+ * recorded; `staffSwarm` binds the IDs in the change that adds the members, and the swarm wakes each member once the
+ * files of its worktree are written.
  */
 export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, input: Record<string, unknown>): Promise<Record<string, string> | undefined> {
   if (input.workspace === undefined || input.workspace === false) return undefined;
@@ -338,7 +339,9 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
     ? await ctx.host.workspaceOrigin?.(view, like.workspace) : undefined;
   const options = { ...origin, ...given };
   const made = await Promise.all(names.map(async name => {
-    const created = await ctx.host.workspace!(view, { kind: 'create', key: `staff/${swarm.id}/${name}`, ...options }, signal) as { id?: unknown };
+    // The call does not wait for the files of each worktree: the members are added at once, and each takes its first
+    // turn when its own worktree is ready, in about the order they are named.
+    const created = await ctx.host.workspace!(view, { kind: 'create', key: `staff/${swarm.id}/${name}`, wait: false, ...options }, signal) as { id?: unknown };
     if (typeof created?.id !== 'string') throw new Error('Workspace creation did not return an ID');
     return [name, created.id] as const;
   }));

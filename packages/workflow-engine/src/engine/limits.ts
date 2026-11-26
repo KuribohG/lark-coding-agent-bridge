@@ -58,10 +58,23 @@ export const MAX_WORKSPACES = 1024;
 /** Workspace records of one workflow: worktrees, frozen changes, approvals, checks and the operations that made them. */
 export const MAX_WORKSPACE_RECORDS = 16_384;
 /**
- * New worktrees whose files are written at once. Git registers a worktree in a few steps, so registration stays
- * serialized per repository; writing the checked-out files is the expensive part and runs in this many slots.
+ * New worktrees whose files one Git process each writes at once. Git registers a worktree in a few steps, so
+ * registration stays serialized per repository; writing the checked-out files is the expensive part and runs in this
+ * many slots. It is how small checkouts are written, and those Git has to write alone.
  */
 export const WORKSPACE_CHECKOUT_SLOTS = 64;
+/**
+ * A large checkout is written by this many Git processes, each a stretch of its files. One process takes several
+ * round trips for every file on a network filesystem, whatever else runs beside it, so the processes of one checkout
+ * are what makes it quick; past this many the filesystem the bridge runs on wrote no faster.
+ */
+export const WORKSPACE_CHECKOUT_PROCESSES = 64;
+/**
+ * Large checkouts that are written at once; the others wait, in about the order they were asked for. The worktrees of a
+ * swarm then become ready one after another, and each member starts as its own is, where writing all of them at once
+ * would have every member wait for the last file of the slowest.
+ */
+export const WORKSPACE_LARGE_CHECKOUTS = 1;
 /**
  * How long a landing train waits before each run it repeats after a failure of its own (a Git command that failed in
  * its worktree), with its submissions kept in the queue. A lock another process holds there is released within

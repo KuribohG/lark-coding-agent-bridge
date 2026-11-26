@@ -11,7 +11,7 @@ import { clearTodos, deferredOf, holderOf, openTodos, reconcileTodos, type Situa
 import { answersShown } from './turn-mail';
 import { availableWork, deadDependency, itemsByKey, keptFor, queueStanding, submittedWork, unfinishedWork, waitsOn, workFlow, workItem } from './work-queue';
 import { queueControl } from './work-routing';
-import type { Immutable, NativeIdKind, WorkflowSwarm, WorkflowTodo, WorkflowView } from './types';
+import type { Immutable, NativeIdKind, WorkflowSwarm, WorkflowTodo, WorkflowView, WorktreeStanding } from './types';
 
 /**
  * When the members of a swarm are woken, and what waits on whom.
@@ -60,6 +60,8 @@ interface Survey {
   swarm: SwarmView;
   queues: string[];
   work: Map<string, Offer>;
+  /** The members whose worktree is still being written (see `unready`); none of them is woken. */
+  waiting: ReadonlySet<string>;
   busy(member: MemberView): boolean;
   unread(member: MemberView): boolean;
   turnsLeft(member: MemberView): boolean;
@@ -68,7 +70,7 @@ interface Survey {
   stirring(member: MemberView): boolean;
 }
 
-function survey(state: WorkflowView, swarm: SwarmView, now: number): Survey {
+function survey(state: WorkflowView, swarm: SwarmView, now: number, waiting: ReadonlySet<string> = new Set()): Survey {
   const busy = (member: MemberView) => { const task = taskById(state, member.taskId); return Boolean(task && BUSY.has(task.status)); };
   // Looked up for every member on every pass, so indexed once rather than searched.
   const agents = new Map((state.agents ?? []).map(agent => [agent.key, agent]));
@@ -106,7 +108,25 @@ function survey(state: WorkflowView, swarm: SwarmView, now: number): Survey {
   };
   const stirring = (member: MemberView) => !member.stopped && (busy(member) || Boolean(member.retryPending)
     || turnsLeft(member) && (member.wakeAt !== undefined || unread(member) || hasWork(member) || toldSince(state, member.name, member.briefedAt ?? 0, now)));
-  return { swarm, queues, work, busy, unread, turnsLeft, hasWork, stirring };
+  return { swarm, queues, work, waiting, busy, unread, turnsLeft, hasWork, stirring };
+}
+
+/**
+ * The members that cannot take a turn yet because the files of their worktree are still being written. A member is
+ * added as soon as its worktree is recorded, so a swarm starts with the worktrees that are ready instead of waiting
+ * for the last one. A member whose worktree could not be written stops as failed, like one whose turn failed; reviving
+ * it has the worktree written again.
+ */
+function unready(state: WorkflowView, swarm: SwarmView, worktree: (workspaceId: string) => WorktreeStanding): Set<string> {
+  const waiting = new Set<string>();
+  for (const member of swarm.members) {
+    const task = taskById(state, member.taskId);
+    if (member.stopped || !member.workspace || task && BUSY.has(task.status)) continue;
+    const standing = worktree(member.workspace);
+    if (standing === 'preparing') waiting.add(member.name);
+    else if (standing !== 'ready') emit(state, { type: 'swarm_member_stopped', swarmId: swarm.id, member: member.name, reason: 'failed', detail: ('its worktree could not be prepared: ' + standing.failed).slice(0, 500) });
+  }
+  return waiting;
 }
 
 /** The swarms of the current run that are running. */
@@ -114,7 +134,8 @@ const running = (state: WorkflowView) => state.status === 'active' && state.scri
   ? (state.swarms ?? []).filter(swarm => swarm.runId === state.script!.runId && swarm.status === 'running') : [];
 
 /** Schedules the turns of every running swarm, keeps the to-dos in step and settles the swarms with nothing left to do. Returns whether anything changed. */
-export function pumpSwarms(state: WorkflowView, nativeIdKind: (agentKind: string) => NativeIdKind, now: number, additionalTurnsAllowed = Infinity): boolean {
+export function pumpSwarms(state: WorkflowView, nativeIdKind: (agentKind: string) => NativeIdKind, now: number, additionalTurnsAllowed = Infinity,
+  worktree?: (workspaceId: string) => WorktreeStanding): boolean {
   if (state.status !== 'active') return false;
   // A script that has ended leaves nothing for anyone to see to. One that is paused or about to run again keeps its
   // to-dos, with who was told of them and when.
@@ -123,9 +144,12 @@ export function pumpSwarms(state: WorkflowView, nativeIdKind: (agentKind: string
   const surveys: Survey[] = [];
   for (const swarm of running(state)) {
     try {
+      const stopped = swarm.members.filter(member => member.stopped).length;
+      const waiting = worktree ? unready(state, swarm, worktree) : undefined;
+      changed = swarm.members.filter(member => member.stopped).length !== stopped || changed;
       changed = settleTurns(state, swarm, now) || changed;
-      let found = survey(state, swarm, now);
-      if (passUp(state, found, now)) { changed = true; found = survey(state, swarm, now); }
+      let found = survey(state, swarm, now, waiting);
+      if (passUp(state, found, now)) { changed = true; found = survey(state, swarm, now, waiting); }
       surveys.push(found);
     } catch (error) {
       emit(state, { type: 'swarm_ended', swarmId: swarm.id, stop: 'failed', reason: error instanceof Error ? error.message : String(error) });
@@ -428,7 +452,7 @@ function openGates(state: WorkflowView, queues: readonly string[]): boolean {
 
 /** Wakes the members of one swarm that have something to do, and ends the swarm when nothing is left to wait for. */
 function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string, Situation>, nativeIdKind: (agentKind: string) => NativeIdKind, now: number, additionalTurnsAllowed: number): boolean {
-  const { swarm, queues, work, busy, unread, turnsLeft, hasWork } = found;
+  const { swarm, queues, work, waiting, busy, unread, turnsLeft, hasWork } = found;
   if (swarm.status !== 'running') return false;
   let changed = false;
   const record = (event: DomainEvent) => { emit(state, event); changed = true; };
@@ -509,6 +533,7 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
       return `"${name}" ${Math.max(0, slots) + held} claimable${held ? ` (${held} kept for ${held > 1 ? 'their assignees' : 'its assignee'})` : ''}, `
         + (heldReady ? `${heldReady} set aside with nothing else in the way, ` : '') + (stuck ? `${stuck} waiting on a cancelled or failed item, ` : '') + (gates ? `${gates} gates open, ` : '')
         + `${consumers.filter(other => !busy(other)).length} of ${consumers.length} members idle, `
+        + (consumers.some(other => waiting.has(other.name)) ? `${consumers.filter(other => waiting.has(other.name)).length} of them until the files of their worktree are written, ` : '')
         + `${workFlow(state, name, now)?.completed.at(-1) ?? 0} items completed in the last hour` + (own ? ` (lead ${own.name})` : '');
     }).join('; ') || undefined;
     const facts = (member: MemberView, timed: boolean): BriefFacts => {
@@ -524,6 +549,8 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
     for (const member of swarm.members) {
       if (slots <= 0) break;
       if (!wakeable(member)) continue;
+      // It has something to do and nowhere to do it yet; the pass that follows its worktree's last file wakes it.
+      if (waiting.has(member.name)) continue;
       if (member.workspace && state.tasks.some(task => task.workspaceId === member.workspace && (BUSY.has(task.status) || task.status === 'waiting_workflow'))) continue;
       const prior = taskOf(member);
       const retry = Boolean(member.retryPending && prior);

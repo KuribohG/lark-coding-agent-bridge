@@ -800,6 +800,9 @@ export interface WorkspaceStateView {
   artifacts: ReadonlyArray<WorkspaceArtifactView>;
 }
 
+/** Whether the files of a managed worktree are there, are being written, or could not be written. */
+export type WorktreeStanding = 'ready' | 'preparing' | { failed: string };
+
 export interface WorkflowHost extends WorkerExecutionPolicy {
   executionLedger?: ExecutionLedgerPort;
   /** Workers call the workflow through a host tool, so prompts must not name the shell CLI. */
@@ -819,7 +822,18 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
   getTimeoutMinutes?(root: WorkflowRoot): number;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;
-  resolveWorkspace?(root: WorkflowRoot, workflowId: string, workspaceId: string): Promise<void>;
+  /**
+   * Checks that a managed worktree is the root's to work in. One whose files are still being written (a creation
+   * that did not wait for them) is waited for, unless `preparing` says that whoever is bound to it will wait for it
+   * itself, as a swarm does for each member.
+   */
+  resolveWorkspace?(root: WorkflowRoot, workflowId: string, workspaceId: string, preparing?: boolean): Promise<void>;
+  /**
+   * How the worktree of a swarm member that is not in a turn stands; without it every worktree counts as ready. A
+   * failure is told once, and asking again has the files written anew (see WorkflowWorkspaces.standing). Called while
+   * turns are scheduled, so it answers at once and changes nothing in the workflow.
+   */
+  workspaceStanding?(root: WorkflowRoot, workflowId: string, workspaceId: string): WorktreeStanding;
   workspace?(state: WorkspaceStateView, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** The repository a worktree of this workflow was made from and its isolation, as the `workspace` options that make another like it. */
   workspaceOrigin?(state: WorkspaceStateView, workspaceId: string): Promise<{ repo: string; isolation?: 'clone' | 'overlay' }>;

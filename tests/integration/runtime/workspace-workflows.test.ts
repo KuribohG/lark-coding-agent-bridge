@@ -19,6 +19,8 @@ afterEach(async () => { for (const close of closes.splice(0).reverse()) await cl
 async function git(cwd: string, ...argv: string[]) {
   return (await promisify(execFile)('git', argv, { cwd })).stdout.trim();
 }
+/** What a file of a worktree holds, once the worktree has been written: a member is added before its worktree is. */
+const written = (path: string) => vi.waitFor(() => readFile(path, 'utf8'), { timeout: 20_000, interval: 30 });
 /** `chat` runs the workflow in a directory that is no checkout, as a bridge does from a chat workspace; the repository is then named to the script. */
 async function harness(perform?: (opts: AgentRunOptions, index: number) => Promise<string>, where: 'repo' | 'chat' = 'repo') {
   const dir = await mkdtemp(join(tmpdir(), 'workspace-runtime-'));
@@ -148,8 +150,9 @@ describe('workspace script runtime', () => {
       const id = staffed!.workspaces![0]!.workspace;
       expect(staffed!.workspaces![0]!.name).toBe('w1');
       expect(h.state().swarms![0]!.members.find(member => member.name === 'w1')!.workspace).toBe(id);
-      // The worktree is a checkout of the workflow's repository at its committed baseline, not the root itself.
-      expect(await readFile(join(h.dir, 'worktrees', h.state().workflowId, id, 'value.txt'), 'utf8')).toBe('original\n');
+      // The worktree is a checkout of the workflow's repository at its committed baseline, not the root itself. Its
+      // files are written after the call has answered.
+      expect(await written(join(h.dir, 'worktrees', h.state().workflowId, id, 'value.txt'))).toBe('original\n');
       await vi.waitFor(async () => { await h.runtime.tick(); expect(seen.filter(run => run.model === 'worker').length).toBe(2); }, { timeout: 20_000, interval: 30 });
       // w0 keeps the root checkout; w1 runs inside the worktree made for it.
       expect(seen.filter(run => run.model === 'worker' && run.cwd === h.repo)).toHaveLength(1);
@@ -172,7 +175,7 @@ describe('workspace script runtime', () => {
       expect(new Set(ids).size).toBe(2);
       for (const [index, id] of ids.entries()) {
         expect(h.state().swarms![0]!.members.find(member => member.name === `w${index + 1}`)!.workspace).toBe(id);
-        expect(await readFile(join(h.dir, 'worktrees', h.state().workflowId, id, 'value.txt'), 'utf8')).toBe('original\n');
+        expect(await written(join(h.dir, 'worktrees', h.state().workflowId, id, 'value.txt'))).toBe('original\n');
       }
       // The operation is idempotent: the same ID returns the recorded result without making more worktrees.
       const again = await staff(operationId);
@@ -200,14 +203,15 @@ describe('workspace script runtime', () => {
       const tree = (await staff({ add: ['t1'], like: 't0', workspace: true })).workspaces[0]!;
       expect(tree.name).toBe('t1');
       expect(h.state().swarms![0]!.members.find(member => member.name === 't1')!.workspace).toBe(tree.workspace);
-      expect(await readFile(join(path(tree.workspace), 'value.txt'), 'utf8')).toBe('original\n');
+      expect(await written(join(path(tree.workspace), 'value.txt'))).toBe('original\n');
       expect((await stat(join(path(tree.workspace), '.git'))).isFile()).toBe(true);
       // Like the member in a clone, it gets a clone; a worktree of the repository is still there for the asking.
       const clone = (await staff({ add: ['c1'], like: 'c0', workspace: true })).workspaces[0]!;
       // The clone does not take the source's core.autocrlf, so Git for Windows writes its files with CRLF.
-      expect((await readFile(join(path(clone.workspace), 'value.txt'), 'utf8')).replace(/\r\n/g, '\n')).toBe('original\n');
+      expect((await written(join(path(clone.workspace), 'value.txt'))).replace(/\r\n/g, '\n')).toBe('original\n');
       expect((await stat(join(path(clone.workspace), '.git'))).isDirectory()).toBe(true);
       const shared = (await staff({ add: ['c2'], like: 'c0', workspace: { isolation: 'worktree' } })).workspaces[0]!;
+      await written(join(path(shared.workspace), 'value.txt'));
       expect((await stat(join(path(shared.workspace), '.git'))).isFile()).toBe(true);
     } finally { release(); }
   }, 90_000);
@@ -224,7 +228,7 @@ describe('workspace script runtime', () => {
       const added = await h.runtime.kernel.call(main, 'staff_swarm', { operationId: randomUUID(), add: ['w1'], workspace: true }) as { workspaces: Array<{ name: string; workspace: string }> };
       const id = added.workspaces[0]!.workspace;
       const path = join(h.dir, 'worktrees', h.state().workflowId, id);
-      await expect(access(path)).resolves.toBeUndefined();
+      await written(join(path, 'value.txt'));
       await vi.waitFor(async () => {
         await h.runtime.tick();
         const taskId = h.state().swarms![0]!.members.find(member => member.name === 'w1')!.taskId;

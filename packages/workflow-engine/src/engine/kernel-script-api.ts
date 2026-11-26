@@ -269,7 +269,8 @@ export class ScriptApi {
       for (const member of spec.members) {
         if (member.workspace) {
           if (snapshot.parent || !host.resolveWorkspace) throw new Error('Workspace execution is unavailable in this workflow');
-          await host.resolveWorkspace(pinned, workflowId, member.workspace);
+          // The swarm holds each member back until the files of its worktree are written, so it starts without them.
+          await host.resolveWorkspace(pinned, workflowId, member.workspace, true);
         }
         executions.push(await (host.resolveWorker?.(pinned, member.selection) ?? inheritedWorkerExecution(pinned, member.selection)));
       }
