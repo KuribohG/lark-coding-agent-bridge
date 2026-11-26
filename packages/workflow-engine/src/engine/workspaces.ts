@@ -236,7 +236,9 @@ export class WorkflowWorkspaces {
     const name = `git ${args.find((arg, at) => !arg.startsWith('-') && args[at - 1] !== '-c') ?? ''}`.trim();
     const result = await workspaceCommand('git', ['-c', `core.hooksPath=${hooks}`, '-c', 'core.fsmonitor=false',
       '-c', 'gc.auto=0', ...args], cwd, signal, GIT_TIMEOUT_MS, { ...gitEnv(), ...env }, this.processes, { name, ...output });
-    if (result.code && !allowFailure) throw new GitFailure(`Git ${name.slice(4) || args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
+    // A Git that was killed prints nothing: how it ended is then all there is to say of it.
+    if (result.code && !allowFailure) throw new GitFailure(`Git ${name.slice(4) || args[0]} failed: ${(result.stderr || result.stdout
+      || (result.signal ? `killed by ${result.signal}` : `exit code ${result.code}`)).slice(0, 1600)}`);
     return result;
   }
   private async worktree(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir'>, args: string[], signal: AbortSignal, allowFailure = false, rank?: () => number): Promise<CommandResult> {
@@ -531,10 +533,12 @@ export class WorkflowWorkspaces {
         // Only registration races with other Git commands; leave `worktree add` cheap and write the files separately.
         if (!whole) await this.worktree(ws, ['add', '--force', '--force', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ends, false, rank);
       }
-      await this.writeTree(ws.path, checkout, ends, rank);
+      const written = await this.writeTree(ws.path, checkout, ends, rank);
       // Ready is what lets a member start in it, so it is said only of a checkout that was found to be the planned one.
+      // One that many processes wrote was found so as they wrote it. Reading the status of every file again takes a
+      // process of its own longer than writing them took all of those, with the next checkouts being written beside it.
       await this.located(ws, ends);
-      if ((await this.clean(ws, ends)).headCommit !== checkout) throw new Error('Recovered worktree does not match its planned revision');
+      if ((written ? await this.revision(ws.path, undefined, ends) : (await this.clean(ws, ends)).headCommit) !== checkout) throw new Error('Recovered worktree does not match its planned revision');
       ends.throwIfAborted();
       const ready: WorkspaceBinding = { ...ws, status: 'ready' };
       this.putWorkspace(ready);
@@ -600,18 +604,20 @@ export class WorkflowWorkspaces {
   /**
    * Writes a registered worktree's files. `read-tree --reset -u` uses the same checkout machinery as `worktree add`,
    * so filters and modes match, and repeating it on a worktree whose files are already there changes nothing. A large
-   * checkout is first offered to `writeCheckout`, which has many processes write it, one checkout at a time.
+   * checkout is first offered to `writeCheckout`, which has many processes write it, one checkout at a time. Returns
+   * whether that wrote it: every file of the commit is then known to be there as Git wrote it (see `writeCheckout`).
    */
-  private async writeTree(path: string, commit: string, signal: AbortSignal, rank?: () => number): Promise<void> {
+  private async writeTree(path: string, commit: string, signal: AbortSignal, rank?: () => number): Promise<boolean> {
     let release = await checkoutSlots.acquire(signal, rank), large = false;
     try { large = await largeCheckout(this.checkoutGit, path, commit, signal); } finally { release(); }
     if (large) {
       // Only a large checkout waits its turn here: a small one is not kept behind the minutes several of these take.
       release = await largeCheckouts.acquire(signal, rank);
-      try { if (await writeCheckout(this.checkoutGit, path, commit, WORKSPACE_CHECKOUT_PROCESSES, signal)) return; } finally { release(); }
+      try { if (await writeCheckout(this.checkoutGit, path, commit, WORKSPACE_CHECKOUT_PROCESSES, signal)) return true; } finally { release(); }
     }
     release = await checkoutSlots.acquire(signal, rank);
     try { await this.git(path, ['read-tree', '--reset', '-u', commit], signal); } finally { release(); }
+    return false;
   }
 
   perform(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<unknown> {

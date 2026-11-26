@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import type { WorkflowProcesses } from './ports';
 
-export interface CommandResult { code: number; stdout: string; stderr: string }
+/** `signal` names what killed the command, when something did: it then has no exit code of its own, and `code` is -1. */
+export interface CommandResult { code: number; stdout: string; stderr: string; signal?: string }
 
 /**
  * What is held of a command's output. It is held in this process's memory, next to the output of every other command
@@ -92,9 +93,9 @@ export function workspaceCommand(command: string, args: string[], cwd: string, s
     child.stdout?.on('data', chunk => collect(chunk, false));
     child.stderr?.on('data', chunk => collect(chunk, true));
     child.once('error', error => { failure = error; });
-    child.once('close', code => {
+    child.once('close', (code, killedBy) => {
       clearTimeout(timer); signal.removeEventListener('abort', abort);
-      if (failure) reject(failure); else resolve({ code: code ?? -1, stdout: stdout.text(), stderr: stderr.text() });
+      if (failure) reject(failure); else resolve({ code: code ?? -1, stdout: stdout.text(), stderr: stderr.text(), ...(killedBy ? { signal: killedBy } : {}) });
     });
   });
 }

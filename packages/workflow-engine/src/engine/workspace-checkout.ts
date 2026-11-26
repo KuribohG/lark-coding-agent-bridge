@@ -15,6 +15,11 @@ const LARGE_ENTRIES = 2000;
 const PLAIN_INDEX = ['-c', 'index.version=2', '-c', 'index.skipHash=false', '-c', 'core.splitIndex=false', '-c', 'index.sparse=false'];
 /** What an entry holds before its object ID: the times, device, inode, mode, owner and size of the file it was written as. */
 const STAT_BYTES = 40;
+/**
+ * How often a stretch is given to a process before the checkout is given up. One process among the tens of thousands
+ * that write the worktrees of a swarm is now and then killed without a word; writing its files again costs a second.
+ */
+const STRETCH_ATTEMPTS = 3;
 
 /**
  * Where each entry of an index starts, and after them where the last one ends. Nothing for an index that is not
@@ -83,6 +88,8 @@ export async function largeCheckout(git: CheckoutGit, tree: string, commit: stri
  * and leaves the index as one Git process would have: every entry with the size and times of the file as it was
  * written, so the first `git status` reads no file. Returns false when it wrote nothing because the index is of a
  * kind it does not take apart or Git cannot be told where the attributes are; the caller then has Git write it alone.
+ * When it returns true every file is known to be there: each process said it wrote its stretch, and gave back every
+ * entry of it with the time of a file it had just written, which no entry has before.
  *
  * One Git process writes a large checkout file by file, and on a network filesystem each file takes several round
  * trips: 130,000 files took twenty minutes however many other checkouts ran beside it, and half a minute this way.
@@ -123,15 +130,24 @@ export async function writeCheckout(git: CheckoutGit, tree: string, commit: stri
   const write = async (stretch: number): Promise<void> => {
     const [first, end] = stretches[stretch]!, from = starts[first]!, to = starts[end]!;
     const header = Buffer.from(index.subarray(0, 12)); header.writeUInt32BE(end - first, 8);
-    const own = join(scratch, String(stretch));
-    await writeFile(own, sealed(Buffer.concat([header, index.subarray(from, to)])));
-    await git(tree, checkout, stop.signal, { GIT_INDEX_FILE: own });
+    let own = '';
+    for (let attempt = 1; ; attempt++) {
+      // An index of its own for each attempt: a process that was killed may have left the lock of its index behind.
+      own = join(scratch, `${stretch}.${attempt}`);
+      await writeFile(own, sealed(Buffer.concat([header, index.subarray(from, to)])));
+      // Writing the files of a stretch again replaces what the process before it wrote of them.
+      try { await git(tree, checkout, stop.signal, { GIT_INDEX_FILE: own }); break; } catch (error) {
+        if (stop.signal.aborted || attempt >= STRETCH_ATTEMPTS) throw error;
+      }
+    }
     const written = await readFile(own), places = indexEntries(written);
     if (!places || places.length - 1 !== end - first || places[end - first]! - 12 !== to - from) throw new Error('Git rewrote the entries of a checkout stretch');
     // Only what Git recorded of each file is taken from it; an entry that came back otherwise is not the one cut out.
     for (let entry = 0; entry < end - first; entry++) {
       const at = places[entry]!, next = places[entry + 1]!;
       if (!written.subarray(at + STAT_BYTES, next).equals(index.subarray(from + at - 12 + STAT_BYTES, from + next - 12))) throw new Error('Git rewrote the entries of a checkout stretch');
+      // The time a file was last written, in seconds, is the third field of an entry, and of no entry before its file is.
+      if (!written.readUInt32BE(at + 8)) throw new Error('Git did not write every file of a checkout stretch');
     }
     written.copy(merged, from, 12, places[end - first]!);
   };

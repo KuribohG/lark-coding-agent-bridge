@@ -271,14 +271,36 @@ describe('a large checkout written by several Git processes', () => {
     expect(run(ws.path, ['status', '--porcelain'])).toBe('');
   }, 120_000);
 
-  it('fails the creation when a process cannot write its stretch, and writes the whole checkout when asked again', async () => {
+  it('gives a stretch to another process when the one that had it was killed, and the checkout is whole', async () => {
+    const h = await fixture(); const commit = varied(h.repo, h.base, h.dir);
+    let seen = 0;
+    h.held.fail(args => args.includes('checkout-index') && [5, 9].includes(++seen), 'killed');
+    const ws = await h.op<WorkspaceBinding>('create', 'big', { base: commit });
+    expect(seen).toBe(Math.ceil((MANY.length + 6) / 500) + 2);
+    expect(run(ws.path, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+    expect(run(ws.path, ['ls-files', '--debug']).match(/^ {2}mtime: 0:0$/gm)).toBeNull();
+    // What the processes gave back is how the checkout is known to be whole: its files are not all read again.
+    expect(h.held.in(ws.path).some(args => args.includes('status'))).toBe(false);
+  }, 120_000);
+
+  it.each([['fails', 'no space left on device'], ['killed', 'Git checkout-index failed: killed by SIGKILL']] as const)(
+    'fails the creation when a stretch %s however often it is tried, and writes the whole checkout when asked again', async (how, reason) => {
     const h = await fixture(); const commit = varied(h.repo, h.base, h.dir);
     let full = true, seen = 0;
-    h.held.fail(args => full && args.includes('checkout-index') && ++seen === 5);
-    await expect(h.op('create', 'big', { base: commit })).rejects.toThrow('no space left on device');
+    h.held.fail(args => full && args.includes('checkout-index') && Boolean(++seen), how);
+    await expect(h.op('create', 'big', { base: commit })).rejects.toThrow(reason);
+    // The first stretch to fail three times ends the checkout; the others were stopped or never started.
+    expect(seen).toBeGreaterThanOrEqual(3);
     full = false;
     const ws = await h.op<WorkspaceBinding>('create', 'big', { base: commit });
     expect(run(ws.path, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
     expect(run(ws.path, ['ls-files']).split('\n').filter(Boolean)).toHaveLength(MANY.length + 6);
+  }, 120_000);
+
+  it('does not take a process at its word that wrote no file', async () => {
+    const h = await fixture(); const commit = varied(h.repo, h.base, h.dir);
+    let seen = 0;
+    h.held.fail(args => args.includes('checkout-index') && ++seen === 3, 'idle');
+    await expect(h.op('create', 'big', { base: commit })).rejects.toThrow('did not write every file');
   }, 120_000);
 });
