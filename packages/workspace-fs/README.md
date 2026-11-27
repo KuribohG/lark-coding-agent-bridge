@@ -100,7 +100,7 @@ Everything that describes a workspace's changes is on disk. The daemon's memory 
 ## What differs from a plain checkout
 
 - No hard links (`link` fails with `EPERM`).
-- Renaming a directory that shows files of the commit fails with `EXDEV`, as a rename across filesystems; `mv` then copies and deletes. Directories the workspace made itself (build output) are renamed in place.
+- Renaming a directory that shows files of the commit fails with `EXDEV`, as a rename across filesystems; `mv` then copies and deletes. `git mv` of such a directory fails (`Invalid cross-device link`), since Git does not copy: `mv` followed by `git add -A <old> <new>` stages the same renames. Directories the workspace made itself (build output) are renamed in place.
 - Files of the commit have the modes 0644 and 0755; directories of the commit are 0755. A file no move has changed has the time 2020-01-01. A file that a `set_base` changed has the time of that move, as a file Git checks out has the time it was written, so a build makes again what it made from it. A file the workspace held that the new commit holds just so keeps the time it had.
 - Submodules show as empty directories.
 - Names beginning `.wsfs-` cannot be created; the daemon uses them inside `upper/`.

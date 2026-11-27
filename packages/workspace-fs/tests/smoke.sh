@@ -95,6 +95,7 @@ same "copies and in-place edits"
 both 'exec 3< src/f11.txt; rm src/f11.txt; cat <&3 > kept-open.txt; exec 3<&-; echo y > src/f12.txt.tmp; mv src/f12.txt.tmp src/f12.txt'
 same "read after unlink, replace by rename"
 check "renaming a directory of the commit is refused as across filesystems" sh -c '! python3 -c "import os,sys; os.rename(sys.argv[1], sys.argv[2])" src/deep src/deep2 2>/dev/null'
+check "git mv of such a directory fails, as Git does not copy" sh -c 'LC_ALL=C git mv bin bin2 2>&1 | grep -q cross-device'
 both 'mv src/deep src/deep2'
 same "mv falls back to copy and delete"
 
