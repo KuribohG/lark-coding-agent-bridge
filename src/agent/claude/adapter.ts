@@ -261,7 +261,7 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: opts.cwd,
       env: this.buildSpawnEnv(opts.env),
       stdio: ['pipe', 'pipe', 'pipe'],
-    }, { agent: this.id, deadlineAt: opts.deadlineAt, host: opts.host, execSandbox: opts.execSandbox }) as ClaudeChild;
+    }, { agent: this.id, deadlineAt: opts.deadlineAt, host: opts.host, execSandbox: opts.execSandbox, signalCell: opts.signalCell }) as ClaudeChild;
     const hosted = hostedProcessOf(child);
 
     log.info('agent', opts.host?.attach ? 'attach' : 'spawn', {

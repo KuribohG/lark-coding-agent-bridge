@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -18,6 +19,7 @@ import {
 } from '../../src/agent/run-host';
 import type { AgentEvent, AgentRun } from '../../src/agent/types';
 import { runHostRootFor } from '../helpers/run-hosts';
+import { signalCellSupport } from '../helpers/signal-cells';
 import { createTmpProfile, type TmpProfile } from '../helpers/tmp-profile';
 
 // A stream-json agent that waits for files the test creates, so a run can be
@@ -60,6 +62,14 @@ const WITH_TOOL = `
 import { spawn } from 'node:child_process';
 const tool = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
 writeFileSync(dir + '/tool.pid', String(tool.pid));
+`;
+
+// Appended to FAKE_CLAUDE: tries to kill a process that is not the agent's own, as a careless pkill would.
+const KILLS_A_BYSTANDER = `
+import { readFileSync } from 'node:fs';
+let outcome = 'killed';
+try { process.kill(Number(readFileSync(dir + '/bystander.pid', 'utf8')), 'SIGKILL'); } catch (error) { outcome = error.code; }
+writeFileSync(dir + '/kill.result', outcome);
 `;
 
 // A minimal per-run Codex app-server speaking JSON-RPC over stdio.
@@ -376,6 +386,39 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     const ids = requests.filter(request => typeof request.id === 'number').map(request => request.id);
     expect(new Set(ids).size).toBe(ids.length);
   }, 20_000);
+
+  it.skipIf(signalCellSupport() !== 'ok')('runs a hosted agent in its signal cell, where the host still ends it', async () => {
+    const bystander = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      await writeFile(join(tmp.root, 'bystander.pid'), String(bystander.pid));
+      const adapter = claude(await fakeAgent(FAKE_CLAUDE + WITH_TOOL + KILLS_A_BYSTANDER));
+      const cell = { signalCell: { id: `test:${process.pid}:hosted` }, deadlineAt: Date.now() + 60_000 };
+      // The agent's output crosses the cell and the watchdog inside it, and its stray signal goes nowhere.
+      const finished = await start(adapter, newRunHostKey(), false, cell);
+      await until(() => existsSync(join(tmp.root, 'kill.result')));
+      expect(await readFile(join(tmp.root, 'kill.result'), 'utf8')).toBe('EPERM');
+      expect(alive(bystander.pid!)).toBe(true);
+      await writeFile(join(tmp.root, 'release'), '');
+      expect((await drain(finished)).at(-1)).toEqual({ type: 'done', sessionId: 'sess-host', terminationReason: 'normal' });
+
+      // A stop reaches the agent and what it started through the cell.
+      rmSync(join(tmp.root, 'release'));
+      rmSync(join(tmp.root, 'tool.pid'));
+      const stopped = await start(adapter, newRunHostKey(), false, cell);
+      await next(stopped.events[Symbol.asyncIterator](), 'tool_use');
+      await until(() => existsSync(join(tmp.root, 'tool.pid')));
+      const agent = Number(await readFile(join(tmp.root, 'agent.pid'), 'utf8'));
+      const tool = Number(await readFile(join(tmp.root, 'tool.pid'), 'utf8'));
+      await stopped.stop('cancelled');
+      await until(() => !alive(agent) && !alive(tool));
+
+      // The watchdog's verdict comes out of the cell as it went in: a run past its deadline timed out.
+      const late = await start(adapter, newRunHostKey(), false, { ...cell, deadlineAt: Date.now() + 1500 });
+      expect((await drain(late)).at(-1)).toEqual({ type: 'done', terminationReason: 'timeout' });
+    } finally {
+      bystander.kill('SIGKILL');
+    }
+  }, 30_000);
 
   it('enforces a run deadline inside the host, also while detached', async () => {
     const adapter = claude(await fakeAgent(FAKE_CLAUDE));

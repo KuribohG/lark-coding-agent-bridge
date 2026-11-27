@@ -33,6 +33,7 @@ binaryPath = "claude"
 [workflow]
 train_directory = "/tmp/trains"
 wsfs_state_directory = "~/wsfs-state"
+signal_isolation = false
 [model_services.svc]
 protocol = "responses"
 baseUrl = "https://example.invalid/v1"
@@ -154,6 +155,7 @@ describe('setting registry', () => {
     ['model_services.svc.baseUrl', 'execution'],
     ['secrets.providers.p.source', 'reconnect'],
     ['workflow.train_directory', 'live'],
+    ['workflow.signal_isolation', 'live'],
     ['unknown.key', 'restart'],
   ])('maps TOML path %s to %s', (path, apply) => {
     expect(classifyDocumentPath(path.split('.'))).toBe(apply);

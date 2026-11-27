@@ -275,7 +275,7 @@ export class ConversationRuntime {
         },
         stallMs: () => getRunIdleTimeoutMs(options.config),
         stopGraceMs: () => getAgentStopGraceMs(options.config),
-        placement: () => options.config.workflow,
+        machine: () => options.config.workflow,
       },
       frontend: {
         accepts: origin => typeof (origin as Partial<ConversationIdentity>).actorId === 'string'

@@ -44,6 +44,38 @@ describe('workflow IPC and worker execution', () => {
     expect(state.artifacts.find(a => a.taskId)?.text).toBe('proposal');
     await runtime.kernel.tick(); expect(wakeMain).toHaveBeenCalledWith('real-topic');
     await expect(callWorkflow('read_context', {}, agent.runOptions[0]!.env)).rejects.toThrow('revoked');
+    // A host that names no signal cells leaves its workers unconfined, and tells them nothing about signals.
+    expect(agent.runOptions[0]?.signalCell).toBeUndefined();
+    expect(agent.runOptions[0]?.systemPrompt).not.toContain('Signals:');
+  });
+
+  it('starts every turn of a worker session in the signal cell of that session', async () => {
+    const root: WorkflowRoot = { scopeId: 'cell-topic', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace',
+      policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: { model: 'model' } };
+    const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: '/workspace', cwdRealpath: '/workspace',
+      accessMode: 'full', sandbox: 'danger-full-access', permissionMode: 'bypassPermissions',
+      access: { ok: true, reason: 'allowed-user' }, attachments: [], policyFingerprint: 'policy', expiresAt: Date.now() + 60_000 };
+    const answer = (text: string): AgentEvent[] => [{ type: 'system', threadId: text }, { type: 'final_text', content: text },
+      { type: 'done', terminationReason: 'normal' }];
+    const agent = new FakeAgentAdapter({ id: 'codex', capabilities: { finalAnswer: 'separate-event', input: 'unsupported' },
+      events: [answer('a'), answer('b')] });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 3), activeRuns: new ActiveRuns() });
+    const runtime = createBridgeWorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain: async () => {},
+      signalCell: sessionKey => ({ id: sessionKey, log: '/state/signal-cell.log' }) });
+    await runtime.start(); cleanup.push(() => runtime.close());
+    const main = runtime.bindMain(root.scopeId, 'start');
+    await callWorkflow('run_script', { operationId: randomUUID(), plan: 'Ask two workers.', goal: 'two workers',
+      script: 'return await Promise.all([agent("first",{key:"a"}), agent("second",{key:"b"})]);' }, main.env);
+    main.release();
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).toBe('result_ready'); });
+    const state = runtime.kernel.state(root.scopeId)!;
+    const cells = agent.runOptions.map(options => options.signalCell);
+    // One cell for each session, named like the session, so no two workers share one.
+    expect(cells.map(cell => cell?.id).sort()).toEqual(state.sessions.map(session => `workflow:${state.workflowId}:${session.sessionRef}`).sort());
+    expect(new Set(cells.map(cell => cell?.id)).size).toBe(2);
+    expect(cells.every(cell => cell?.log === '/state/signal-cell.log')).toBe(true);
+    // A worker is told what a refused signal means before it meets one.
+    for (const options of agent.runOptions) expect(options.systemPrompt).toContain('`Operation not permitted` from kill or pkill means');
   });
 
   it('does not take a run held for its background tasks as a stalled worker', async () => {

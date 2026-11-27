@@ -66,7 +66,8 @@ export function startAppServerRun(input: AppServerRunInput): NativeAgentRun {
   const { command, args } = appServerCommand(input);
   const child = spawnAgentProcess(command, args, {
     cwd: opts.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'],
-  }, { agent: 'codex', deadlineAt: opts.deadlineAt, host: opts.host, tag: input.hostTag, execSandbox: opts.execSandbox }) as SpawnedProcessByStdio<Writable, Readable, Readable>;
+  }, { agent: 'codex', deadlineAt: opts.deadlineAt, host: opts.host, tag: input.hostTag, execSandbox: opts.execSandbox,
+    signalCell: opts.signalCell }) as SpawnedProcessByStdio<Writable, Readable, Readable>;
   const hosted = hostedProcessOf(child);
   const state = new AppServerRunState(() => child.stdin.end());
   const { translator } = state;

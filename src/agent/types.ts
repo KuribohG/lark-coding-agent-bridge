@@ -210,6 +210,11 @@ export interface AgentRunOptions {
   rawThinking?: boolean;
   /** Run under a detached run host so a bridge restart can reattach; ignored by adapters without host support. */
   host?: import('./run-host').RunHostBinding;
+  /**
+   * Keep the signals of this run's processes among the runs of one cell; ignored by adapters whose agent does not run
+   * as a process of its own on this machine.
+   */
+  signalCell?: import('../platform/signal-cell').SignalCell;
 }
 
 /** The first stop request owns the cause; transport cleanup must not replace it. */

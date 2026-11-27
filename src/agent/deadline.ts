@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { SpawnOptions } from 'node:child_process';
 import { buildExecSandboxCommand, type ExecSandboxSettings } from '../platform/exec-sandbox';
+import { buildSignalCellCommand, type SignalCell } from '../platform/signal-cell';
 import { spawnProcess } from '../platform/spawn';
 
 // A self-contained host bundle carries its own guard in bin/ beside it; source
@@ -12,10 +13,35 @@ function guardPath() {
   return existsSync(bundled) ? bundled : fileURLToPath(new URL('../bin/deadline-guard.mjs', import.meta.url));
 }
 
-export interface ExecSandboxSpawnOptions {
-  settings?: ExecSandboxSettings | undefined;
+/** What an agent process and everything it starts is held to by the kernel. */
+export interface RunConfinement {
+  /** Landlock write allowlist; see platform/exec-sandbox. */
+  execSandbox?: ExecSandboxSettings | undefined;
   /** Backend id, used to pick the harness state directory that stays writable. */
   agent?: string | undefined;
+  /** The run's signals stay among the runs of this cell; see platform/signal-cell. */
+  signalCell?: SignalCell | undefined;
+}
+
+/**
+ * The command line that starts an agent, from the inside out: the agent in its write sandbox, the watchdog that ends
+ * it at `deadlineAt`, and the signal cell. The cell is outermost so that the watchdog's kills are the cell's own and
+ * a detached job the run leaves behind is adopted by the cell instead of by the watchdog's cleanup.
+ */
+export function agentLaunchCommand(command: string, args: readonly string[], input: {
+  cwd?: string | undefined;
+  env?: NodeJS.ProcessEnv | undefined;
+  deadlineAt?: number | undefined;
+  confinement?: RunConfinement | undefined;
+}): { command: string; args: string[] } {
+  const sandboxed = buildExecSandboxCommand(command, args, {
+    settings: input.confinement?.execSandbox,
+    agent: input.confinement?.agent,
+    cwd: input.cwd,
+    env: input.env ?? process.env,
+  });
+  const guarded = input.deadlineAt === undefined ? sandboxed : deadlineGuardCommand(sandboxed.command, sandboxed.args, input.deadlineAt);
+  return buildSignalCellCommand(guarded.command, guarded.args, { cell: input.confinement?.signalCell });
 }
 
 export function spawnWithDeadline(
@@ -23,25 +49,21 @@ export function spawnWithDeadline(
   args: string[],
   options: SpawnOptions,
   stopAt?: number,
-  execSandbox?: ExecSandboxSpawnOptions,
+  confinement?: RunConfinement,
 ) {
   // Lead a process group on POSIX so terminateChild also reaches the agent's descendants.
   const detached = process.platform !== 'win32';
-  // The sandbox wraps the command before the watchdog does, so the watchdog and
-  // the agent it guards share one Landlock domain.
-  const target = buildExecSandboxCommand(command, args, {
-    settings: execSandbox?.settings,
-    agent: execSandbox?.agent,
+  const target = agentLaunchCommand(command, args, {
     cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
-    env: options.env ?? process.env,
+    env: options.env,
+    deadlineAt: stopAt,
+    confinement,
   });
-  if (stopAt === undefined) return spawnProcess(target.command, target.args, { ...options, detached });
-  const guarded = deadlineGuardCommand(target.command, target.args, stopAt);
-  return spawnProcess(guarded.command, guarded.args, { ...options, detached });
+  return spawnProcess(target.command, target.args, { ...options, detached });
 }
 
 /** The command line that runs `command` under the independent deadline watchdog. */
-export function deadlineGuardCommand(command: string, args: readonly string[], stopAt: number) {
+function deadlineGuardCommand(command: string, args: readonly string[], stopAt: number) {
   if (!Number.isSafeInteger(stopAt) || stopAt <= Date.now()) throw new Error('任务停止时间已过。');
   return { command: process.execPath, args: [guardPath(), String(stopAt), command, ...args] };
 }

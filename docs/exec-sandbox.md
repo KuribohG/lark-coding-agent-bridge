@@ -133,6 +133,9 @@ spawn log carries the agent pid as usual.
   inside a run.
 - **The run host process itself stays outside the domain**; only the agent it
   starts is sandboxed.
+- **Signals are not mediated.** Landlock before ABI 6 (Linux 6.12) cannot scope
+  them; workflow workers get that from [signal isolation](signal-isolation.md),
+  which composes with this sandbox.
 
 ## Working with git
 

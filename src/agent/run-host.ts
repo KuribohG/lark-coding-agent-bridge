@@ -8,9 +8,10 @@ import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { log } from '../core/logger';
-import { buildExecSandboxCommand, type ExecSandboxSettings } from '../platform/exec-sandbox';
+import type { ExecSandboxSettings } from '../platform/exec-sandbox';
+import type { SignalCell } from '../platform/signal-cell';
 import { spawnProcess } from '../platform/spawn';
-import { deadlineGuardCommand, spawnWithDeadline } from './deadline';
+import { agentLaunchCommand, spawnWithDeadline, type RunConfinement } from './deadline';
 
 /**
  * Runs an agent under bin/run-host.mjs instead of as a bridge child. The host
@@ -246,24 +247,22 @@ export function spawnAgentProcess(command: string, args: string[], options: Spaw
   tag?: string;
   /** Landlock allowlist for this run; hosted runs bake it into the spec. */
   execSandbox?: ExecSandboxSettings;
+  /** The cell this run's signals stay in; hosted runs bake it into the spec. */
+  signalCell?: SignalCell;
 }): ChildProcess {
+  const confinement: RunConfinement = { execSandbox: run.execSandbox, agent: run.agent, signalCell: run.signalCell };
   if (!run.host || !runHostsSupported()) {
-    return spawnWithDeadline(command, args, options, run.deadlineAt, { settings: run.execSandbox, agent: run.agent });
+    return spawnWithDeadline(command, args, options, run.deadlineAt, confinement);
   }
   if (run.host.attach) {
     const agent = runHostAgent(run.host.key);
     if (agent !== run.agent) throw new Error(`run host ${run.host.key} belongs to ${agent ?? 'an unknown agent'}, not ${run.agent}`);
     return attachHostedProcess(run.host.key) as unknown as ChildProcess;
   }
-  // The host process itself stays outside the sandbox; the agent it starts inherits it.
-  const target = buildExecSandboxCommand(command, args, {
-    settings: run.execSandbox,
-    agent: run.agent,
-    cwd: options.cwd,
-    env: options.env ?? process.env,
-  });
+  // The host process itself stays outside the sandbox and the cell; the agent it starts is in both.
+  const target = agentLaunchCommand(command, args, { cwd: options.cwd, env: options.env, deadlineAt: run.deadlineAt, confinement });
   return startHostedProcess({ key: run.host.key, command: target.command, args: target.args, cwd: options.cwd, env: options.env,
-    deadlineAt: run.deadlineAt, agent: run.agent, tag: run.tag }) as unknown as ChildProcess;
+    agent: run.agent, tag: run.tag }) as unknown as ChildProcess;
 }
 
 /** The run host behind a process returned by spawnAgentProcess, if any. */
@@ -277,7 +276,6 @@ function startHostedProcess(input: {
   args: readonly string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  deadlineAt?: number;
   agent: string;
   tag?: string;
 }): HostedProcess {
@@ -286,11 +284,8 @@ function startHostedProcess(input: {
   // A retry reuses the key; its previous process has already exited.
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { mode: 0o700 });
-  const target = input.deadlineAt === undefined
-    ? { command: input.command, args: [...input.args] }
-    : deadlineGuardCommand(input.command, input.args, input.deadlineAt);
-  writeFileSync(join(dir, 'spec.json'), JSON.stringify({ ...target, agent: input.agent, ...(input.tag ? { tag: input.tag } : {}),
-    createdAt: Date.now() }), { mode: 0o600 });
+  writeFileSync(join(dir, 'spec.json'), JSON.stringify({ command: input.command, args: [...input.args], agent: input.agent,
+    ...(input.tag ? { tag: input.tag } : {}), createdAt: Date.now() }), { mode: 0o600 });
   const hostLog = openSync(join(dir, 'host.log'), 'a', 0o600);
   let host: ChildProcess;
   try {

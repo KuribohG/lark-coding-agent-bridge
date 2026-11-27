@@ -192,6 +192,7 @@ export class PiAdapter implements AgentAdapter {
         input?.receive(record);
       },
       execSandbox: opts.execSandbox,
+      signalCell: opts.signalCell,
       host: opts.host,
       translator: new PiRunTranslator(opts.answerIncludesInterimText === true, this.bashTimeouts, opts.cwd),
       strictJson: true,

@@ -56,7 +56,7 @@ export const PROFILE_SETTINGS: readonly SettingSpec[] = [
   { path: 'permissions.**', apply: 'execution', toml: 'profiles.<p>.permissions.**' },
   { path: 'execSandbox.**', apply: 'execution', toml: 'profiles.<p>.exec_sandbox.**', note: '新任务使用新的沙箱规则；运行中的任务保持原规则' },
   { path: 'state.**', apply: 'execution', toml: 'state.**' },
-  { path: 'workflow.**', apply: 'live', toml: 'workflow.**', note: '之后新建的列车工作区、新 workflow 的首个 wsfs 工作区使用新目录；已建的留在原处' },
+  { path: 'workflow.**', apply: 'live', toml: 'workflow.**', note: '目录：之后新建的列车工作区、新 workflow 的首个 wsfs 工作区使用新目录，已建的留在原处；signal_isolation：之后启动的 worker 进程生效，已在运行的不变' },
   { path: 'claude.**', apply: 'execution', toml: 'agents.claude.launch / profiles.<p>.launch' },
   { path: 'codex.**', apply: 'execution', toml: 'agents.codex.launch / profiles.<p>.launch', note: 'Codex daemon 环境变化在空闲时重启 daemon' },
   { path: 'pi.**', apply: 'execution', toml: 'agents.pi.launch / profiles.<p>.launch' },

@@ -31,7 +31,7 @@ export function createLarkWorkflowHost(deps: LarkWorkflowHostDeps): LarkWorkflow
     modelSettings: (scope, agentKind, patch) => resolveRunModelSettings(controls, scope, patch, agentKind),
     stallMs: () => getRunIdleTimeoutMs(controls.profileConfig),
     stopGraceMs: () => getAgentStopGraceMs(controls.cfg),
-    placement: () => controls.profileConfig.workflow,
+    machine: () => controls.profileConfig.workflow,
   }, frontend: {
     accepts: origin => typeof (origin as Partial<NormalizedMessage>).chatId === 'string',
     reply: async (message, text) => {

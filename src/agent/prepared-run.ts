@@ -10,6 +10,7 @@ export function snapshotRunOptions(options: AgentRunOptions): AgentRunOptions {
     ...(options.additionalDirs ? { additionalDirs: Object.freeze([...options.additionalDirs]) } : {}),
     ...(options.modelProvider ? { modelProvider: structuredClone(options.modelProvider) } : {}),
     ...(options.host ? { host: Object.freeze({ ...options.host }) } : {}),
+    ...(options.signalCell ? { signalCell: Object.freeze({ ...options.signalCell }) } : {}),
   });
 }
 

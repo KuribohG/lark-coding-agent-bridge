@@ -3,6 +3,7 @@ import { sendRunInput } from '../../agent/execution';
 import type { RunStopReason } from '../../agent/types';
 import { newRunHostKey, probeRunHost, runHostAgent, runHostsSupported, terminateRunHost } from '../../agent/run-host';
 import { log } from '../../core/logger';
+import type { SignalCell } from '../../platform/signal-cell';
 import { spawnProcess } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
 import type { RunPolicyAllow } from '../../policy/run-policy';
@@ -30,6 +31,12 @@ export interface BridgeWorkflowRuntimeDeps extends Pick<WorkflowRuntimeDeps,
   allowHostManaged?: boolean;
   /** How long past its own time limit a tool call may stay out before it is reported overdue; two minutes when omitted. */
   toolOverdueGraceMs?: number;
+  /**
+   * The signal cell for the runs of one worker session, keyed like its scratch directory, so that a worker can stop
+   * what its own earlier turns started and nothing of anyone else's. Workers run unconfined when this is omitted or
+   * returns undefined.
+   */
+  signalCell?(sessionKey: string): SignalCell | undefined;
 }
 
 // The engine and the bridge share one stop vocabulary; keep them aligned.
@@ -41,6 +48,13 @@ void sameStopReasons;
  * to stop the call, collect its output and report the result.
  */
 const TOOL_OVERDUE_GRACE_MS = 2 * 60_000;
+
+/**
+ * What a worker given a signal cell is told, so that a refused signal is read as someone else's process and not as a
+ * fault to work around. It holds as well for an agent whose adapter cannot put it in a cell.
+ */
+const SIGNAL_CELL_NOTE = '\nSignals: `Operation not permitted` from kill or pkill means the target is not a process you started, '
+  + 'in this turn or an earlier one, but another worker\'s or the system\'s. Leave it running, and say so in your result if it blocks your task.';
 
 /** Workers run under bin/run-host.mjs like conversation turns, so a bridge restart reattaches instead of rerunning them. */
 const runHosting: WorkerHosting = {
@@ -82,11 +96,12 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
       const forward = () => controller.abort(new RunStopped(stopReasonOf(spec.signal)));
       spec.signal.addEventListener('abort', forward, { once: true });
       if (spec.signal.aborted) forward();
+      const cell = deps.signalCell?.(spec.sessionKey);
       let submitted;
       try {
         submitted = await deps.executor.submit({
           scopeId: spec.sessionKey, agentScopeId: root.scopeId, agentKind, requireFinalAnswer: true,
-          priority: 'background', env: spec.env, systemPrompt: spec.systemPrompt,
+          priority: 'background', env: spec.env, systemPrompt: cell ? spec.systemPrompt + SIGNAL_CELL_NOTE : spec.systemPrompt,
           validateBeforeRun: async () => {
             const admitted = await workerGrant(root, execution);
             if (workflowDigest(admitted.execution) !== workflowDigest(execution)) throw new Error('Worker binding changed while queued');
@@ -96,6 +111,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
             policyFingerprint: workflowDigest({ policy: current.policy.policyFingerprint, workspace: workspace.id, root: workspace.rootDigest }) } : {}), prompt: spec.prompt },
           ...(spec.resume ? { [spec.resume.kind]: spec.resume.id } : {}),
           ...(spec.host ? { host: spec.host } : {}),
+          ...(cell ? { signalCell: cell } : {}),
           // Efforts were validated by bridgeWorkerPolicy when the selection was parsed.
           ...execution.modelSettings as ModelSettings,
           deadlineAt: spec.deadlineAt, signal: controller.signal,

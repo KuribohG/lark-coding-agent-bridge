@@ -12,6 +12,7 @@ import { agentFailureKind } from '../agent/execution';
 import type { ResolvedModelProvider } from '../model-provider/types';
 import type { AgentKind } from '../config/profile-schema';
 import type { RunHostBinding } from '../agent/run-host';
+import type { SignalCell } from '../platform/signal-cell';
 
 export interface RunExecutorDeps {
   /** Resolve the adapter from the originating chat/topic scope for each run. */
@@ -72,6 +73,8 @@ export interface SubmitRunInput {
   rawThinking?: boolean;
   /** Keep the native process alive across bridge restarts under this run host. */
   host?: RunHostBinding;
+  /** Keep the signals of the run's processes among the runs of this cell. */
+  signalCell?: SignalCell;
   nowait?: boolean;
   observability?: {
     profile: string;
@@ -393,6 +396,7 @@ export class RunExecutor {
       answerIncludesInterimText: input.answerIncludesInterimText,
       ...(input.rawThinking ? { rawThinking: true } : {}),
       host: input.host,
+      signalCell: input.signalCell,
     });
     let prepared: PreparedAgentRun;
     try {

@@ -15,7 +15,7 @@ import { isTable } from './table';
 import { larkDisplay } from './lark-display';
 import { modelGateTable, normalizeModelGate } from '../model-gate/config';
 import { modelServiceName } from '../model-service/config';
-import { parseWorkflowTable, workflowTable } from '../workflows/placement';
+import { parseWorkflowTable, workflowTable } from '../workflows/machine';
 import { validateLarkNetwork } from './lark-network';
 import { SLACK_DISPLAY_DEFAULTS, WEB_DISPLAY_DEFAULTS } from './channel-display';
 import { normalizeFileLinks } from './file-links';
@@ -40,7 +40,7 @@ export interface ConfigDocument extends Table {
   channels?: Table;
   /** Bridge-wide model-provider limits; see docs/model-gate.md. */
   gate?: Table;
-  /** Bridge-wide placement of what workflows write outside the members' worktrees. */
+  /** Bridge-wide: what workflows are told about the machine the bridge runs on. */
   workflow?: Table;
   profiles: Record<string, Table>;
   /** Read only by `up` / `down`; a running bridge ignores it. */

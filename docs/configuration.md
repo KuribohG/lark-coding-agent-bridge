@@ -216,20 +216,23 @@ Edits are picked up on reload; in-flight permits keep their old limits. See
 [Model gate](model-gate.md) for the permit lifecycle, failure behaviour and the
 `/status` endpoint.
 
-## Workflow placement
+## Workflows and the machine
 
 ```toml
 [workflow]
 # train_directory = "/tmp/lark-wf-trains"      # default: beside the members' worktrees
 # wsfs_state_directory = "/local/wsfs-state"   # default: beside each wsfs mount
+# signal_isolation = false                     # default: true
 ```
 
-Where workflows put what need not be beside the members' worktrees. Both are directories of the machine the bridge runs on, absolute or under `~/`, so the table is bridge-wide and every profile shares it. Use them when the worktrees are on a network filesystem and the machine has a local disk.
+What workflows are told about the machine the bridge runs on, so the table is bridge-wide and every profile shares it. The two directories, absolute or under `~/`, are where workflows put what need not be beside the members' worktrees. Use them when the worktrees are on a network filesystem and the machine has a local disk.
 
 - `train_directory`: the landing queue's own worktree, where the `checks` of a landing run, is made at `<train_directory>/<workflow-id>/train-<repository>` as a plain Git worktree, whatever kind the members' workspaces are. The checks then build at the speed of that disk. Nothing in it has to survive: when the directory is gone, as after the machine was replaced, the next train checks the commit out again. See [Claim, fix and land](workflows.md#claim-fix-and-land).
 - `wsfs_state_directory`: what `wsfs` workspaces change is kept at `<wsfs_state_directory>/<workflow-id>/wsfs-<repository>/`. Members' uncommitted work is there, so a directory that does not survive the machine loses it. See [wsfs workspaces](workflow-worktrees.md).
 
-Edits are picked up on reload. A train made before the edit stays where it is until its workflow is cleaned up and the next train is made in the new place; a wsfs mount keeps the place it recorded when its first workspace was made.
+- `signal_isolation`: on Linux each worker runs in a cell of its own, where its processes can signal each other and nothing else, so a member's `pkill` cannot reach another member's build. `false` starts workers as plain processes; do that for workers that must run setuid programs such as `sudo` or `fusermount3`. See [Signal isolation](signal-isolation.md).
+
+Edits are picked up on reload. A train made before the edit stays where it is until its workflow is cleaned up and the next train is made in the new place; a wsfs mount keeps the place it recorded when its first workspace was made; a worker process that is already running keeps the confinement it started with.
 
 ## Inspecting and editing
 

@@ -1,6 +1,6 @@
 import type { AgentLaunchConfig } from '../agent/launch-options';
 import type { AgentStateSettings } from '../agent/state-layout';
-import type { WorkflowPlacement } from '../workflows/placement';
+import type { WorkflowMachineSettings } from '../workflows/machine';
 import { normalizeExecSandbox, type ExecSandboxSettings } from '../platform/exec-sandbox';
 import { normalizeFileLinks } from './file-links';
 import type {
@@ -104,7 +104,7 @@ export interface AgentExecutionProfile extends AgentLaunchProfiles {
   /** Bridge-wide `[state]` settings, shared by every profile and engine. */
   state?: AgentStateSettings;
   /** Bridge-wide `[workflow]` settings, shared by every profile. */
-  workflow?: WorkflowPlacement;
+  workflow?: WorkflowMachineSettings;
   permissions: PermissionConfig;
   /** Kernel-level (Landlock) exec sandbox; absent means disabled. */
   execSandbox?: ExecSandboxSettings;
@@ -168,7 +168,7 @@ export interface RootConfig {
   /** Bridge-wide model-provider limits; one bucket per provider across all profiles. */
   modelGate?: import('../model-gate/config').ModelGateConfig;
   /** Bridge-wide `[workflow]` table; also copied into every profile as `workflow`. */
-  workflow?: WorkflowPlacement;
+  workflow?: WorkflowMachineSettings;
   secrets?: SecretsConfig;
   profiles: Record<string, ProfileConfig>;
 }
@@ -214,7 +214,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     comments?: unknown;
     larkCli?: unknown;
     state?: AgentStateSettings;
-    workflow?: WorkflowPlacement;
+    workflow?: WorkflowMachineSettings;
     exec_sandbox?: unknown;
   };
 

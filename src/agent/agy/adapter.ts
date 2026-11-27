@@ -191,7 +191,7 @@ export class AgyAdapter implements AgentAdapter {
       cwd: options.cwd!, env: spawnEnv,
       stdin: `${JSON.stringify({ event: 'user', message: { content } })}\n`,
       translator: new AgyStreamTranslator(options.answerIncludesInterimText === true), strictJson: true,
-      deadlineAt: options.deadlineAt, execSandbox: options.execSandbox, stopGraceMs: options.stopGraceMs ?? 1000, stopSignal: 'SIGINT',
+      deadlineAt: options.deadlineAt, execSandbox: options.execSandbox, signalCell: options.signalCell, stopGraceMs: options.stopGraceMs ?? 1000, stopSignal: 'SIGINT',
     }), this.capabilities);
   }
 }

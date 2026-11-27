@@ -375,20 +375,21 @@ binaryPath = "/opt/pi"
     expect(execution.pi?.binaryPath).toBe('/opt/pi');
   });
 
-  it('shares the workflow placement table with every profile and round-trips it', () => {
+  it('shares the workflow table with every profile and round-trips it', () => {
     const doc = parseDocument(source + `
 [workflow]
 train_directory = "/tmp/trains"
 wsfs_state_directory = "~/wsfs-state"
+signal_isolation = false
 `);
     const root = documentToRoot(doc);
-    const placement = { trainDirectory: '/tmp/trains', wsfsStateDirectory: '~/wsfs-state' };
+    const placement = { trainDirectory: '/tmp/trains', wsfsStateDirectory: '~/wsfs-state', signalIsolation: false };
     expect(root.workflow).toEqual(placement);
     for (const profile of Object.values(root.profiles)) expect(profile.workflow).toEqual(placement);
     // A host without messaging credentials resolves the same table.
     expect(resolveExecutionProfile(doc, 'codex', { profile: 'bot' }).workflow).toEqual(placement);
     const written = parse(formatDocument(rootToDocument(root)));
-    expect(written.workflow).toEqual({ train_directory: '/tmp/trains', wsfs_state_directory: '~/wsfs-state' });
+    expect(written.workflow).toEqual({ train_directory: '/tmp/trains', wsfs_state_directory: '~/wsfs-state', signal_isolation: false });
     for (const profile of Object.values(written.profiles as Record<string, object>)) expect(profile).not.toHaveProperty('workflow');
     // Without the table nothing is written, and nothing is set.
     expect(documentToRoot(parseDocument(source)).workflow).toBeUndefined();
@@ -396,6 +397,11 @@ wsfs_state_directory = "~/wsfs-state"
     expect(() => parseDocument(source + '\n[workflow]\ntrain_dir = "/tmp/x"\n')).toThrow('workflow.train_dir: unknown setting');
     expect(() => parseDocument(source + '\n[workflow]\ntrain_directory = "relative/x"\n')).toThrow('workflow.train_directory: expected an absolute or ~/ path');
     expect(() => parseDocument(source + '\n[workflow]\nwsfs_state_directory = ""\n')).toThrow('workflow.wsfs_state_directory: expected a nonempty path');
+    expect(() => parseDocument(source + '\n[workflow]\nsignal_isolation = "off"\n')).toThrow('workflow.signal_isolation: expected boolean');
+    // Saying it is on is kept as said, apart from the directories.
+    const on = documentToRoot(parseDocument(source + '\n[workflow]\nsignal_isolation = true\n'));
+    expect(on.workflow).toEqual({ signalIsolation: true });
+    expect(parse(formatDocument(rootToDocument(on))).workflow).toEqual({ signal_isolation: true });
   });
 
   it('keeps the workflow placement through an unrelated save and applies an edit of it without a restart', async () => {
@@ -409,10 +415,12 @@ wsfs_state_directory = "~/wsfs-state"
     const state = view((await loadRootConfig(path))!.profiles.bot!);
     await patchConfig(path, ['workflow', 'train_directory'], '/tmp/elsewhere');
     await patchConfig(path, ['workflow', 'wsfs_state_directory'], '/tmp/state');
+    await patchConfig(path, ['workflow', 'signal_isolation'], false);
     expect((await reload(state, path)).pending).toEqual([]);
-    expect(state.profileConfig.workflow).toEqual({ trainDirectory: '/tmp/elsewhere', wsfsStateDirectory: '/tmp/state' });
+    expect(state.profileConfig.workflow).toEqual({ trainDirectory: '/tmp/elsewhere', wsfsStateDirectory: '/tmp/state', signalIsolation: false });
     await patchConfig(path, ['workflow', 'train_directory'], undefined);
     await patchConfig(path, ['workflow', 'wsfs_state_directory'], undefined);
+    await patchConfig(path, ['workflow', 'signal_isolation'], undefined);
     expect((await reload(state, path)).pending).toEqual([]);
     expect(state.profileConfig.workflow ?? {}).toEqual({});
   });

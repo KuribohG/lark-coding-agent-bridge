@@ -2,6 +2,7 @@ import type { Readable, Writable } from 'node:stream';
 import { log } from '../core/logger';
 import { terminateChild } from '../platform/terminate';
 import type { ExecSandboxSettings } from '../platform/exec-sandbox';
+import type { SignalCell } from '../platform/signal-cell';
 import type { SpawnedProcessByStdio } from '../platform/spawn';
 import { readJsonLines } from './jsonl';
 import { hostedProcessOf, spawnAgentProcess, type RunHostBinding } from './run-host';
@@ -42,6 +43,8 @@ export function startProcessRun(input: {
   deadlineAt?: number;
   /** Landlock allowlist for this run; the whole process tree inherits it. */
   execSandbox?: ExecSandboxSettings;
+  /** The cell this run's signals stay in. */
+  signalCell?: SignalCell;
   /**
    * Run under a detached run host, or attach to the process already running under it. A reattached run replays the
    * output the previous bridge process did not see; an agent that reads input while it runs also keeps accepting it.
@@ -57,7 +60,7 @@ export function startProcessRun(input: {
   try {
     child = spawnAgentProcess(input.command, input.args, {
       cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'],
-    }, { agent: input.agent, deadlineAt: input.deadlineAt, host: input.host, execSandbox: input.execSandbox }) as Child;
+    }, { agent: input.agent, deadlineAt: input.deadlineAt, host: input.host, execSandbox: input.execSandbox, signalCell: input.signalCell }) as Child;
   } catch (error) {
     input.cleanup?.();
     throw error;
