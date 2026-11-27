@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { callWorkflow, WorkflowRuntime } from '../src';
+import { LandingRecords } from '../src/dashboard/landing';
+import { landing as landingPanel } from '../src/dashboard/views';
 import { WorkflowKernel } from '../src/engine/kernel';
 import { replaceWorkflowState } from '../src/engine/kernel-store';
 import { submittedCommits } from '../src/engine/work-queue';
@@ -728,6 +730,58 @@ describe('taking a submission out of the queue', () => {
     } else expect((await Promise.all(rest)).map(report => report.status)).toEqual(['landed', 'landed']);
     expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).toContain('a.txt');
   }, 60_000);
+});
+
+describe('the landing queue as someone outside the service sees it', () => {
+  it('writes what waits and what the train is doing whenever the queue changes', async () => {
+    const h = await fixture();
+    await h.configure([h.logged('', true)]);
+    const records = new LandingRecords(join(h.dir, 'workspaces.sqlite'));
+    closes.push(async () => records.close());
+    const read = () => records.read(h.state.workflowId, 10);
+    expect(read()).toMatchObject({ landing: { batch: expect.any(Number) }, heads: [], live: [], trains: [] });
+    const members = await Promise.all(['a', 'b', 'c'].map(name => h.member(name))), [a, b, c] = members;
+    await Promise.all(members.map((member, index) => member.commit(`file-${index}.txt`, 'x\n')));
+    // The first train is held at its check while two more submissions join the queue behind it.
+    const before = records.version(), first = a!.land();
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(1), { timeout: 20_000, interval: 20 });
+    const rest = [b!.land(), c!.land()];
+    await vi.waitFor(() => expect(h.waiting()).toBe(2), { timeout: 20_000, interval: 20 });
+    expect(records.version()).not.toBe(before);
+    const held = read().live;
+    // The branch does not exist before the first landing, so this train has no head to name as its base.
+    expect(held).toMatchObject([{ repository: h.repo, at: expect.any(Number), train: { since: expect.any(Number), step: 'checking', base: null, checks: [], checking: { submissions: 1, since: expect.any(Number) },
+      riders: [{ key: 'item-a', member: 'a', workspace: a!.ws.id, headCommit: a!.submitted().headCommit, commits: 1, since: expect.any(Number), state: 'stacked' }] } }]);
+    expect(held[0]!.waiting.map(rider => rider.key).sort()).toEqual(['item-b', 'item-c']);
+    expect(held[0]!.waiting[0]).toMatchObject({ commits: 1, since: expect.any(Number), headCommit: expect.any(String) });
+    await writeFile(h.gate, '');
+    expect((await Promise.all([first, ...rest])).map(report => report.status)).toEqual(['landed', 'landed', 'landed']);
+    // Nothing waits and no train runs: the record says so, and what the trains did is in the ledger beside it.
+    await vi.waitFor(() => expect(read().live).toMatchObject([{ repository: h.repo, waiting: [] }]), { timeout: 20_000, interval: 20 });
+    const after = read();
+    expect(after.live[0]!.train).toBeUndefined();
+    expect(after.heads).toEqual([{ targetRef: after.landing!.targetRef, head: await h.head(), repository: h.repo }]);
+    expect(after.trains.map(train => train.submissions.length)).toEqual([2, 1]);
+    // The dashboard's view of it.
+    const panel = landingPanel(h.state, after);
+    expect(panel).toMatchObject({ configured: true, batch: after.landing!.batch, submitted: [], returned: [], overridden: [] });
+    expect(panel.branches).toMatchObject([{ repository: h.repo, landed: await h.head(), firstBlamed: 0, live: { waiting: [] }, totals: { trains: 2, checks: 2, landed: 3, turnedBack: 0 },
+      trains: [{ submissions: 2, landed: 2, next: 0, outcome: 'done', stacked: 2, turnedBack: [], checks: [{ submissions: 2, passed: true }] }, { submissions: 1, landed: 1 }] }]);
+  });
+
+  it('holds no queue of a service that is gone', async () => {
+    const h = await fixture();
+    await h.configure();
+    const member = await h.member('a'); await member.commit('a.txt', 'x\n');
+    expect(await member.land()).toMatchObject({ status: 'landed' });
+    const path = join(h.dir, 'workspaces.sqlite'), records = new LandingRecords(path);
+    closes.push(async () => records.close());
+    await vi.waitFor(() => expect(records.read(h.state.workflowId, 1).live).toHaveLength(1), { timeout: 20_000, interval: 20 });
+    await h.manager.close();
+    const next = new WorkflowWorkspaces(path, join(h.dir, 'worktrees'));
+    closes.push(() => next.close());
+    expect(records.read(h.state.workflowId, 1)).toMatchObject({ live: [], trains: [{ outcome: 'done' }] });
+  });
 });
 
 describe('the landing ledger', () => {

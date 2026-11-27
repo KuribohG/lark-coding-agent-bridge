@@ -10,7 +10,7 @@ import { largeCheckout, writeCheckout, type CheckoutGit } from './workspace-chec
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import { WsfsMounts, type WsfsOwner } from './workspace-wsfs';
 import type { WorkflowProcesses } from './ports';
-import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingTrain, LandingView, LandLabel, LandPosition, LandReport, LandSubmitted, LandWithdrawal, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandingChange, LandingHead, LandingLive, LandingOverride, LandingRefusal, LandingRider, LandingTrain, LandingView, LandLabel, LandPosition, LandReport, LandSubmitted, LandWithdrawal, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
@@ -83,6 +83,8 @@ const largeCheckouts = new Slots(WORKSPACE_LARGE_CHECKOUTS);
 
 /** A submission waiting for a train: the member's commits `base..head`, already rebased onto the branch as it was then. */
 interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits: number; ctx: WorkspaceContext; resolve(report: LandReport): void; reject(error: unknown): void;
+  /** When it joined the queue. */
+  queued: number;
   /** Takes what the main agent should hear about the branch while the submission waits (see `LandInput`). */
   noticed?: (notice: string, halted: boolean) => void;
   /** The queue has answered it; a train that runs again leaves it out. `outcome` is the status it was answered with, or `failed`. */
@@ -108,7 +110,9 @@ interface TrainTrouble { failures: number; since: number; reason: string; repeat
 interface TrainRun { batch: Candidate[]; since: number; step: 'stacking' | 'checking' | 'landing'; checks: number;
   stack: Candidate[]; stop: AbortController; probes: LandingTrain['checks']; base?: string | null; head?: string;
   /** The digest of the check commands it ran: how long a check usually takes is only said of runs under the same ones. */
-  checked?: string }
+  checked?: string;
+  /** The run of the checks that is going on, for whoever watches the queue (see `LandingLive`). */
+  checking?: { submissions: number; since: number } }
 interface Train { queue: Candidate[]; running: boolean; trouble?: TrainTrouble; current?: TrainRun;
   /** The halt the train waits out, as the main agent was told of it. */
   halted?: string;
@@ -184,6 +188,8 @@ export class WorkflowWorkspaces {
   private readonly wanted = new Map<string, Map<string, number>>();
   /** How many callers are waiting for each worktree's files right now. */
   private readonly awaited = new Map<string, number>();
+  /** What `mirror` last wrote for each train, and whose queue it is once the train holds no submission to tell by. */
+  private readonly lives = new Map<string, { workflow: string; repository: string; data: string }>();
   private closed = false;
   private readonly timing: TrainTiming;
   /** The workspaces that wsfs serves from the object database, for `isolation: "wsfs"`. */
@@ -209,6 +215,10 @@ export class WorkflowWorkspaces {
     this.db.exec(`CREATE TABLE IF NOT EXISTS landing_trains (
       id INTEGER PRIMARY KEY AUTOINCREMENT, workflow TEXT NOT NULL, repository TEXT NOT NULL, since INTEGER NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS landing_trains_by_repository ON landing_trains(workflow, repository, id);`);
+    // The landing queues as they stand (see `LandingLive`). A queue does not outlive its service, so none stands now.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS landing_live (
+      workflow TEXT NOT NULL, repository TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workflow, repository));
+      DELETE FROM landing_live;`);
     // The daemons of wsfs workspaces outlive this service and are looked after by whichever one runs.
     const served = this.db.prepare("SELECT data FROM workspace_records WHERE kind='workspace' AND json_extract(data,'$.isolation')='wsfs' AND COALESCE(json_extract(data,'$.status'),'')!='removed'").all() as Array<{ data: string }>;
     for (const row of served) this.mounts.know(JSON.parse(row.data) as WorkspaceBinding);
@@ -1165,13 +1175,13 @@ export class WorkflowWorkspaces {
   }
 
   /** Queues a submission for the next train of its workflow and repository; settles when a train has dealt with it. */
-  private board(change: Omit<Candidate, 'resolve' | 'reject'>): Promise<LandReport> {
+  private board(change: Omit<Candidate, 'resolve' | 'reject' | 'queued'>): Promise<LandReport> {
     const key = `${change.ws.workflowId}:${change.ws.commonDir}`, { signal } = change.ctx;
     const train: Train = this.trains.get(key) ?? { queue: [], running: false }, { queue } = train;
     this.trains.set(key, train);
     return new Promise<LandReport>((resolve, reject) => {
       // A member whose turn ended leaves the queue; once on a train its work lands or fails with the rest.
-      const leave = () => { const at = queue.indexOf(candidate); if (at >= 0) { queue.splice(at, 1); reject(signal.reason); } };
+      const leave = () => { const at = queue.indexOf(candidate); if (at >= 0) { queue.splice(at, 1); reject(signal.reason); this.mirror(key); } };
       const settled = <T>(settle: (value: T) => void, outcome: (value: T) => string) => (value: T) => {
         if (candidate.settled) return;
         candidate.settled = true; candidate.outcome = outcome(value); signal.removeEventListener('abort', leave); settle(value);
@@ -1180,9 +1190,10 @@ export class WorkflowWorkspaces {
         const dropped = this.git(change.ws.repository, ['update-ref', '-d', this.workRef(change.ws, change.head)], new AbortController().signal, true).then(() => {}, () => {});
         this.pending.add(dropped); void dropped.finally(() => this.pending.delete(dropped));
       };
-      const candidate: Candidate = { ...change, resolve: settled<LandReport>(resolve, report => report.status), reject: settled<unknown>(reject, () => 'failed') };
+      const candidate: Candidate = { ...change, queued: Date.now(), resolve: settled<LandReport>(resolve, report => report.status), reject: settled<unknown>(reject, () => 'failed') };
       signal.addEventListener('abort', leave, { once: true });
       queue.push(candidate);
+      this.mirror(key);
       if (!train.running) {
         train.running = true;
         const driving = this.drive(key, train); this.pending.add(driving);
@@ -1199,6 +1210,7 @@ export class WorkflowWorkspaces {
         const landing = this.landing(train.queue[0]!.ws.workflowId);
         const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
         const run: TrainRun = train.current = { batch, since: Date.now(), step: 'stacking', checks: 0, stack: [], stop: new AbortController(), probes: [] };
+        this.mirror(key);
         try {
           if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
           if (train.trouble) await this.mend(batch[0]!.ws, train.trouble).catch(() => undefined);
@@ -1240,12 +1252,14 @@ export class WorkflowWorkspaces {
           this.logTrain(run, 'failed', error);
         }
       });
+      this.mirror(key);
       // The worktree is free while the train waits, so the main agent can settle the branch or change the checks.
       if (wait) { await this.pause(wait, wake => { train.wake = wake; }); train.wake = undefined; }
     }
     for (const candidate of train.queue.splice(0)) candidate.reject(this.stopping.signal.reason);
     train.running = false;
     if (this.trains.get(key) === train) this.trains.delete(key);
+    this.mirror(key);
   }
   /**
    * How long the train waits before it runs again with the same submissions, or nothing when they get the failure.
@@ -1437,11 +1451,13 @@ export class WorkflowWorkspaces {
       else if (head === start) candidate.resolve(told({ status: 'conflict', targetRef, targetCommit: start, detail: stacked.conflict }));
       else again.add(candidate);
     }
+    this.mirror(key);
     const withdrawn = () => { if (run.stop.signal.aborted) throw new Restacked('A submission was withdrawn from the train'); };
     /** Runs the checks on `commit`, the stack after `count` submissions, and writes the run down for the ledger. */
     const check = async (commit: string, count: number): Promise<CheckFailure | undefined> => {
       withdrawn();
-      run.step = 'checking'; run.checks++;
+      run.step = 'checking'; run.checks++; run.checking = { submissions: count, since: Date.now() };
+      this.mirror(key);
       await at(commit);
       const began = Date.now(), watched = this.timed(landing, ws, run, count);
       const noted = (failed?: CheckFailure, stopped?: unknown) => {
@@ -1449,6 +1465,8 @@ export class WorkflowWorkspaces {
         run.probes.push({ submissions: count, headCommit: commit, ms: Date.now() - began, passed: !failed && !stopped, ...(watched() ? { slow: true as const } : {}),
           ...(broke ? { command: broke.argv.join(' ').slice(0, 200), code: broke.code } : {}),
           ...(failed?.reason ? { reason: failed.reason } : stopped ? { reason: (stopped instanceof Error ? stopped.message : String(stopped)).slice(0, 200) } : {}) });
+        run.checking = undefined;
+        this.mirror(key);
         return failed;
       };
       try {
@@ -1469,6 +1487,7 @@ export class WorkflowWorkspaces {
     // From here the branch moves, and no submission of the stack can be taken back (see `withdraw`).
     withdrawn();
     run.step = 'landing';
+    this.mirror(key);
     const head = heads[good]!;
     if (good) {
       // The next run looks at the branch first: it vouches for what was added and stacks these submissions on it, or halts.
@@ -1503,6 +1522,7 @@ export class WorkflowWorkspaces {
       if (!riding) train.queue.splice(train.queue.indexOf(candidate), 1);
       candidate.resolve({ status: 'withdrawn', targetRef, targetCommit: candidate.base, headCommit, reason });
       if (riding && run!.stack.includes(candidate)) run!.stop.abort(new Restacked('A submission was withdrawn from the train'));
+      this.mirror(this.trainKey(candidate.ws));
       return 'withdrawn';
     }
     return 'absent';
@@ -1556,6 +1576,31 @@ export class WorkflowWorkspaces {
     const rows = (repository === undefined ? this.db.prepare('SELECT data FROM landing_trains WHERE workflow=? ORDER BY id DESC LIMIT ?').all(workflow, limit)
       : this.db.prepare('SELECT data FROM landing_trains WHERE workflow=? AND repository=? ORDER BY id DESC LIMIT ?').all(workflow, repository, limit)) as Array<{ data: string }>;
     return rows.map(row => JSON.parse(row.data) as LandingTrain & { checked?: string });
+  }
+  /**
+   * Writes a train's queue as it stands to the store (see `LandingLive`), whenever it may have changed: a submission
+   * joined or left, the train took a batch, a run of the checks began or ended. Like the ledger it is a record of the
+   * landing and no part of it: failing to write it changes nothing.
+   */
+  private mirror(key: string): void {
+    try {
+      const train = this.trains.get(key), known = this.lives.get(key), run = train?.current;
+      const any = (run?.batch[0] ?? train?.queue[0])?.ws;
+      const workflow = any?.workflowId ?? known?.workflow, repository = any?.repository ?? known?.repository;
+      if (!workflow || !repository) return;
+      const rider = (candidate: Candidate): LandingRider => ({ ...candidate.label, workspace: candidate.ws.id, headCommit: candidate.head, commits: candidate.commits, since: candidate.queued });
+      const live: Omit<LandingLive, 'at'> = { repository, waiting: (train?.queue ?? []).map(rider),
+        ...(run ? { train: { since: run.since, step: run.step, ...(run.base === undefined ? {} : { base: run.base }),
+          riders: run.batch.map(candidate => ({ ...rider(candidate), state: candidate.settled ? candidate.outcome ?? 'failed' : run.stack.includes(candidate) ? 'stacked' : 'taken' })),
+          checks: run.probes, ...(run.checking ? { checking: run.checking } : {}) } } : {}),
+        ...(train?.trouble ? { retrying: { failures: train.trouble.failures, since: train.trouble.since, reason: train.trouble.reason } } : {}),
+        ...(train?.halted ? { halted: train.halted.slice(0, 2000) } : {}) };
+      const data = JSON.stringify(live);
+      if (known?.data === data) return;
+      this.lives.set(key, { workflow, repository, data });
+      this.db.prepare('INSERT INTO landing_live (workflow, repository, at, data) VALUES (?,?,?,?) ON CONFLICT(workflow, repository) DO UPDATE SET at=excluded.at, data=excluded.data')
+        .run(workflow, repository, Date.now(), data);
+    } catch { /* see above */ }
   }
   /**
    * Writes a run of a train to the landing ledger: what it carried, each run of the checks, and what became of each

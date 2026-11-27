@@ -9,10 +9,12 @@ import { dashboardSource } from '../src/dashboard/cli';
 import { WorkflowJournal } from '../src/dashboard/journal';
 import page from '../src/dashboard/page.html';
 import { startDashboard } from '../src/dashboard/server';
-import { board, member, members, overview, summarize, turn, turns, work, workItem, type ViewSource } from '../src/dashboard/views';
+import type { LandingRecord } from '../src/dashboard/landing';
+import { board, landing, member, members, overview, summarize, turn, turns, work, workItem, type ViewSource } from '../src/dashboard/views';
 import { emit, WorkflowStore, type WorkflowArchive, type WorkflowStoreOptions } from '../src/engine/kernel-store';
 import { SCRIPT_DEFINITION } from '../src/engine/script-contract';
 import type { BoardPost, WorkflowData, WorkflowState, WorkflowView, WorkflowWorkItem } from '../src/engine/types';
+import type { LandingTrain } from '../src/engine/workspace-types';
 
 const cleanup: Array<() => unknown> = [];
 const verify = process.env.WORKFLOW_ENGINE_VERIFY;
@@ -282,7 +284,107 @@ describe('dashboard views', () => {
   });
 });
 
+describe('dashboard landing view', () => {
+  const sha = (letter: string) => letter.repeat(40);
+  /** A swarm with one submission on a train, one that waits, and one item the queue turned back. */
+  function submitting(): WorkflowState {
+    const state = swarmState(), queue = state.workQueue!;
+    queue.items.push(item('f', { queue: 'build', status: 'claimed', claimId: 'c2', generation: 1 }),
+      item('g', { queue: 'build', assignee: 'w1', landing: { at: 700, status: 'check_failed', reason: 'ctest: 2 tests failed', commits: `${sha('1')}..${sha('2')}` } }),
+      // Turned back once and submitted again: it is with the queue, not with its member.
+      item('h', { queue: 'build', status: 'claimed', claimId: 'c3', generation: 2, landing: { at: 300, status: 'conflict', commits: `${sha('3')}..${sha('4')}` } }));
+    const claim = (id: string, itemId: string, worker: string, headCommit: string, since: number) => ({ id, itemId, agentId: 'agent-' + worker, taskId: 't-' + worker, attemptId: 't-' + worker + '-1', generation: 1,
+      leaseUntil: 5_000, status: 'active' as const, createdAt: since, landing: { since, targetCommit: sha('0'), headCommit, commits: 2 } });
+    queue.claims.push(claim('c2', 'id-f', 'w2', sha('a'), 500), claim('c3', 'id-h', 'w1', sha('b'), 600));
+    return state;
+  }
+  const check = (submissions: number, passed: boolean, ms = 60_000) => ({ submissions, headCommit: sha('c'), ms, passed, ...(passed ? {} : { command: 'make check', code: 2 }) });
+  const ran = (since: number, outcomes: string[], checks: LandingTrain['checks']): LandingTrain => ({ repository: '/repo', since, ms: 600_000, base: sha('0'), outcome: 'done', checks,
+    submissions: outcomes.map((outcome, index) => ({ key: 'k' + index, member: 'm' + index, workspace: 'ws' + index, headCommit: sha('d'), commits: 1, outcome })) });
+  const record = (): LandingRecord => ({
+    landing: { targetRef: 'refs/heads/result', commands: [{ argv: ['make', 'check'], timeoutMs: 60_000 }], precheck: [{ argv: ['lint'], timeoutMs: 1_000 }], protect: [{ paths: ['tests'], allow: [] }], batch: 16 },
+    override: { batch: 64, precheck: [] },
+    heads: [{ targetRef: 'refs/heads/result', head: sha('0'), repository: '/repo' }],
+    live: [{ repository: '/repo', at: 900, waiting: [{ workspace: 'ws-h', headCommit: sha('b'), commits: 2, since: 600 }],
+      train: { since: 800, step: 'checking', base: sha('0'), checks: [], checking: { submissions: 1, since: 810 },
+        riders: [{ key: 'f', member: 'w2', workspace: 'ws-f', headCommit: sha('a'), commits: 2, since: 500, state: 'stacked' }] } }],
+    // Newest first: two trains that turned back the first of their stack and landed nothing, after one that landed two.
+    trains: [ran(3_000, ['check_failed', 'next', 'next'], [check(3, false), check(1, false)]), ran(2_000, ['check_failed', 'next', 'next', 'next'], [check(4, false), check(2, false), check(1, false)]),
+      ran(1_000, ['landed', 'landed', 'check_failed', 'next'], [check(4, false, 30_000), check(2, true, 40_000), check(3, false, 50_000)])],
+  });
+
+  it('counts what the queue holds and what it turned back from the journal', () => {
+    const state = submitting();
+    expect(summarize(state, 2_000).landing).toEqual({ submitted: 2, returned: 1 });
+    expect(summarize({ ...state, workQueue: undefined }, 2_000).landing).toBeUndefined();
+    const panel = landing(state, { heads: [], live: [], trains: [] });
+    expect(panel).toMatchObject({ configured: false, overridden: [], branches: [] });
+    expect(panel.submitted).toEqual([{ key: 'f', member: 'w2', headCommit: sha('a'), commits: 2, since: 500 }, { key: 'h', member: 'w1', headCommit: sha('b'), commits: 2, since: 600 }]);
+    expect(panel.returned).toEqual([{ key: 'g', title: 'title of g', member: 'w1', status: 'check_failed', at: 700, reason: 'ctest: 2 tests failed', commits: `${sha('1')}..${sha('2')}` }]);
+  });
+
+  it('shows the landing as configured, the queue as it stands and what the trains did', () => {
+    const panel = landing(submitting(), record());
+    // What the main agent changed replaces the script's: an empty precheck means none.
+    expect(panel).toMatchObject({ configured: true, targetRef: 'refs/heads/result', checks: [{ command: 'make check', timeoutMs: 60_000 }], batch: 64, protect: ['tests'], overridden: ['precheck', 'batch'] });
+    expect(panel.precheck).toBeUndefined();
+    const [branch] = panel.branches;
+    expect(branch).toMatchObject({ repository: '/repo', landed: sha('0'), totals: { trains: 3, checks: 8, checkMs: 420_000, landed: 2, turnedBack: 3 } });
+    expect(branch!.halted).toBeUndefined();
+    // A rider the service did not name is named by the claim that holds its commits.
+    expect(branch!.live).toMatchObject({ at: 900, waiting: [{ key: 'h', member: 'w1', headCommit: sha('b'), since: 600 }],
+      train: { step: 'checking', checking: { submissions: 1, since: 810 }, riders: [{ key: 'f', member: 'w2', state: 'stacked' }] } });
+    // The one that failed stood on top of the smallest stack that failed.
+    expect(branch!.trains.map(train => ({ landed: train.landed, next: train.next, stacked: train.stacked, back: train.turnedBack }))).toEqual([
+      { landed: 0, next: 2, stacked: 3, back: [{ key: 'k0', member: 'm0', status: 'check_failed', position: 1 }] },
+      { landed: 0, next: 3, stacked: 4, back: [{ key: 'k0', member: 'm0', status: 'check_failed', position: 1 }] },
+      { landed: 2, next: 1, stacked: 4, back: [{ key: 'k2', member: 'm2', status: 'check_failed', position: 3 }] }]);
+    expect(branch!.firstBlamed).toBe(2);
+    // A train of one submission says nothing either way; one that landed something ends the run.
+    const mixed = record();
+    mixed.trains.splice(1, 0, ran(2_500, ['check_failed'], [check(1, false)]));
+    expect(landing(submitting(), mixed).branches[0]!.firstBlamed).toBe(2);
+    mixed.trains.splice(1, 0, ran(2_600, ['landed', 'check_failed'], [check(2, false), check(1, true)]));
+    expect(landing(submitting(), mixed).branches[0]!.firstBlamed).toBe(1);
+    // One run of the checks passed: too few to say how long one usually takes.
+    expect(branch!.usualCheckMs).toBeUndefined();
+  });
+
+  it('says that the branch is halted, and how long a run of the checks that passes usually takes', () => {
+    const halted = record();
+    halted.heads[0]!.halt = { head: sha('9'), reason: 'the outside commits fail the landing checks' };
+    halted.trains = [ran(1_000, ['landed'], [check(1, true, 50_000)]), ran(900, ['landed'], [check(1, true, 10_000)]), ran(800, ['landed', 'conflict'], [check(1, true, 30_000)])];
+    const [branch] = landing(submitting(), halted).branches;
+    expect(branch).toMatchObject({ halted: { head: sha('9'), reason: 'the outside commits fail the landing checks' }, usualCheckMs: 30_000, firstBlamed: 0 });
+    expect(branch!.trains[2]!.turnedBack).toEqual([{ key: 'k1', member: 'm1', status: 'conflict' }]);
+  });
+});
+
 describe('dashboard API', () => {
+  it('answers what the workspace service wrote about the landing, and anew when that changes', async () => {
+    const path = await file();
+    start(writer(path), 'a');
+    const api = new DashboardApi([{ name: 'main', path }], () => 1);
+    cleanup.push(() => api.close());
+    // No workspace store yet: the workflow has no landing to show.
+    const none = api.handle('/s/main/w/a/landing');
+    expect(none).toMatchObject({ status: 200, body: { configured: false, submitted: [], returned: [], branches: [] } });
+    expect(api.handle('/s/main/w/a/landing', undefined, none.etag).status).toBe(304);
+    const store = new Database(path + '.workspaces.sqlite');
+    cleanup.push(() => store.close());
+    store.pragma('journal_mode = WAL');
+    store.exec('CREATE TABLE landing_live (workflow TEXT NOT NULL, repository TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workflow, repository))');
+    const put = (waiting: object[]) => store.prepare('INSERT OR REPLACE INTO landing_live VALUES (?,?,?,?)').run('a', '/repo', 5, JSON.stringify({ repository: '/repo', waiting }));
+    put([]);
+    const idle = api.handle('/s/main/w/a/landing', undefined, none.etag);
+    expect(idle).toMatchObject({ status: 200, body: { branches: [{ repository: '/repo', live: { at: 5, waiting: [] }, trains: [] }] } });
+    expect(api.handle('/s/main/w/a/landing', undefined, idle.etag).status).toBe(304);
+    // The queue changes without the journal.
+    put([{ key: 'k', member: 'm', workspace: 'ws', headCommit: 'f'.repeat(40), commits: 1, since: 4 }]);
+    expect(api.handle('/s/main/w/a/landing', undefined, idle.etag)).toMatchObject({ status: 200, body: { branches: [{ live: { waiting: [{ key: 'k', member: 'm', since: 4 }] } }] } });
+    expect(api.handle('/s/main/w/b/landing').status).toBe(404);
+  });
+
   it('answers from the journal, says when nothing changed and reports what it cannot read', async () => {
     const path = await file();
     const store = writer(path);

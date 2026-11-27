@@ -2,7 +2,7 @@
 
 [Documentation index](README.md) · [Workflows](workflows.md) · [Embedding the workflow engine](../packages/workflow-engine/README.md)
 
-A read-only web page for watching workflows: every workflow of a bridge home, and for each one its goal and the leads' status notes, to-dos and open asks, work queues, members, work items, the board, turns with their prompts and results, the plan, and the latest journal events. It is meant for the runs that outgrow a chat card: a swarm of a hundred members is a table, not a message.
+A read-only web page for watching workflows: every workflow of a bridge home, and for each one its goal and the leads' status notes, to-dos and open asks, work queues, members, work items, the landing queue and its trains, the board, turns with their prompts and results, the plan, and the latest journal events. It is meant for the runs that outgrow a chat card: a swarm of a hundred members is a table, not a message.
 
 ```sh
 lark-channel-bridge dashboard                # every profile of this bridge home that has a workflow store
@@ -28,6 +28,7 @@ Web ───┘     ▲                        (one per profile)               
 | --- | --- | --- |
 | Views | `packages/workflow-engine/src/dashboard/views.ts` | Pure projections of `WorkflowState` into JSON for people: names instead of IDs, counts that include what was archived, long texts cut. No database, no clock other than timestamps. A host may call them on `runtime.kernel.state()` as well. |
 | Journal reader | `dashboard/journal.ts`, `WorkflowStore.follow()` | Opens a store read-only beside the process that owns it and replays what that process commits. |
+| Landing reader | `dashboard/landing.ts` | Opens the workspace service's store (`workflows.sqlite.workspaces.sqlite`) read-only for what the journal does not hold: the landing configuration, the queue as it stands and the ledger of trains. |
 | API | `dashboard/api.ts` | `DashboardApi.handle(path, query, ifNoneMatch)`: the read-only JSON API apart from any transport, with an ETag per workflow position. |
 | Server and page | `dashboard/server.ts`, `dashboard/page.html` | `startDashboard()`: Node's `http`, one self-contained page, no build step and no dependencies. The page shows the plan formatted from its Markdown, with a small parser of its own that yields text only, so a plan cannot inject markup. |
 | Commands | `agent-workflow dashboard --db …`, `lark-channel-bridge dashboard` | The engine's own CLI takes store files; the bridge's finds the profiles' stores. |
@@ -59,11 +60,27 @@ All under `/api`, `GET` only, JSON. `:source` is a profile name, `:id` a workflo
 | `/s/:source/w/:id/overview` | Summary, goal, status notes, script, swarms, queues, to-dos, asks, notices, the workflow tree |
 | `/s/:source/w/:id/members`, `/member?name=` | Members and one member in detail |
 | `/s/:source/w/:id/work?queue=&status=&q=&archived=1&offset=&limit=`, `/item?key=` | Work items and one item with its input, result and claims |
+| `/s/:source/w/:id/landing?trains=30` | The landing: its configuration, the submissions the queue holds, the train that runs, the items it turned back and the latest trains |
 | `/s/:source/w/:id/board?topic=&member=&q=&before=&limit=` | Posts, newest first, continuing into the archive |
 | `/s/:source/w/:id/turns?show=active\|failed\|all&member=`, `/turn?task=` | Turns and one turn with its prompt, attempts and result |
 | `/s/:source/w/:id/plan`, `/journal?before=&limit=` | The plan and script source; the latest journal entries |
 
 Answers carry an `ETag`; a request with `If-None-Match` is answered `304` while the workflow has not changed, which is what the page's 2.5 s polling relies on. Lease renewals are not journal events, so a claim's lease is shown as of the workflow's last change.
+
+## The landing tab
+
+A swarm whose members land work with `submit_work` hands its commits to a queue, and a train checks them in batches (see [worktrees](workflow-worktrees.md)). The tab answers what a member's `submitted` receipt cannot: how much is in the queue, what the train is doing, and why something came back.
+
+| Shown | From |
+| --- | --- |
+| Submissions the queue holds, and items it turned back that have not been submitted again | The journal: a claim the queue holds, and `item.landing` |
+| The train that runs: its submissions in the order they were stacked, each run of the checks and the one going on; what waits behind it; a halted branch; a train that runs again after a failure of its own | `landing_live`, which the workspace service rewrites whenever the queue changes. The queue lives in the service's memory, so the table is emptied when a service starts |
+| The latest trains: how many submissions each took, landed and sent on, every run of the checks with the size of the stack it ran on and its duration, and whom it turned back | `landing_trains`, the landing ledger |
+| The checks, the precheck, the batch size and the protected paths, with what the main agent changed | The landing records of the workspace store |
+
+The runs of a train's checks are drawn in the order they ran, each with the number of submissions in the stack under test: a train whose whole stack fails halves it until it has found the first submission that breaks the checks. When the latest trains each landed nothing and turned back the first submission of a stack of several, the tab says so: the checks then fail whatever is submitted, which points at the branch head or the checks themselves and not at the submissions.
+
+A bridge that does not write `landing_live` or the ledger leaves those parts empty; the counts from the journal and the configuration are shown all the same.
 
 ## Limits
 

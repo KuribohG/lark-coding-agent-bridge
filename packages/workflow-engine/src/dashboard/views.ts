@@ -6,6 +6,8 @@ import { queueControl, queueNames } from '../engine/work-routing';
 import type {
   AgentTurn, BoardPost, DurableAgent, StoredArtifact, StoredTask, SwarmMember, WorkClaim, WorkflowState, WorkflowSwarm, WorkflowTask, WorkflowWorkItem,
 } from '../engine/types';
+import type { LandingLive, LandingRider, LandingTrain, WorkspaceCommands } from '../engine/workspace-types';
+import type { LandingRecord } from './landing';
 
 /**
  * What a dashboard shows of a workflow, as plain JSON. These are projections of WorkflowState for people: names in
@@ -46,6 +48,8 @@ export interface WorkflowSummary {
   members: { total: number; running: number; stopped: number };
   /** `slot`: turns the host has not given an execution slot yet; they are not counted as running. */
   turns: { total: number; running: number; slot: number; waiting: number; queued: number; failed: number; done: number };
+  /** Submissions the landing queue holds, and work items whose commits it turned back and nobody has landed since. */
+  landing?: { submitted: number; returned: number };
   work?: Record<WorkflowWorkItem['status'], number> & { total: number };
   todos: number;
   asks: number;
@@ -334,6 +338,7 @@ export function summarize(state: WorkflowState, now: number): WorkflowSummary {
       done: count(task => task.status === 'result_ready') + (state.archived?.statuses.result_ready ?? 0),
     },
     ...(work ? { work: { ...work, total: Object.values(work).reduce((sum, value) => sum + value, 0) } } : {}),
+    ...(state.workQueue ? { landing: { submitted: submissions(state).length, returned: turnedBack(state).length } } : {}),
     todos: state.todos?.open.filter(todo => todo.goneAt === undefined).length ?? 0,
     asks: state.board?.asks?.length ?? 0,
     notices: state.events.filter(event => !event.acknowledged).length,
@@ -730,4 +735,148 @@ export function plan({ state, archive, text }: ViewSource): { plan?: string; sou
   };
   const args = script.args === undefined || script.args === null ? undefined : clip(script.args, 20_000).text;
   return { plan: read(script.planRef), source: read(script.sourceRef), ...(args ? { args } : {}) };
+}
+
+/** A submission in the landing queue, named by the work item it is for and the member that made it. */
+export interface RiderView {
+  key?: string;
+  member?: string;
+  headCommit: string;
+  commits: number;
+  /** When it joined the queue. */
+  since: number;
+  /** On a train: `taken`, `stacked`, or the status it was answered with. */
+  state?: string;
+}
+
+/** One run of a train from the landing ledger. */
+export interface TrainView {
+  since: number;
+  ms: number;
+  outcome: LandingTrain['outcome'];
+  submissions: number;
+  landed: number;
+  /** Submissions that went back to the queue for the next train. */
+  next: number;
+  head?: string;
+  checks: LandingTrain['checks'];
+  /**
+   * The submissions the train answered without landing them. `position` is where the one that failed the checks stood
+   * in the stack, of `stacked`: the first place means every run of the checks failed.
+   */
+  turnedBack: Array<{ key?: string; member?: string; status: string; position?: number }>;
+  stacked?: number;
+  error?: string;
+}
+
+export interface LandingBranchView {
+  repository: string;
+  /** The commit the queue vouches for. */
+  landed?: string;
+  /** The branch was found somewhere the queue does not accept; nothing lands until the main agent settles it. */
+  halted?: { head: string | null; reason: string };
+  /** The queue as its service last wrote it. Absent before the first submission, and from a service that does not write it. */
+  live?: Omit<LandingLive, 'repository' | 'waiting' | 'train'> & { waiting: RiderView[];
+    train?: Omit<NonNullable<LandingLive['train']>, 'riders'> & { riders: RiderView[] } };
+  /** The median of the runs of the checks that passed in the trains listed, once there are a few. */
+  usualCheckMs?: number;
+  /** Over the trains listed. */
+  totals: { trains: number; checks: number; checkMs: number; landed: number; turnedBack: number };
+  /**
+   * How many of the latest trains landed nothing and turned back the first submission of a stack of several, with no
+   * train between them that landed anything or found a later submission at fault. More than one says the checks fail
+   * whatever is submitted: the branch head no longer passes them, or they fail on their own.
+   */
+  firstBlamed: number;
+  trains: TrainView[];
+}
+
+/** The landing of a workflow: how it is configured, what the queue holds, and what the trains did lately. */
+export interface LandingPanel {
+  configured: boolean;
+  targetRef?: string;
+  checks?: Array<{ command: string; timeoutMs: number }>;
+  precheck?: Array<{ command: string; timeoutMs: number }>;
+  batch?: number;
+  protect?: string[];
+  /** The settings the main agent changed with configure_landing. */
+  overridden: string[];
+  /** The submissions the queue holds, by the journal: on a train or waiting for one, oldest first. */
+  submitted: RiderView[];
+  /** Work items whose commits the queue turned back and that have not landed since, latest first. */
+  returned: Array<{ key: string; title: string; member?: string; status: string; at: number; reason?: string; commits: string }>;
+  branches: LandingBranchView[];
+}
+
+/** The claims the landing queue holds: their members handed it the commits and went on to other work. */
+function submissions(state: WorkflowState): WorkClaim[] {
+  return (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active' && claim.landing);
+}
+/** The items whose commits the queue turned back and that are not with the queue again. */
+function turnedBack(state: WorkflowState): WorkflowWorkItem[] {
+  const again = new Set(submissions(state).map(claim => claim.itemId));
+  return (state.workQueue?.items ?? []).filter(item => item.landing && !TERMINAL_ITEM.has(item.status) && !again.has(item.id));
+}
+
+function trainView(train: LandingTrain): TrainView {
+  const of = (outcome: string) => train.submissions.filter(entry => entry.outcome === outcome).length;
+  const failed = train.checks.filter(check => !check.passed).map(check => check.submissions);
+  const stacked = train.checks.length ? Math.max(...train.checks.map(check => check.submissions)) : undefined;
+  return {
+    since: train.since, ms: train.ms, outcome: train.outcome, submissions: train.submissions.length, landed: of('landed'), next: of('next'),
+    ...(train.head ? { head: train.head } : {}), checks: train.checks,
+    // The search ends on the first submission whose stack fails: the smallest stack that failed is the one it stood on top of.
+    turnedBack: train.submissions.filter(entry => entry.outcome !== 'landed' && entry.outcome !== 'next').map(entry => ({
+      ...(entry.key ? { key: entry.key } : {}), ...(entry.member ? { member: entry.member } : {}), status: entry.outcome,
+      ...(entry.outcome === 'check_failed' && failed.length ? { position: Math.min(...failed) } : {}) })),
+    ...(stacked === undefined ? {} : { stacked }), ...(train.error ? { error: compact(train.error, 400) } : {}),
+  };
+}
+
+export function landing(state: WorkflowState, record: LandingRecord): LandingPanel {
+  const name = names(state), items = new Map((state.workQueue?.items ?? []).map(item => [item.id, item]));
+  const held = submissions(state);
+  const byHead = new Map(held.map(claim => [claim.landing!.headCommit, { key: items.get(claim.itemId)?.key, member: name(claim.agentId) }]));
+  const rider = (entry: LandingRider & { state?: string }): RiderView => {
+    const known = byHead.get(entry.headCommit), key = entry.key ?? known?.key, member = entry.member ?? known?.member;
+    return { ...(key ? { key } : {}), ...(member ? { member } : {}), headCommit: entry.headCommit, commits: entry.commits, since: entry.since, ...(entry.state ? { state: entry.state } : {}) };
+  };
+  const base = record.landing, over = record.override ?? {};
+  const shown = (commands: WorkspaceCommands | undefined) => commands?.map(command => ({ command: command.argv.join(' '), timeoutMs: command.timeoutMs }));
+  const precheck = over.precheck ? over.precheck.length ? over.precheck : undefined : base?.precheck;
+  const protect = [...base?.protect ?? [], ...over.protect ?? []].flatMap(rule => rule.paths);
+  const repositories = [...new Set([...record.heads.flatMap(head => head.repository ?? []), ...record.live.map(live => live.repository), ...record.trains.map(train => train.repository)])].sort();
+  return {
+    configured: Boolean(base),
+    ...(base ? { targetRef: base.targetRef, checks: shown(over.commands ?? base.commands)!, batch: over.batch ?? base.batch } : {}),
+    ...(precheck ? { precheck: shown(precheck)! } : {}), ...(protect.length ? { protect } : {}),
+    overridden: [['commands', 'checks'], ['precheck', 'precheck'], ['protect', 'protect'], ['batch', 'batch']].flatMap(([key, shownAs]) => over[key as keyof typeof over] === undefined ? [] : [shownAs!]),
+    submitted: held.map(claim => rider({ ...byHead.get(claim.landing!.headCommit), workspace: '', headCommit: claim.landing!.headCommit, commits: claim.landing!.commits, since: claim.landing!.since }))
+      .sort((a, b) => a.since - b.since),
+    returned: turnedBack(state).map(item => ({
+      key: item.key, title: compact(item.title, 200), ...(item.assignee ? { member: item.assignee } : {}), status: item.landing!.status, at: item.landing!.at,
+      ...(item.landing!.reason ? { reason: compact(item.landing!.reason, 400) } : {}), commits: item.landing!.commits })).sort((a, b) => b.at - a.at),
+    branches: repositories.map(repository => {
+      const head = record.heads.find(found => found.repository === repository), live = record.live.find(found => found.repository === repository);
+      const trains = record.trains.filter(train => train.repository === repository).map(trainView);
+      const passed = trains.flatMap(train => train.checks.filter(check => check.passed).map(check => check.ms)).sort((a, b) => a - b);
+      // A train that landed nothing and says nothing either way (it carried one submission, or did not finish) is passed over.
+      let firstBlamed = 0;
+      for (const train of trains) {
+        const first = train.turnedBack.some(entry => entry.position === 1);
+        if (train.landed || train.turnedBack.some(entry => (entry.position ?? 1) > 1)) break;
+        if (train.outcome === 'done' && first && (train.stacked ?? 0) > 1) firstBlamed++;
+      }
+      return {
+        repository, ...(head ? { landed: head.head } : {}), ...(head?.halt ? { halted: { head: head.halt.head, reason: compact(head.halt.reason, 1200) } } : {}),
+        ...(live ? { live: { at: live.at, waiting: live.waiting.map(rider), ...(live.train ? { train: { ...live.train, riders: live.train.riders.map(rider) } } : {}),
+          ...(live.retrying ? { retrying: live.retrying } : {}), ...(live.halted ? { halted: live.halted } : {}) } } : {}),
+        ...(passed.length >= 3 ? { usualCheckMs: passed[Math.floor(passed.length / 2)]! } : {}),
+        totals: { trains: trains.length, checks: trains.reduce((sum, train) => sum + train.checks.length, 0), checkMs: trains.reduce((sum, train) => sum + train.checks.reduce((ms, check) => ms + check.ms, 0), 0),
+          landed: trains.reduce((sum, train) => sum + train.landed, 0), turnedBack: trains.reduce((sum, train) => sum + train.turnedBack.length, 0) },
+        firstBlamed,
+        trains,
+      };
+    }),
+  };
 }

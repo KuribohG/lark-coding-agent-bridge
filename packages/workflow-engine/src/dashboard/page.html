@@ -126,6 +126,10 @@ td.wide { max-width: 420px; } td.mid { max-width: 240px; }
 .meter { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; margin-top: 5px; }
 .meter i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 .meter.over i { background: var(--critical); }
+.probes { display: inline-flex; flex-wrap: wrap; gap: 3px; vertical-align: middle; }
+.probe { display: inline-block; padding: 0 6px; border-radius: 4px; border-left: 3px solid var(--idle); background: var(--wash); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.probe.ok { border-left-color: var(--good); } .probe.no { border-left-color: var(--critical); } .probe.now { border-left-color: var(--accent); background: var(--accent-wash); }
+.probe.slow { background: var(--wash-2); } .probe small { color: var(--ink-3); }
 pre, .pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.55 var(--mono); }
 .prose { white-space: pre-wrap; word-break: break-word; }
 .fold { max-height: 9.2em; overflow: hidden; position: relative; }
@@ -422,7 +426,11 @@ const ITEM_KEYS = ['completed', 'claimed', 'pending', 'cancelled', 'failed'];
 const ROLE = { lead: '总负责人', 'queue-lead': '队列负责人', worker: '执行者', member: '成员', agent: '脚本成员' };
 const TODO = { dry: '队列断粮', idle: '成员空闲', member: '成员停止', unstaffed: '队列无人', aside: '工作项被搁置', dead: '工作项成死项', gate: '条件未满足', spin: '空领空还', ask: '请求未答复' };
 const CLAIM = { active: '持有中', completed: '已完成', failed: '失败', released: '已交还', expired: '租约过期', cancelled: '已取消' };
-const TABS = [['overview', '总览'], ['members', '成员'], ['work', '工作项'], ['board', '留言板'], ['turns', '轮次'], ['plan', '方案'], ['journal', '事件日志']];
+const LAND = { landed: ['good', '已落地'], next: ['mute', '坐下一班'], check_failed: ['bad', '检查不过'], conflict: ['serious', '冲突'], withdrawn: ['mute', '已撤回'], failed: ['bad', '列车放弃'],
+  lost: ['warn', '队列丢失'], rejected: ['serious', '被拒'], halted: ['warn', '分支停止'], taken: ['mute', '待叠入'], stacked: ['run', '已叠入'] };
+const TRAIN = { done: ['good', '跑完'], restacked: ['mute', '有撤回，重新组批'], halted: ['warn', '等分支处理'], retrying: ['warn', '自身出错，重跑'], failed: ['bad', '放弃整班'] };
+const STEP = { stacking: '组批中', checking: '检查中', landing: '推进分支' };
+const TABS = [['overview', '总览'], ['members', '成员'], ['work', '工作项'], ['landing', '落地'], ['board', '留言板'], ['turns', '轮次'], ['plan', '方案'], ['journal', '事件日志']];
 const pair = (table, key) => table[key] || ['mute', key];
 
 // ---------- state & routing ----------
@@ -629,7 +637,7 @@ function paintHead() {
   const tiles = [
     tile('执行中的轮次', [String(s.turns.running), h('small', {}, ` / 共 ${s.turns.total}`)], `完成 ${s.turns.done} · 失败 ${s.turns.failed}` + (s.turns.slot ? ` · 等槽位 ${s.turns.slot}` : '') + (s.turns.queued ? ` · 排队 ${s.turns.queued}` : '') + (s.turns.waiting ? ` · 等待 ${s.turns.waiting}` : '')),
     s.members.total ? tile('在跑的成员', [String(s.members.running), h('small', {}, ` / 共 ${s.members.total}`)], s.members.stopped ? `已停止 ${s.members.stopped}` : '无成员停止') : null,
-    s.work ? tile('已完成的工作项', [String(s.work.completed), h('small', {}, ` / 共 ${s.work.total}`)], `进行中 ${s.work.claimed} · 待领取 ${s.work.pending} · 失败 ${s.work.failed}`, h('div', { style: 'margin-top:6px' }, segbar(s.work))) : null,
+    s.work ? tile('已完成的工作项', [String(s.work.completed), h('small', {}, ` / 共 ${s.work.total}`)], `进行中 ${s.work.claimed}` + (s.landing && s.landing.submitted ? `（落地队列 ${s.landing.submitted}）` : '') + ` · 待领取 ${s.work.pending} · 失败 ${s.work.failed}`, h('div', { style: 'margin-top:6px' }, segbar(s.work))) : null,
     tile('待办', String(s.todos), `未答请求 ${s.asks} · 主会话待处理 ${s.notices}`),
     running ? tile('已用时', tick('for', s.createdAt), tick('until', s.deadlineAt, '距截止 '), h('div', { class: 'meter' + (used >= 1 ? ' over' : ''), title: `已用 ${Math.round(used * 100)}%` }, h('i', { style: `width:${Math.round(used * 100)}%` })))
       : tile('创建于', h('span', { style: 'font-size:16px' }, clock(s.createdAt)), null),
@@ -642,7 +650,7 @@ function paintHead() {
     s.goal ? h('div', { class: 'goal prose' + (S.open.has(goalKey) ? '' : ' clip'), title: '点击展开/收起', style: 'cursor:pointer', onclick: () => { toggle(goalKey); paintHead(); } }, s.goal) : null,
     h('div', { class: 'tiles' }, tiles),
     h('nav', { class: 'tabs' }, TABS.map(([key, title]) => h('a', { class: key === S.tab ? 'on' : '', data: { tab: key }, href: makeHash({ tab: key, q: {} }) }, title,
-      key === 'members' && s.members.total ? h('span', { class: 'count' }, String(s.members.total)) : key === 'work' && s.work ? h('span', { class: 'count' }, String(s.work.total)) : key === 'turns' ? h('span', { class: 'count' }, String(s.turns.total)) : null))));
+      key === 'members' && s.members.total ? h('span', { class: 'count' }, String(s.members.total)) : key === 'work' && s.work ? h('span', { class: 'count' }, String(s.work.total)) : key === 'landing' && s.landing && s.landing.submitted ? h('span', { class: 'count', title: '落地队列里的提交' }, String(s.landing.submitted)) : key === 'turns' ? h('span', { class: 'count' }, String(s.turns.total)) : null))));
 }
 function toggle(key) { if (S.open.has(key)) S.open.delete(key); else S.open.add(key); }
 /** A text as its author formatted it. The tree holds text only, so no markup comes from the text itself. */
@@ -704,6 +712,7 @@ async function loadView() {
   if (S.tab === 'work') return get(api('work', { queue: S.q.queue, status: S.q.status, q: S.q.q, archived: S.q.archived, limit: 500 }));
   if (S.tab === 'board') return get(api('board', { topic: S.q.topic, member: S.q.member, q: S.q.q, limit: 50 }));
   if (S.tab === 'turns') return get(api('turns', { show: S.q.show ?? 'active', member: S.q.member, limit: 500 }));
+  if (S.tab === 'landing') return get(api('landing', { trains: 30 }));
   if (S.tab === 'plan') return get(api('plan'));
   return get(api('journal', { limit: 200 }));
 }
@@ -712,7 +721,7 @@ function paintView(view) {
   const active = document.activeElement && content.contains(document.activeElement) && document.activeElement.id ? document.activeElement : null;
   const caret = active && 'selectionStart' in active ? [active.selectionStart, active.selectionEnd] : null;
   const top = content.scrollTop;
-  const paint = { overview: paintOverview, members: paintMembers, work: paintWork, board: paintBoard, turns: paintTurns, plan: paintPlan, journal: paintJournal }[S.tab];
+  const paint = { overview: paintOverview, members: paintMembers, work: paintWork, landing: paintLanding, board: paintBoard, turns: paintTurns, plan: paintPlan, journal: paintJournal }[S.tab];
   content.replaceChildren(...[paint(view.body)].flat().filter(Boolean));
   content.scrollTop = top;
   if (active) { const again = $(active.id); if (again) { again.focus(); if (caret) try { again.setSelectionRange(caret[0], caret[1]); } catch { /* not a text field */ } } }
@@ -896,6 +905,98 @@ function paintPlan(data) {
     : h('div', { class: 'empty' }, '这个工作流没有保存执行方案。'),
     data.args ? card('脚本参数', null, h('div', { class: 'body' }, folded('args:' + S.wf, data.args, { mono: true }))) : null,
     data.source ? card('脚本源码', `${data.source.length} 字`, h('div', { class: 'body' }, folded('source:' + S.wf, data.source, { mono: true, tall: true }))) : null];
+}
+
+/** The runs of a train's checks, in the order they ran: the size of the stack each ran on and how long it took. */
+function probes(checks, checking) {
+  const span = ms => ms < 90e3 ? Math.max(1, Math.round(ms / 1000)) + '秒' : Math.round(ms / 60e3) + '分';
+  if (!checks.length && !checking) return h('span', { class: 'faint' }, '—');
+  return h('span', { class: 'probes' }, checks.map(check => h('span', { class: 'probe ' + (check.passed ? 'ok' : 'no') + (check.slow ? ' slow' : ''),
+    title: `前 ${check.submissions} 笔叠在一起 · ${dur(check.ms)} · ${check.passed ? '通过' : '不过'}` + (check.slow ? ' · 远慢于平时' : '') + (check.command ? `\n${check.command}（退出码 ${check.code}）` : '') + (check.reason ? `\n${check.reason}` : '') },
+    (check.passed ? '✓ ' : '✗ ') + check.submissions, h('small', {}, ' ' + span(check.ms)))),
+    checking ? h('span', { class: 'probe now', title: `正在检查前 ${checking.submissions} 笔叠在一起的结果` }, '… ' + checking.submissions, h('small', {}, ' ', tick('for', checking.since))) : null);
+}
+function paintLanding(d) {
+  if (!d.configured && !d.submitted.length && !d.returned.length && !d.branches.length) return h('div', { class: 'empty' }, '这个工作流没有配置落地（脚本没有调用 configureLanding）。');
+  const who = row => row.member ? h('a', { onclick: event => { event.stopPropagation(); openDrawer('member', row.member); } }, row.member) : h('span', { class: 'faint' }, '—');
+  const what = row => row.key ? h('a', { class: 'mono', title: row.key, onclick: event => { event.stopPropagation(); openDrawer('item', row.key); } }, brief(row.key)) : h('span', { class: 'mono faint' }, short(row.headCommit, 10));
+  const riderColumns = state => [
+    { title: '#', num: true, cell: row => row.place },
+    { title: '工作项', cell: what },
+    { title: '成员', cell: who },
+    { title: '提交', num: true, hint: '这一笔里的 commit 数', cell: row => row.commits },
+    { title: '头', cell: row => copyable(row.headCommit, short(row.headCommit, 10)) },
+    { title: '入队', hint: '第一次进入队列的时间；坐过上一班的保留原时间', cell: row => tick('for', row.since, '已 ') },
+    ...(state ? [{ title: '状态', cell: row => { const [tone, label] = pair(LAND, row.state); return chip(tone, label); } }] : []),
+  ];
+  const numbered = rows => rows.map((row, index) => ({ ...row, place: index + 1 }));
+  /** A long list shows its first rows until it is opened; the order is the order of the queue, so those are the ones next in turn. */
+  const capped = (key, rows, limit = 10) => {
+    const flip = () => { toggle(key); S.dirty = S.drawerDirty = true; refresh(); };
+    if (rows.length <= limit) return { rows, more: null };
+    return S.open.has(key) ? { rows, more: h('div', { class: 'body' }, h('a', { onclick: flip }, '只显示前 ' + limit + ' 笔')) }
+      : { rows: rows.slice(0, limit), more: h('div', { class: 'body' }, h('a', { onclick: flip }, `显示全部 ${rows.length} 笔`)) };
+  };
+  const riderTable = (key, columns, rows, empty) => { const shown = capped(key, numbered(rows)); return [table(key, columns, shown.rows, { onRow: row => row.key && openDrawer('item', row.key), empty }), shown.more]; };
+  const live = d.branches.filter(branch => branch.live), riding = live.reduce((sum, branch) => sum + (branch.live.train ? branch.live.train.riders.filter(row => row.state === 'taken' || row.state === 'stacked').length : 0), 0);
+  const waiting = live.reduce((sum, branch) => sum + branch.live.waiting.length, 0);
+  const totals = d.branches.reduce((sum, branch) => ({ trains: sum.trains + branch.totals.trains, checks: sum.checks + branch.totals.checks, checkMs: sum.checkMs + branch.totals.checkMs, landed: sum.landed + branch.totals.landed, turnedBack: sum.turnedBack + branch.totals.turnedBack }),
+    { trains: 0, checks: 0, checkMs: 0, landed: 0, turnedBack: 0 });
+  const running = live.map(branch => branch.live.train).filter(Boolean)[0], usual = d.branches.map(branch => branch.usualCheckMs).filter(Boolean)[0];
+  const blocks = [h('div', { class: 'tiles', style: 'margin:0 0 14px' },
+    tile('队列里的提交', String(live.length ? riding + waiting : d.submitted.length), live.length ? `列车上 ${riding} · 等下一班 ${waiting}` + (d.submitted.length !== riding + waiting ? ` · 事件日志记 ${d.submitted.length}` : '') : '按事件日志统计（没有实时队列状态）'),
+    tile('当前列车', running ? STEP[running.step] || running.step : live.length ? '空闲' : '—', running ? [`本班 ${running.riders.length} 笔 · 已跑 ${running.checks.length} 次检查 · `, tick('for', running.since, '开出 ')] : live.length ? '没有在跑的列车' : '这个 bridge 版本不写实时状态'),
+    tile('被退回、待返工', String(d.returned.length), '退回后还没重新提交的工作项'),
+    totals.trains ? tile(`最近 ${totals.trains} 班`, [String(totals.landed), h('small', {}, ' 笔落地')], `退回 ${totals.turnedBack} 笔 · 检查 ${totals.checks} 次，共 ${dur(totals.checkMs)}`) : tile('最近各班', '—', '还没有每班流水账'),
+    tile('通过的检查通常用时', usual ? dur(usual) : '—', usual ? '最近各班通过的检查的中位数' : '样本还不够'))];
+  for (const branch of d.branches) {
+    const name = branch.repository.split('/').filter(Boolean).pop() || branch.repository;
+    if (branch.halted) blocks.push(h('div', { class: 'error' }, h('b', {}, `落地已停止（${name}）`), `：落地分支被队列外改动到 ${short(branch.halted.head, 10) || '（已删除）'}，队列不接纳：${branch.halted.reason}\n提交留在队列里等待，主 agent 用 configure_landing 的 branch:"restore" 或 "adopt" 处理后继续。`));
+    if (branch.live && branch.live.retrying) blocks.push(h('div', { class: 'error' }, h('b', {}, `列车自身出错（${name}）`), `：已连续 ${branch.live.retrying.failures} 次，`, tick('for', branch.live.retrying.since, '持续 '), `，提交留在队列里重跑。\n${branch.live.retrying.reason}`));
+    if (branch.firstBlamed >= 2) blocks.push(h('div', { class: 'error' }, h('b', {}, `最近连续 ${branch.firstBlamed} 班一笔都没落地，每班只退回了第 1 笔（${name}）`),
+      '：每次检查都不过，很可能与提交内容无关——分支头自身已经不过检查，或者检查环境有问题。先在分支头上单独跑一次检查确认，否则每一班都会再退回一笔无辜的提交。'));
+  }
+  for (const branch of d.branches) {
+    const name = branch.repository.split('/').filter(Boolean).pop() || branch.repository, now = branch.live, train = now && now.train;
+    blocks.push(card('落地队列 · ' + name, now ? ['实时状态写于 ', tick('ago', now.at)] : '没有实时队列状态', h('div', { class: 'body' }, h('dl', { class: 'kv' },
+      h('dt', {}, '仓库'), h('dd', { class: 'mono' }, branch.repository),
+      h('dt', {}, '落地分支'), h('dd', { class: 'mono' }, d.targetRef || '—'),
+      h('dt', {}, '队列认可的头'), h('dd', {}, branch.landed ? copyable(branch.landed, short(branch.landed, 12)) : h('span', { class: 'faint' }, '还没有落地过')),
+      h('dt', {}, '当前列车'), h('dd', {}, train ? [chip('run', STEP[train.step] || train.step, { pulse: true }), ` 本班 ${train.riders.length} 笔 · `, tick('for', train.since, '开出 '), train.base ? [' · 叠在 ', h('span', { class: 'mono' }, short(train.base, 10)), ' 上'] : null]
+        : now ? (now.halted ? chip('warn', '等分支处理') : now.waiting.length ? chip('warn', '等待开出') : chip('mute', '空闲')) : h('span', { class: 'faint' }, '未知')),
+      train ? [h('dt', {}, '本班的检查'), h('dd', {}, probes(train.checks, train.checking), h('span', { class: 'faint' }, '　数字是被检查的那一叠里有前几笔提交；全叠不过时逐次对半找出第一笔坏的'))] : null)),
+      train ? riderTable('riders:' + name, riderColumns(true), train.riders) : null));
+    if (now) blocks.push(card('等下一班 · ' + name, `${now.waiting.length} 笔` + (d.batch ? ` · 每班最多 ${d.batch} 笔` : ''), riderTable('waiting:' + name, riderColumns(false), now.waiting, '没有等待的提交。')));
+    blocks.push(card('最近各班 · ' + name, branch.trains.length ? `${branch.trains.length} 班，新的在前` : null, table('trains:' + name, [
+      { title: '开出', cell: row => h('span', { class: 'nowrap', title: clock(row.since) }, clock(row.since).slice(0, 11)), sort: row => row.since },
+      { title: '用时', num: true, cell: row => dur(row.ms), sort: row => row.ms },
+      { title: '本班', num: true, hint: '这一班从队列取走的提交数', cell: row => row.submissions, sort: row => row.submissions },
+      { title: '落地', num: true, cell: row => row.landed || h('span', { class: 'faint' }, '0'), sort: row => row.landed },
+      { title: '坐下一班', num: true, cell: row => row.next || '', sort: row => row.next },
+      { title: '检查', hint: '按运行顺序；数字是被检查的那一叠里有前几笔提交', cell: row => probes(row.checks) },
+      { title: '退回', cell: row => row.turnedBack.length ? row.turnedBack.map(back => { const [tone, label] = pair(LAND, back.status); return h('div', { class: 'nowrap' }, chip(tone, label), ' ',
+        back.position ? h('span', { class: back.position === 1 && row.stacked > 1 ? 'tag' : 'faint', title: '它在这一叠里排第几笔' }, `第 ${back.position}/${row.stacked} 笔`) : null, ' ', what(back), back.member ? ['（', who(back), '）'] : null); }) : '' },
+      { title: '结果', cell: row => { const [tone, label] = pair(TRAIN, row.outcome); return h('span', { title: row.error || '' }, chip(tone, label)); } },
+    ], branch.trains, { empty: now ? '还没有跑完的列车。' : '没有每班流水账：这个 bridge 版本不记，或者还没有跑过列车。' })));
+  }
+  if (!live.length && d.submitted.length) blocks.push(card('队列里的提交', `${d.submitted.length} 笔 · 按事件日志，不分列车上还是等待`, riderTable('submitted', riderColumns(false), d.submitted)));
+  if (d.returned.length) blocks.push(card('被退回、待返工的工作项', `${d.returned.length} 项 · 退回后还没重新提交`, table('returned', [
+    { title: '工作项', cell: what, sort: row => row.key },
+    { title: '标题', cls: 'wide', cell: row => row.title },
+    { title: '成员', cell: who, sort: row => row.member || '' },
+    { title: '原因', cell: row => { const [tone, label] = pair(LAND, row.status); return chip(tone, label); }, sort: row => row.status },
+    { title: '退回于', cell: row => tick('ago', row.at), sort: row => row.at },
+    { title: '说明', cls: 'wide', cell: row => row.reason ? h('span', { class: 'dim' }, row.reason) : '' },
+  ], d.returned, { onRow: row => openDrawer('item', row.key) })));
+  if (d.configured) {
+    const commands = list => list.map(entry => h('div', {}, h('span', { class: 'mono' }, entry.command), h('span', { class: 'faint' }, `　时限 ${dur(entry.timeoutMs)}`)));
+    blocks.push(card('落地配置', d.overridden.length ? `主 agent 改过：${d.overridden.join('、')}` : '脚本设定', h('div', { class: 'body' }, h('dl', { class: 'kv' },
+      h('dt', {}, '每班检查'), h('dd', {}, commands(d.checks)),
+      d.precheck ? [h('dt', {}, '上车前检查'), h('dd', {}, commands(d.precheck))] : null,
+      h('dt', {}, '每班最多'), h('dd', {}, `${d.batch} 笔`),
+      d.protect ? [h('dt', {}, '受保护路径'), h('dd', { class: 'mono' }, d.protect.join('　'))] : null))));
+  }
+  return blocks;
 }
 
 function paintJournal(data) {

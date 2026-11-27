@@ -1,7 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import { WorkflowJournalError } from '../engine/kernel-store';
 import { WorkflowJournal, type CatalogRow } from './journal';
-import { board, member, members, overview, plan, summarize, turn, turns, work, workItem, type ViewSource, type WorkflowSummary } from './views';
+import { LandingRecords } from './landing';
+import { board, landing, member, members, overview, plan, summarize, turn, turns, work, workItem, type ViewSource, type WorkflowSummary } from './views';
 
 /** One workflow store a dashboard reads: a name people recognise and the file. */
 export interface DashboardSource {
@@ -43,6 +44,8 @@ const number = (value: string | null): number | undefined => {
  */
 export class DashboardApi {
   private readonly journals = new Map<string, WorkflowJournal>();
+  /** What the workspace service of each source keeps about landings. */
+  private readonly landings = new Map<string, LandingRecords>();
   private readonly failed = new Map<string, string>();
   /** Summaries of workflows that can no longer change, by the time their catalog row was last written. */
   private readonly finished = new Map<string, { updatedAt: number; summary: WorkflowSummary | UnreadableWorkflow }>();
@@ -71,6 +74,8 @@ export class DashboardApi {
   close(): void {
     for (const journal of this.journals.values()) journal.close();
     this.journals.clear();
+    for (const records of this.landings.values()) records.close();
+    this.landings.clear();
   }
 
   handle(path: string, query: URLSearchParams = new URLSearchParams(), ifNoneMatch?: string): DashboardResponse {
@@ -100,6 +105,13 @@ export class DashboardApi {
     const source: ViewSource = { state: read.state, archive: journal.archive(id), text: digest => journal.text(digest) };
     const text = (key: string) => query.get(key) || undefined;
     const found = <T>(value: T | undefined, what: string): T => { if (value === undefined) throw new NotFound(`No such ${what}`); return value; };
+    if (view === 'landing') {
+      // The queue changes without the journal: what the workspace service wrote is part of what the answer is made from.
+      let records = this.landings.get(name);
+      if (!records) this.landings.set(name, records = LandingRecords.beside(journal.path));
+      const trains = Math.min(200, Math.max(1, number(query.get('trains')) ?? 30)), kept = records;
+      return { etag: `W/"${name}:${id}:${read.seq}:landing:${kept.version()}:${trains}"`, body: () => landing(read.state, kept.read(id, trains)) };
+    }
     const body = ((): (() => unknown) => {
       switch (view) {
         case 'overview': return () => ({ ...overview(read.state, this.now()), tree: journal.tree(read.state.parent?.rootWorkflowId ?? id) });

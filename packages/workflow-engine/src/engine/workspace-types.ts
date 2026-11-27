@@ -165,6 +165,41 @@ export interface LandingTrain {
   error?: string;
 }
 
+/** A submission in the landing queue, as someone who watches the queue is shown it. */
+export interface LandingRider extends LandLabel {
+  workspace: string;
+  headCommit: string;
+  commits: number;
+  /** When it joined the queue; one that rides another train keeps the time it first joined. */
+  since: number;
+}
+
+/**
+ * The landing queue of one repository as it stands. The queue lives in the memory of the service, which writes this
+ * to the workspace store whenever the queue changes, so that a reader outside it (the dashboard) can show what waits
+ * and what the train is doing. `waiting` are the submissions behind the train, in the order they board. `train` is the
+ * train that runs: the submissions it took, in order (`taken` until their commits are in what the checks run on,
+ * `stacked` from then on, and the status one was answered with after that), the runs of the checks so far, and the
+ * run that is going on. `halted` is what the main agent was told of a branch the queue waits for.
+ */
+export interface LandingLive {
+  repository: string;
+  /** When this was written. */
+  at: number;
+  waiting: LandingRider[];
+  train?: {
+    since: number;
+    step: 'stacking' | 'checking' | 'landing';
+    base?: string | null;
+    riders: Array<LandingRider & { state: string }>;
+    checks: LandingTrain['checks'];
+    /** The run of the checks that is going on: on the stack after how many submissions, and since when. */
+    checking?: { submissions: number; since: number };
+  };
+  retrying?: { failures: number; since: number; reason: string };
+  halted?: string;
+}
+
 /** A change configure_landing did not make, and why. */
 export interface LandingRefusal {
   repository: string;
