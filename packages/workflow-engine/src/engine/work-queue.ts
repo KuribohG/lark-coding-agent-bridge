@@ -806,7 +806,7 @@ export function holdClaim(state: WorkflowView, task: TaskView, attemptId: string
  * submission, so a lease that ran out says the queue lost it.
  */
 const SUBMITTED_LEASE_MS = 600_000;
-const SUBMISSION_LOST = 'The landing queue lost this submission before it had an answer (the bridge restarted, or the queue failed). The commits are untouched: bring them back and submit again.';
+const SUBMISSION_LOST = 'The landing queue lost this submission before it had an answer (the bridge restarted, or the queue failed). The commits are untouched: claim_work puts them back into your worktree; submit them again.';
 
 /** A landing report as an item keeps it: long text is cut to its end, where a command that failed says why. */
 function clipped(report: unknown): unknown {
@@ -831,7 +831,7 @@ function turnBack(state: WorkflowView, claim: ClaimView, now: number, back: { st
   emit(state, { type: 'work_updated', itemId: item.id, ...(member ? { assignee: member } : {}), landing: returned, at: now });
   capacity(state, returned);
   if (member && item.status === 'pending') tellMember(state, member, `The landing queue turned back the commits you submitted for work item "${item.key}" (${back.status})${reason ? ': ' + reason.split('\n')[0]!.slice(0, 300) : ''}. `
-    + `The item is yours again: finish what you are doing, then claim_work hands it to you before other work, with what the queue answered in item.landing. Your commits are ${commits}; git cherry-pick brings them into your worktree.`, now);
+    + `The item is yours again: finish what you are doing, then claim_work hands it to you before other work, with what the queue answered in item.landing. claim_work puts your commits ${commits} back into your worktree.`, now);
 }
 
 /** What a submission is answered once the landing queue holds it, and the claim the engine holds for it from then on. */
@@ -900,10 +900,10 @@ export function trackSubmission(state: WorkflowView, task: TaskView, attemptId: 
   return { response, claim: { claimId: claim.id, generation: claim.generation } };
 }
 
-/** The key of the item a task is at work on: the one it holds a claim for that is not with the landing queue. */
-export function heldWork(state: WorkflowView, task: TaskView): string | undefined {
+/** The item a task is at work on, and its claim: the one it holds that is not with the landing queue. */
+export function heldWork(state: WorkflowView, task: TaskView): { key: string; claimId: string; generation: number } | undefined {
   const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && !claim.landing && (task.agentId ? claim.agentId === task.agentId : claim.taskId === task.taskId));
-  return claim && itemById(state, claim.itemId).key;
+  return claim && { key: itemById(state, claim.itemId).key, claimId: claim.id, generation: claim.generation };
 }
 
 /** Keeps a submission with the landing queue for one more lease; throws once the item is no longer the queue's to land. */

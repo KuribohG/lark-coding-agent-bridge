@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { CONTROL_ARGS } from './control-args';
 import { LANDING_HALTED, pushEvent, requireState } from '../kernel-state';
 import { assigned, closeWorkQueue, completeSubmission, enqueueFromMember, enqueueWork, heldWork, holdClaim, holdSubmission, mutateWork, returnSubmission, submitClaim, submittedCommits, trackSubmission, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
@@ -15,8 +16,46 @@ function operationInput(args: ToolArgs): ToolArgs {
   return Object.fromEntries(Object.entries(args).filter(([key]) => !CONTROL_ARGS.includes(key)));
 }
 
-/** Claims, leases and progress of a persistent member's work item. */
-const claimTools: WorkflowTool[] = WORK_MUTATIONS.map(name => ({
+/** How long claim_work waits for the worktree to be moved to where the item starts; the lease of the claim runs meanwhile. */
+const POSITION_WAIT_MS = 60_000;
+
+/**
+ * Claims the member's next item and, where the workflow lands work, puts its worktree where that item starts: on the
+ * commits the landing queue turned back for it, or at the tip of the landing branch (`position` of the workspaces).
+ * The claim is made first and stands whatever becomes of the worktree, which the answer says in `worktree`.
+ */
+const claimWork: WorkflowTool = {
+  name: 'claim_work',
+  worker: {
+    verifiesRoot: true,
+    prepare: (ctx, state) => ctx.scheduler.expireClaims(state),
+    call: () => { throw new Error('claim_work runs outside a transaction'); },
+    run: async (ctx, caller, args, bound) => {
+      // A claim repeats by itself (the member is handed the item it holds), so the call needs no ID of its own.
+      const named = args.operationId === undefined ? { ...args, operationId: `claim-${randomUUID()}` } : args;
+      const taken = bound((state, task) => {
+        active(ctx, state);
+        const held = heldWork(state, task);
+        const response = mutateWork(state, task, caller.attemptId, 'claim_work', named, ctx.now()) as { item?: { landing?: { commits?: unknown } } } | null;
+        // An item the member was at already is where its worktree is.
+        const place = !held && response && task.workspaceId && ctx.host.position && !state.script?.readOnly && !task.readOnly
+          ? { workspace: task.workspaceId, state: ctx.store.workspaceView(state) } : undefined;
+        return { response, place };
+      });
+      if (!taken.place || !taken.response) return taken.response;
+      const commits = taken.response.item?.landing?.commits;
+      try {
+        const placed = await ctx.host.position!(taken.place.state, { workspace: taken.place.workspace, taskId: caller.taskId, ...(typeof commits === 'string' ? { commits } : {}) }, AbortSignal.timeout(POSITION_WAIT_MS));
+        return placed ? { ...taken.response, worktree: placed.worktree, worktreeHead: placed.headCommit, ...(placed.note ? { worktreeNote: placed.note } : {}) } : taken.response;
+      } catch (error) {
+        return { ...taken.response, worktree: 'kept', worktreeNote: `The worktree was not moved to where this item starts: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    },
+  },
+};
+
+/** Leases and progress of a persistent member's work item. */
+const claimTools: WorkflowTool[] = [claimWork, ...WORK_MUTATIONS.filter(name => name !== 'claim_work').map((name): WorkflowTool => ({
   name,
   worker: {
     verifiesRoot: true,
@@ -26,7 +65,7 @@ const claimTools: WorkflowTool[] = WORK_MUTATIONS.map(name => ({
       return mutateWork(state, task, caller.attemptId, name, args, ctx.now());
     },
   },
-}));
+}))];
 
 /**
  * What enqueue_work answers: the item, the queue it went to and the member it is for, which `origin` may have chosen,
@@ -61,8 +100,6 @@ const SUBMIT_WAIT_MAX_S = 3600;
 interface Submission {
   operationId: string;
   attemptId: string;
-  /** The claim it was made for, as `claimId:generation`. */
-  claim?: string;
   since: number;
   answer: Promise<unknown>;
   settled: boolean;
@@ -90,17 +127,17 @@ const submitWork: WorkflowTool = {
     call: () => { throw new Error('submit_work runs outside a transaction'); },
     run: async (ctx, caller, args, bound) => {
       if (Object.keys(args).some(key => !['operationId', 'claimId', 'generation', 'result', 'waitSeconds'].includes(key))) throw new Error('Unsupported submit_work option');
-      const operationId = scriptText(args.operationId, 'operationId', 160);
-      const claim = args.claimId === undefined ? undefined : { claimId: args.claimId, generation: args.generation };
-      if (!claim && args.result !== undefined) throw new Error('result belongs to a claimed work item; pass claimId and generation');
+      // A call that names nothing submits for the item the member holds; an ID or a claim it names must be right.
+      const operationId = args.operationId === undefined ? `submit-${randomUUID()}` : scriptText(args.operationId, 'operationId', 160);
+      let claim = args.claimId === undefined ? undefined : { claimId: args.claimId, generation: args.generation };
       const waitMs = boundedInteger(args.waitSeconds, SUBMIT_WAIT_DEFAULT_S, 0, SUBMIT_WAIT_MAX_S) * 1000;
       const workflowId = bound(state => { active(ctx, state); return state.workflowId; });
       const book = submissions.get(ctx) ?? new Map<string, Submission>(); submissions.set(ctx, book);
-      const key = `${workflowId}:${caller.taskId}`, last = book.get(key), held = claim && `${String(claim.claimId)}:${String(claim.generation)}`;
-      // One submission at a time is at work in a worktree: a call made meanwhile waits for it, whatever operationId
-      // it names. A repeat of its operationId reads its answer again. So does a call that submits the same claim under
-      // another operationId before any call has returned the answer: the member has yet to learn what became of it.
-      const joins = last && last.attemptId === caller.attemptId && (!last.settled || last.operationId === operationId || !last.read && !!held && last.claim === held);
+      const key = `${workflowId}:${caller.taskId}`, last = book.get(key);
+      // One submission at a time is at work in a worktree: a call made meanwhile waits for it, whatever it names. A
+      // repeat of its operationId reads its answer again. So does any call made before a call has returned the
+      // answer: the member has yet to learn what became of that submission, and the answer says which one it is.
+      const joins = last && last.attemptId === caller.attemptId && (!last.settled || last.operationId === operationId || !last.read);
       const submission = joins ? last : (() => {
         const start = bound((state, task) => {
           active(ctx, state);
@@ -109,13 +146,12 @@ const submitWork: WorkflowTool = {
           if (prior) return { prior: prior.response };
           if (!task.workspaceId) throw new Error('submit_work requires a member that runs in a managed worktree');
           if (!ctx.host.land) throw new Error('Landing is unavailable in this workflow');
+          // Commits that complete nothing would leave the item the member is at without its work when the worktree
+          // goes back to the branch: they are for the item it holds, and for no item only when it holds none.
+          const at = heldWork(state, task);
+          claim ??= at && { claimId: at.claimId, generation: at.generation };
           if (claim) holdClaim(state, task, caller.attemptId, claim, ctx.now(), LAND_LEASE_MS);
-          else {
-            // Commits that complete nothing would leave the item the member is at without its work when the worktree goes back to the branch.
-            const at = heldWork(state, task);
-            if (at) throw new Error(`You hold work item "${at}": pass its claimId and generation, so that the item is completed when these commits land. `
-              + 'Commits are submitted without a claim only by a member that holds no item');
-          }
+          else if (args.result !== undefined) throw new Error('result belongs to a work item; you hold none, so these commits get an item of their own');
           return { workspace: task.workspaceId, state: ctx.store.workspaceView(state) };
         });
         if ('prior' in start) return { prior: start.prior };
@@ -181,7 +217,7 @@ const submitWork: WorkflowTool = {
           try { answerWith(rest.status === 'landed' && claim ? { ...rest, item: bound((state, task) => mutateWork(state, task, caller.attemptId, 'complete_work', { operationId, ...claim, result }, ctx.now())) } : rest); }
           catch (error) { failWith(error); }
         })();
-        const begun: Submission = { operationId, attemptId: caller.attemptId, ...(held ? { claim: held } : {}), since: Date.now(), answer, settled: false, read: false };
+        const begun: Submission = { operationId, attemptId: caller.attemptId, since: Date.now(), answer, settled: false, read: false };
         const settle = () => { begun.settled = true; };
         answer.then(settle, settle);
         book.set(key, begun);
@@ -237,7 +273,7 @@ async function withdrawWork<Task>(ctx: KernelContext, args: ToolArgs, by: string
  */
 const MEMBER_INSTRUCTIONS = [
   'Work queue. Work comes as items; you hold one at a time, and the progress you save on an item outlives your turn.',
-  'Taking an item: claim_work({operationId,leaseMs?,queue?}) claims one item atomically and returns {claimId,generation,leaseUntil,item}, or null when there is none for you: then end the turn and do not wait for work. '
+  'Taking an item: claim_work({leaseMs?,queue?}) claims one item atomically and returns {claimId,generation,leaseUntil,item}, or null when there is none for you: then end the turn and do not wait for work. '
     + 'A swarm member that consumes a queue claims from that queue only and omits queue; any other member claims from "default" unless it names one. '
     + 'Items that are for you (item.assignee is your name) come first. item.origin, when set, is the key of the delivered item this one is about, which work_status({key}) reads. '
     + 'The bridge keeps your claim while your turn runs; you cannot renew it. When the turn ends, is cancelled or is stopped after a long silence, an unfinished claim returns to the queue with the progress you saved.',
@@ -248,28 +284,28 @@ const MEMBER_INSTRUCTIONS = [
     + 'item.writeOverlaps lists the unfinished items that expect to change the same paths with nothing to order them (member says who holds one): ask that member who changes what before you start. '
     + 'item.neededBy lists the items that wait on yours and are handed out when you complete it: when yours is a check and it did not pass, end it with fail_work and say why, not with complete_work. '
     + 'Losing a claim does not undo what you changed outside the workflow: check what has already happened and make a repeat harmless.',
-  'Landing code: when you run in a managed worktree and your system prompt names a Landing branch, deliver code with submit_work({operationId,claimId?,generation?,result?,waitSeconds?}). '
+  'Landing code: when you run in a managed worktree and your system prompt names a Landing branch, deliver code with submit_work({result?,waitSeconds?}): it submits the commits of your worktree for the item you hold, and needs no argument. '
     + 'Commit first, and put the key of the item in the commit message: a problem later found in that code is then reported with your item as its origin and comes back to you. '
-    + 'submit_work rebases your commits onto the tip of the landing branch and runs the workflow\'s precheck on them, in your worktree. What fails there is answered at once, as described below, and the item stays yours. '
+    + 'submit_work stacks your commits on the tip of the landing branch and, when the workflow has a precheck, runs it on them in your worktree. What fails there is answered at once, as described below, and the item stays yours. '
     + 'Otherwise your commits join the landing queue and the call answers {status:"submitted",key,targetCommit,headCommit,commits,worktree}. You do not wait for the queue, '
     + 'which checks your commits in one batch with those of other members and advances the branch. The item is the queue\'s from then on: do not submit it again, and do not complete, fail or release it. '
     + 'When you find that commits you submitted should not land (they are wrong, or they make the checks fail or take far longer), withdraw_work({key or itemId,reason}) takes them out of the queue '
     + 'and the item is yours again, as when the queue turns them back; {status:"landing"} or {status:"absent"} says it was too late for that. '
     + 'It is completed with result (the landed commit when omitted) when the commits land, and items that wait on it are handed out only then. '
     + 'Your worktree is back at targetCommit, the tip of the landing branch, without the commits you submitted (worktree:"kept" says it could not be moved: run git reset --hard <targetCommit> yourself). '
-    + 'Call claim_work for your next item and start it there; do not start work that needs commits that have not landed. '
-    + 'The call lasts as long as the rebase and the precheck, and waits for them for up to waitSeconds (180 unless you pass another, at most 3600): give your shell command a time limit a minute longer than that. '
-    + 'When they take longer it answers {status:"preparing",operationId,seconds}, and nothing is wrong: call submit_work again with the same operationId, as often as it takes, and leave your worktree as it is meanwhile. '
-    + 'A call that was cut off loses nothing either: repeat it with the same operationId. A worktree with nothing to land is answered {status:"landed",commits:0}, which completes the item you named. '
-    + 'Without claimId, which is for a member that holds no item, submit_work adds an item for the commits (key in the answer) and they are followed in the same way. '
+    + 'Call claim_work for your next item: it moves your worktree to where that item starts and says so (worktree:"tip", the tip of the landing branch, or "commits", the commits the queue turned back for the item; "kept" with worktreeNote says it was left alone and why). Do not start work that needs commits that have not landed. '
+    + 'The call lasts as long as the precheck, and waits for it for up to waitSeconds (180 unless you pass another, at most 3600): give your shell command a time limit a minute longer than that. '
+    + 'When it takes longer it answers {status:"preparing",seconds}, and nothing is wrong: call submit_work again, as often as it takes, and leave your worktree as it is meanwhile. '
+    + 'A call that was cut off loses nothing either: call it again. A worktree with nothing to land is answered {status:"landed",commits:0}, which completes the item you hold. '
+    + 'For a member that holds no item, submit_work adds an item for the commits (key in the answer) and they are followed in the same way. '
     + 'Only submit_work advances the landing branch: never commit, update-ref or push to it. '
     + 'The queue checks in a worktree of its own (a train-… directory that git worktree list shows): never run a command in it, not even git status, which locks its index and stops the landing for everyone.',
-  'When the queue turns your commits back you are told, and the item is yours again: claim_work hands it to you before other work, with item.landing = {status,reason?,commits,report}. '
-    + 'Bring the commits back with git cherry-pick <commits> (a range, base..head), repair what status and report say as described below, commit and submit again with the claim you now hold. '
-    + 'status "lost" or "failed" says the queue did not get to check them (the bridge restarted, or the queue gave up for a reason of its own): cherry-pick them and submit again. '
+  'When the queue turns your commits back you are told, and the item is yours again: claim_work hands it to you before other work, with item.landing = {status,reason?,commits,report}, and puts those commits back into your worktree. '
+    + 'Repair what status and report say as described below, commit and submit again. '
+    + 'status "lost" or "failed" says the queue did not get to check them (the bridge restarted, or the queue gave up for a reason of its own): submit them again as they are. '
     + 'status "withdrawn" says someone took them out of the queue before they landed, and reason says who and why: repair what it names before you submit again. '
-    + 'An item of another member that carries item.landing is taken up the same way, from that member\'s commits.',
-  'What turns a landing back. submit_work answers it at once when it happens in your worktree: the claim stays yours and the worktree holds your commits, so repair and submit again with a new operationId, '
+    + 'An item of another member that carries item.landing is taken up the same way: claim_work puts that member\'s commits into your worktree.',
+  'What turns a landing back. submit_work answers it at once when it happens in your worktree: the claim stays yours and the worktree holds your commits, so repair and submit again, '
     + 'or use release_claim or fail_work when you cannot. From the queue it comes later, in item.landing. '
     + '{status:"conflict",targetCommit,detail}: your commits conflict with what has landed. Rebase onto targetCommit, resolve the conflict and submit again. '
     + 'Do not merge by hand a file that a command generates (a registry, a manifest, an index): take its version from targetCommit, run the command again and commit what it writes. '

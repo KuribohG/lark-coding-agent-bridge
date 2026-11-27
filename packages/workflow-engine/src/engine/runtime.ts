@@ -160,6 +160,11 @@ export class WorkflowRuntime {
         signal.throwIfAborted();
         return this.workspaceManager().land({ state, signal }, input);
       },
+      position: async (state, input, signal) => {
+        await this.workspacePolicy(state.root);
+        signal.throwIfAborted();
+        return this.workspaceManager().position({ state, signal }, input);
+      },
       withdraw: async (state, input) => {
         await this.workspacePolicy(state.root);
         return this.workspaceManager().withdraw(state.workflowId, input.headCommit, input.reason);

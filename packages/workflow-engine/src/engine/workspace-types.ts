@@ -197,6 +197,13 @@ export interface LandLabel { key?: string; member?: string }
 export type LandWithdrawal = 'withdrawn' | 'landing' | 'absent';
 
 /**
+ * Where claim_work left the worktree of the member that claimed an item. `commits`: on the commits the landing queue
+ * turned back for the item, as they were submitted. `tip`: at the tip of the landing branch. `kept`: where it stood,
+ * because moving it would have lost something; `note` says what. `headCommit` is where the worktree stands.
+ */
+export interface LandPosition { worktree: 'tip' | 'commits' | 'kept'; headCommit: string; note?: string }
+
+/**
  * A submission that joined the landing queue, which is what its member is answered: it goes on to its next item, and
  * what the queue makes of the commits reaches it through the work item they are for. The commits
  * `targetCommit..headCommit` are the queue's now, by their IDs; the member's worktree was moved back to
@@ -207,11 +214,11 @@ export interface LandSubmitted { targetRef: string; targetCommit: string; headCo
 export type LandReport = (
   /** The branch head now contains the work. With no commits it is what a worktree that had nothing to land is answered. */
   | { status: 'landed'; targetRef: string; headCommit: string; commits: number }
-  /** The commits do not apply to `targetCommit`. From the rebase in the member's worktree, which holds them as submitted; from a train, about commits its member no longer has checked out. */
+  /** The commits do not apply to `targetCommit`. At submit_work the member's worktree holds them as submitted; from a train they are the item's, and claim_work puts them back into a worktree. */
   | { status: 'conflict'; targetRef: string; targetCommit: string; detail: string }
   /** A check failed on the commits on top of `targetCommit`: the precheck in the member's worktree, which holds them, or the checks of a train. */
   | { status: 'check_failed'; targetRef: string; targetCommit: string; headCommit: string; reason?: string; commands: WorkspaceChecks['commands'] }
-  /** The commits change protected paths; the worktree is left rebased onto `targetCommit`. */
+  /** The commits change protected paths; the worktree holds them as submitted. */
   | { status: 'rejected'; targetRef: string; targetCommit: string; files: string[]; reason: string }
   /** The branch was moved from outside the queue to a commit it does not vouch for. What a new submission is answered until the main agent settles it; submissions already in the queue wait there. */
   | { status: 'halted'; targetRef: string; targetCommit: string | null; reason: string }

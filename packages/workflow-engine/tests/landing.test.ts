@@ -925,6 +925,61 @@ describe('handing commits to the landing queue', () => {
     expect(await git(a.ws.path, 'status', '--porcelain')).toBe('?? three.txt');
   }, 60_000);
 
+  it('puts the commits the queue turned back into the worktree of whoever takes the item, and a worktree with nothing of its own at the tip', async () => {
+    const h = await fixture();
+    const landing = await h.configure([node(`if(require('fs').existsSync('bad.txt')){console.error('bad.txt present');process.exit(3)}`)]);
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    const place = (member: { ws: WorkspaceBinding }, taskId: string, commits?: string) => h.manager.position(h.ctx, { workspace: member.ws.id, taskId, ...(commits ? { commits } : {}) });
+    const kept = async () => (await git(h.repo, 'for-each-ref', '--format=%(refname)', `refs/bridge-workflow/${h.ctx.state.workflowId}/work/`)).split('\n').filter(Boolean);
+    await a.commit('bad.txt', 'x\n');
+    const handed = handOff(h, a, 'a'), info = await handed.submitted, commits = `${info.targetCommit}..${info.headCommit}`;
+    // The queue keeps the commits under a ref of their own while it answers for them, and after it turned them back.
+    const ref = `refs/bridge-workflow/${h.ctx.state.workflowId}/work/${info.headCommit}`;
+    expect(await kept()).toEqual([ref]);
+    expect(await handed.report).toMatchObject({ status: 'check_failed' });
+    // Other work lands meanwhile: a member with nothing of its own starts its next item at the tip.
+    await b.commit('good.txt', 'g\n'); expect(await b.land()).toMatchObject({ status: 'landed' });
+    const tip = await git(h.repo, 'rev-parse', landing.targetRef);
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(h.base);
+    expect(await place(a, 'a')).toEqual({ worktree: 'tip', headCommit: tip });
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(tip);
+    expect(await place(a, 'a')).toEqual({ worktree: 'tip', headCommit: tip });
+    // The item that came back starts on its commits as they were submitted, in the worktree of another member as well.
+    expect(await place(a, 'a', commits)).toEqual({ worktree: 'commits', headCommit: info.headCommit });
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(info.headCommit);
+    expect(await place(a, 'a', commits)).toEqual({ worktree: 'commits', headCommit: info.headCommit });
+    expect(await place(b, 'b', commits)).toEqual({ worktree: 'commits', headCommit: info.headCommit });
+    expect(await git(b.ws.path, 'ls-files')).toContain('bad.txt');
+    // Repaired and submitted again they land on what landed meanwhile. What landed needs no ref of its own any more.
+    await git(a.ws.path, 'rm', '-q', 'bad.txt'); await git(a.ws.path, 'commit', '-q', '-m', 'repair'); await a.commit('fixed.txt', 'f\n');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 3 });
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).toEqual(expect.arrayContaining(['good.txt', 'fixed.txt']));
+    await vi.waitFor(async () => expect(await kept()).toEqual([ref]), { timeout: 5000, interval: 20 });
+    // A task that does not run in the worktree is not positioned.
+    expect(await place(a, 'someone-else')).toBeUndefined();
+  }, 60_000);
+
+  it('leaves a worktree that would lose something by the move where it is, and says why', async () => {
+    const h = await fixture();
+    await h.configure();
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    const place = (commits?: string) => h.manager.position(h.ctx, { workspace: a.ws.id, taskId: 'a', ...(commits ? { commits } : {}) });
+    await b.commit('b.txt', 'b\n'); expect(await b.land()).toMatchObject({ status: 'landed' });
+    const tip = await h.head();
+    // Work that is not committed.
+    await writeFile(join(a.ws.path, 'draft.txt'), 'draft\n');
+    expect(await place()).toMatchObject({ worktree: 'kept', headCommit: h.base, note: expect.stringContaining('uncommitted') });
+    expect(await git(a.ws.path, 'status', '--porcelain')).toBe('?? draft.txt');
+    // Commits of its own that are not on the branch, whether the item is new or one that came back.
+    await git(a.ws.path, 'add', '.'); await git(a.ws.path, 'commit', '-q', '-m', 'draft');
+    const own = await git(a.ws.path, 'rev-parse', 'HEAD');
+    expect(await place()).toMatchObject({ worktree: 'kept', headCommit: own, note: expect.stringContaining(`git reset --hard ${tip}`) });
+    expect(await place(`${h.base}..${tip}`)).toMatchObject({ worktree: 'kept', headCommit: own });
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(own);
+    // Commits that are nowhere to be found.
+    expect(await place(`${h.base}..${'1'.repeat(40)}`)).toMatchObject({ worktree: 'kept', note: expect.stringContaining('not in this repository') });
+  }, 60_000);
+
   it('reports a failed check with commits the member can bring back, and still answers a conflict in its worktree at once', async () => {
     const h = await fixture();
     await h.configure([node(`if(require('fs').existsSync('bad.txt')){console.error('bad.txt present');process.exit(3)}`)]);
@@ -980,8 +1035,10 @@ describe('handing commits to the landing queue', () => {
 describe('submit_work', () => {
   type Landed = { workspace: string; taskId: string; submitted?: (info: LandSubmitted) => { key?: string; member?: string } | void; noticed?: (notice: string, halted: boolean) => void };
   type Withdrawal = { headCommit: string; reason: string };
+  type Placing = { workspace: string; taskId: string; commits?: string };
+  type Placed = { worktree: 'tip' | 'commits' | 'kept'; headCommit: string; note?: string } | undefined;
   function harness(land: (input: Landed, signal: AbortSignal) => Promise<unknown>, landing?: (input: Record<string, unknown>) => Promise<unknown>, path = ':memory:',
-    withdraw?: (input: Withdrawal) => 'withdrawn' | 'landing' | 'absent') {
+    withdraw?: (input: Withdrawal) => 'withdrawn' | 'landing' | 'absent', position?: (input: Placing) => Promise<Placed>) {
     let now = 1_000_000;
     const root: WorkflowRoot = { scopeId: 'submit-test', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace', policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: {} };
     const requests: WorkflowWorkerRequest[] = [];
@@ -989,13 +1046,17 @@ describe('submit_work', () => {
     const kernel = new WorkflowKernel(path, { resolveRoot: async () => root, wakeMain: async () => {}, resolveWorkspace: async () => {},
       land: async (_state, input, signal) => land(input, signal), ...(landing ? { landing: async (_state: unknown, input: Record<string, unknown>) => landing(input) } : {}),
       ...(withdraw ? { withdraw: async (_state: unknown, input: Withdrawal) => withdraw(input) } : {}),
+      ...(position ? { position: async (_state: unknown, input: Placing) => position(input) } : {}),
       execute: async request => { requests.push(request); request.onRun('run-' + request.attemptId); request.onSession('native');
         return new Promise<WorkflowWorkerResult>(resolve => { finishers.push(resolve); request.signal.addEventListener('abort', () => resolve({ status: 'stopped' }), { once: true }); }); } }, () => now);
     closes.push(() => kernel.close());
     const state = () => kernel.state(root.scopeId)!;
     const send = (request: WorkflowWorkerRequest, method: string, args: Record<string, unknown> = {}) => kernel.call({ kind: 'worker', scopeId: root.scopeId,
       workflowId: state().workflowId, taskId: request.task.taskId, attemptId: request.attemptId }, method, { operationId: randomUUID(), ...args });
-    return { kernel, state, requests, send, advance: (ms: number) => { now += ms; },
+    /** Calls with the arguments as they are, as a member that names no operationId does. */
+    const raw = (request: WorkflowWorkerRequest, method: string, args: Record<string, unknown> = {}) => kernel.call({ kind: 'worker', scopeId: root.scopeId,
+      workflowId: state().workflowId, taskId: request.task.taskId, attemptId: request.attemptId }, method, args);
+    return { kernel, state, requests, send, raw, advance: (ms: number) => { now += ms; },
       enqueue: (key: string) => kernel.scriptWork(root.scopeId, state().workflowId, state().script!.runId, { kind: 'enqueue', key, title: key, input: {} }),
       /** Ends the member's turn. */
       finish: async (request: WorkflowWorkerRequest) => {
@@ -1092,11 +1153,16 @@ describe('submit_work', () => {
     releases[1]!.reject(new Error('Could not rebase: the repository is locked'));
     await expect(submit('two', 5)).rejects.toThrow('the repository is locked');
     await expect(submit('two')).rejects.toThrow('the repository is locked');
-    // Without a claim an answer nobody read is not mistaken for that of new commits.
+    // An answer nobody has read is what the next call is given, whatever it names, and says which submission it is of.
     expect(await submit('three')).toMatchObject({ status: 'preparing', operationId: 'three' });
     releases[2]!.resolve({ status: 'landed', targetRef: 'refs/heads/x', headCommit: 'abc', commits: 0 });
     await new Promise(resolve => setTimeout(resolve, 20));
-    expect(await submit('four')).toMatchObject({ status: 'preparing', operationId: 'four' });
+    expect(await submit('four')).toMatchObject({ status: 'landed', commits: 0, operationId: 'three' });
+    expect(releases).toHaveLength(3);
+    // Once it was read a call submits anew, and so does one that names nothing at all.
+    expect(await h.raw(request, 'submit_work', { waitSeconds: 0 })).toMatchObject({ status: 'preparing' });
+    expect(releases).toHaveLength(4);
+    expect(await h.raw(request, 'submit_work', { waitSeconds: 0 })).toMatchObject({ status: 'preparing' });
     expect(releases).toHaveLength(4);
     // Nothing joined the queue, so nothing was added to follow it.
     expect(h.state().workQueue!.items).toHaveLength(1);
@@ -1287,15 +1353,19 @@ describe('submit_work', () => {
       expect(again.item).toMatchObject({ key: second.key, landing: { status: 'conflict' } });
     });
 
-    it('refuses commits without a claim from a member that holds an item, which they would leave without its work', async () => {
+    it('submits what a call that names nothing brings for the item the member holds, and for an item of their own when it holds none', async () => {
       const h = queue();
       const request = await h.start('ws-1'); await h.enqueue('bug-2');
-      const grant = await h.send(request, 'claim_work') as Taken;
-      await expect(h.send(request, 'submit_work')).rejects.toThrow('You hold work item "bug-1": pass its claimId and generation');
-      expect(h.lands).toHaveLength(0);
-      // An item that is with the queue is not one the member holds.
-      await h.handOff(request, grant, 'submit-1', 'aaa', 'bbb');
-      const pending = h.send(request, 'submit_work', { operationId: 'free' });
+      const grant = await h.raw(request, 'claim_work') as Taken;
+      expect(grant.item.key).toBe('bug-1');
+      const first = h.raw(request, 'submit_work', { result: { fixed: 'bug-1' } });
+      await vi.waitFor(() => expect(h.lands).toHaveLength(1));
+      h.lands[0]!.submitted!(joined('aaa', 'b'.repeat(40)));
+      expect(await first).toMatchObject({ status: 'submitted', key: 'bug-1' });
+      expect(h.state().workQueue!.claims.find(claim => claim.id === grant.claimId)).toMatchObject({ status: 'active', landing: { headCommit: 'b'.repeat(40) } });
+      // An item that is with the queue is not one the member holds: what it submits now gets an item of its own, which takes no result.
+      await expect(h.raw(request, 'submit_work', { result: 1 })).rejects.toThrow('you hold none');
+      const pending = h.raw(request, 'submit_work');
       await vi.waitFor(() => expect(h.lands).toHaveLength(2));
       h.lands[1]!.submitted!(joined('aaa', 'c'.repeat(40)));
       expect(await pending).toMatchObject({ status: 'submitted', key: 'submitted-cccccccccccc' });
@@ -1395,6 +1465,21 @@ describe('submit_work', () => {
     await expect(bare.kernel.call({ kind: 'main', scopeId: 'submit-test' }, 'configure_landing', {})).rejects.toThrow('Landing is unavailable');
   });
 
+  it('has claim_work put the worktree where the item starts, and grants the claim whatever becomes of the worktree', async () => {
+    const places: Placing[] = [];
+    const h = harness(async () => ({ status: 'landed' }), undefined, ':memory:', undefined, async input => { places.push(input); return { worktree: 'tip', headCommit: 'ttt' }; });
+    const request = await h.start('ws-1');
+    const grant = await h.raw(request, 'claim_work') as Grant;
+    expect(grant).toMatchObject({ item: { key: 'bug-1' }, worktree: 'tip', worktreeHead: 'ttt' });
+    expect(places).toEqual([{ workspace: 'ws-1', taskId: request.task.taskId }]);
+    // The item it is at already is where its worktree is: a repeat hands the claim out again and moves nothing.
+    expect(await h.raw(request, 'claim_work')).toMatchObject({ claimId: grant.claimId, generation: grant.generation });
+    expect(places).toHaveLength(1);
+    const failing = harness(async () => ({ status: 'landed' }), undefined, ':memory:', undefined, async () => { throw new Error('index.lock exists'); });
+    const other = await failing.start('ws-1');
+    expect(await failing.raw(other, 'claim_work')).toMatchObject({ item: { key: 'bug-1' }, worktree: 'kept', worktreeNote: expect.stringContaining('index.lock exists') });
+  });
+
   it('refuses members without a worktree and stale claims before touching Git', async () => {
     const land = vi.fn(async () => ({ status: 'landed' }));
     const bare = harness(land);
@@ -1405,7 +1490,6 @@ describe('submit_work', () => {
     const second = await h.start('ws-1');
     const held = await h.send(second, 'claim_work') as Grant;
     await expect(h.send(second, 'submit_work', { claimId: held.claimId, generation: held.generation + 1 })).rejects.toThrow('stale');
-    await expect(h.send(second, 'submit_work', { result: 1 })).rejects.toThrow('claimId');
     await expect(h.send(second, 'submit_work', { extra: 1 })).rejects.toThrow('Unsupported');
     expect(land).not.toHaveBeenCalled();
   });
@@ -1432,19 +1516,19 @@ describe('claim, fix and land through the runtime', () => {
         /** One turn of a fixer: claim until there is nothing to claim. */
         const work = (async () => {
           for (;;) {
-            const grant = await callWorkflow('claim_work', { operationId: randomUUID() }, spec.env) as { claimId: string; generation: number; item: { key: string; landing?: { status: string } } } | null;
+            const grant = await callWorkflow('claim_work', {}, spec.env) as { claimId: string; generation: number; item: { key: string; landing?: { status: string } } } | null;
             if (!grant) return;
-            const claim = { claimId: grant.claimId, generation: grant.generation };
-            // A fix the queue turned back clashed with one that landed before it: it is made again on what landed.
+            // A fix the queue turned back clashed with one that landed before it. claim_work put it into the worktree;
+            // this fixer makes it again on what landed instead.
             if (grant.item.landing) returned.push(grant.item.landing.status);
             if (isolation === 'clone') await git(cwd, 'fetch', '--quiet', CLONE_REMOTE);
             const branch = (await git(cwd, 'for-each-ref', '--format=%(refname)', refs)).split('\n')[0];
-            if (branch) await git(cwd, 'rebase', branch);
+            if (branch) await git(cwd, ...(grant.item.landing ? ['reset', '--hard', '--quiet'] : ['rebase']), branch);
             // Every fixer appends to the same file, so fixes made at the same time conflict and must be redone on the new head.
             for (;;) {
               await writeFile(join(cwd, 'fixed.txt'), (await readFile(join(cwd, 'fixed.txt'), 'utf8').catch(() => '')) + grant.item.key + '\n');
               await git(cwd, 'add', '.'); await git(cwd, '-c', 'user.name=Fixer', '-c', 'user.email=fixer@localhost', 'commit', '-m', grant.item.key);
-              const report = await callWorkflow('submit_work', { operationId: randomUUID(), ...claim, result: { fixed: grant.item.key } }, spec.env) as { status: string; targetCommit: string };
+              const report = await callWorkflow('submit_work', { result: { fixed: grant.item.key } }, spec.env) as { status: string; targetCommit: string };
               if (report.status === 'submitted') break;
               rejected.push(report.status);
               await git(cwd, 'reset', '--hard', report.targetCommit);
@@ -1497,20 +1581,23 @@ describe('claim, fix and land through the runtime', () => {
         /** One turn of a fixer: claim, fix, hand the fix to the queue and claim again, until there is nothing to claim. */
         const work = (async () => {
           for (;;) {
-            const grant = await callWorkflow('claim_work', { operationId: randomUUID() }, spec.env) as { claimId: string; generation: number; item: { key: string; landing?: { status: string; commits: string } } } | null;
+            const grant = await callWorkflow('claim_work', {}, spec.env) as { claimId: string; generation: number; worktree?: string; worktreeNote?: string; item: { key: string; landing?: { status: string; commits: string } } } | null;
             if (!grant) return;
             const { key, landing } = grant.item;
             if (landing) {
-              // The queue turned this fix back: bring the commits back and repair them.
+              // The queue turned this fix back: claim_work has put its commits into the worktree, to be repaired there.
               returned.push({ key, status: landing.status });
-              await git(cwd, '-c', 'user.name=Fixer', '-c', 'user.email=fixer@localhost', 'cherry-pick', landing.commits);
+              expect(grant.worktree, grant.worktreeNote).toBe('commits');
+              expect(await git(cwd, 'rev-parse', 'HEAD')).toBe(landing.commits.split('..')[1]);
               await git(cwd, 'rm', '-q', 'broken.txt'); await commit(`${key}: repair`);
             } else {
+              // A new item starts at the tip of the landing branch.
+              expect(grant.worktree, grant.worktreeNote).toBe('tip');
               await writeFile(join(cwd, `fix-${key}.txt`), key + '\n');
               if (key === 'bug-3') await writeFile(join(cwd, 'broken.txt'), 'x\n');
               await git(cwd, 'add', '.'); await commit(key);
             }
-            const report = await callWorkflow('submit_work', { operationId: randomUUID(), claimId: grant.claimId, generation: grant.generation, result: { fixed: key } }, spec.env) as { status: string; targetCommit: string };
+            const report = await callWorkflow('submit_work', { result: { fixed: key } }, spec.env) as { status: string; targetCommit: string };
             answers.push(report.status);
             if (report.status !== 'submitted') throw new Error(`submit_work answered ${report.status}`);
             // The worktree is at the tip of the branch, without the fix that waits in the queue.

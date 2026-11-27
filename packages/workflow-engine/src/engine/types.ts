@@ -464,7 +464,7 @@ export interface WorkLandingReturn {
   /** The status of the landing report, or `lost` when the queue did not get to answer (a restart, a failure of its own). */
   status: string;
   reason?: string;
-  /** The member's commits as `base..head`: `git cherry-pick` brings them back into a worktree. */
+  /** The member's commits as `base..head`: claim_work puts them into the worktree of whoever takes the item again. */
   commits: string;
   /** The landing report, with long command output cut to its end. */
   report?: unknown;
@@ -856,6 +856,12 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   land?(state: WorkspaceStateView, input: { workspace: string; taskId: string;
     submitted?: (info: { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }) => { key?: string; member?: string } | void;
     noticed?: (notice: string, halted: boolean) => void }, signal: AbortSignal): Promise<unknown>;
+  /**
+   * Puts the worktree of the task where the item it has just claimed starts: on the commits the landing queue turned
+   * back for the item (`commits`, as `base..head`), or else at the tip of the landing branch. Resolves to a
+   * LandPosition (workspace-types.ts), or to nothing where no landing is configured.
+   */
+  position?(state: WorkspaceStateView, input: { workspace: string; taskId: string; commits?: string }, signal: AbortSignal): Promise<{ worktree: 'tip' | 'commits' | 'kept'; headCommit: string; note?: string } | undefined>;
   /**
    * Takes the submission whose commits end at `headCommit` out of the landing queue, which answers it `withdrawn`
    * with `reason`; resolves to a LandWithdrawal (workspace-types.ts).

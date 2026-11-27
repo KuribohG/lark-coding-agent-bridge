@@ -10,7 +10,7 @@ import { largeCheckout, writeCheckout, type CheckoutGit } from './workspace-chec
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import { WsfsMounts, type WsfsOwner } from './workspace-wsfs';
 import type { WorkflowProcesses } from './ports';
-import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingTrain, LandingView, LandLabel, LandReport, LandSubmitted, LandWithdrawal, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingTrain, LandingView, LandLabel, LandPosition, LandReport, LandSubmitted, LandWithdrawal, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
@@ -909,20 +909,27 @@ export class WorkflowWorkspaces {
     await this.git(ws.path, ['reset', '--hard', '--quiet', commit], signal);
   }
   /**
-   * Rebases the commits of a wsfs workspace onto `onto` without writing a file: they are stacked in the object
-   * database (see `graft`) and the workspace is moved to the result. A rebase by Git in the workspace writes every
-   * file that differs between the two branch heads through the mount, and the workspace then keeps them all.
-   * Returns nothing when this is not the way to do it here (another isolation, HEAD on a branch, commits that are no
-   * plain line, a daemon that refuses), and the caller has Git rebase in the workspace.
+   * Rebases the commits of a workspace onto `onto` without writing a file: they are stacked in the object database
+   * (see `graft`), and the workspace stays where it is until the caller moves it to the result. A rebase by Git in
+   * the workspace rewrites the index and, for each commit, every file that differs between the two branch heads; in
+   * a wsfs workspace those go through the mount, and the workspace then keeps them all. Returns nothing when this is
+   * not the way to do it here (a wsfs workspace with HEAD on a branch, which only Git moves; commits that are no plain
+   * line), and the caller has Git rebase in the workspace.
    */
   private async rebased(ws: WorkspaceBinding, head: string, onto: string, signal: AbortSignal): Promise<{ head: string } | { conflict: string } | undefined> {
-    if (ws.isolation !== 'wsfs' || (await this.git(ws.path, ['symbolic-ref', '--quiet', 'HEAD'], signal, true)).code !== 1) return undefined;
-    const base = (await this.git(ws.repository, ['merge-base', head, onto], signal, true)).stdout.trim();
+    if (ws.isolation === 'wsfs' && (await this.git(ws.path, ['symbolic-ref', '--quiet', 'HEAD'], signal, true)).code !== 1) return undefined;
+    // A clone's commits are in its own object store, which also reads the source's; the others share the source's.
+    const repo = ws.isolation === 'clone' ? ws.path : ws.repository;
+    const base = (await this.git(repo, ['merge-base', head, onto], signal, true)).stdout.trim();
     if (!SHA.test(base)) return undefined;
-    const stacked = await this.graft(ws.repository, onto, { base, head }, await this.identity(ws.path, signal), signal);
-    if (!stacked || 'conflict' in stacked) return stacked;
-    return await this.mounts.move(ws, stacked.head, signal) ? stacked : undefined;
+    return this.graft(repo, onto, { base, head }, await this.identity(ws.path, signal), signal);
   }
+  /**
+   * The ref that keeps the commits of a submission in the source repository while the landing queue answers for them:
+   * the member's worktree has gone back to the branch, so nothing else names them. It is dropped when they land. The
+   * ref of commits the queue turned back stays, for claim_work to put them into the worktree of whoever takes the item.
+   */
+  private workRef(ws: Pick<WorkspaceBinding, 'workflowId'>, head: string): string { return `refs/bridge-workflow/${ws.workflowId}/work/${head}`; }
 
   private async refHead(repo: string, ref: string, signal: AbortSignal): Promise<string | null> {
     const value = await this.git(repo, ['rev-parse', '--verify', '--quiet', ref], signal, true);
@@ -1017,10 +1024,12 @@ export class WorkflowWorkspaces {
   }
   /**
    * Submits the commits of a member's worktree to the landing queue. Called by the task running in that worktree. The
-   * worktree is rebased onto the branch, screened for protected paths and prechecked on its own, side by side with
-   * other members, and what fails there is the answer. Then the commits join the queue by their IDs, `submitted` is
-   * called, and the worktree goes back to the tip of the branch for the member's next item: the queue does not look
-   * at it again. The promise settles with what the queue made of the commits (see `round`), which may be much later.
+   * commits are stacked on the branch in the object database, screened for protected paths and, when the workflow has
+   * a precheck, checked in the worktree on their own, side by side with other members; what fails there is the
+   * answer, with the worktree as the member left it or, after a precheck, on the stacked commits. Then the commits
+   * join the queue by their IDs under a ref of their own, `submitted` is called, and the worktree goes back to the tip
+   * of the branch for the member's next item: the queue does not look at it again. The promise settles with what the
+   * queue made of the commits (see `round`), which may be much later.
    */
   land(ctx: WorkspaceContext, input: LandInput): Promise<LandReport> {
     if (this.closed) return Promise.reject(new Error('Workspace service is closed'));
@@ -1054,54 +1063,102 @@ export class WorkflowWorkspaces {
     const targetCommit = branch ?? ws.baseCommit;
     const nothing = { status: 'landed' as const, targetRef, headCommit: targetCommit, commits: 0 };
     if (await ancestor(before.headCommit, targetCommit)) return nothing;
-    if (!await ancestor(targetCommit, before.headCommit)) {
-      const stacked = await this.rebased(ws, before.headCommit, targetCommit, signal);
+    // `head` is what is submitted, `at` where the worktree stands: the commits are stacked on the branch in the object
+    // database, and the worktree follows only when the precheck has to run on them.
+    let head = before.headCommit, at = head;
+    if (!await ancestor(targetCommit, head)) {
+      const stacked = await this.rebased(ws, head, targetCommit, signal);
       if (stacked && 'conflict' in stacked) return { status: 'conflict', targetRef, targetCommit, detail: stacked.conflict };
-      if (!stacked) {
+      if (stacked) head = stacked.head;
+      else {
         const undo = () => this.git(ws.path, ['rebase', '--abort'], new AbortController().signal, true);
         const rebased = await this.git(ws.path, [...await this.identity(ws.path, signal), 'rebase', targetCommit], signal, true, undefined, { keep: 'tail' }).catch(async error => { await undo(); throw error; });
         if (rebased.code) await undo();
         if (rebased.code) return { status: 'conflict', targetRef, targetCommit, detail: (rebased.stdout + rebased.stderr).slice(-4000) };
+        head = at = (await this.clean(ws, signal)).headCommit;
       }
     }
-    const pinned = await this.clean(ws, signal);
-    if (pinned.headCommit === targetCommit) return nothing;
+    const quiet = new AbortController().signal;
+    if (head === targetCommit) {
+      // The branch holds all of it already: the worktree goes there, as after a landing.
+      if (at !== head) await this.reset(ws, targetCommit, quiet).catch(() => {});
+      return nothing;
+    }
     if (landing.protect) {
       const barred = landing.protect.filter(rule => !rule.allow.includes(ws.id)).flatMap(rule => rule.paths.map(pathPattern));
-      const { count, files } = await this.touched(ws.path, targetCommit, pinned.headCommit, barred, signal);
+      const { count, files } = await this.touched(ws.path, targetCommit, head, barred, signal);
       if (count) return { status: 'rejected', targetRef, targetCommit, files,
         reason: `${count} changed path(s) are protected from this worktree; resubmit commits that leave them as they are on the landing branch` };
     }
     if (landing.precheck) {
+      if (at !== head) { await this.reset(ws, head, signal); at = head; }
       const commands = tail(await this.run(ws.path, landing.precheck, signal, ctx.state.deadlineAt));
-      const failed = { status: 'check_failed' as const, targetRef, targetCommit, headCommit: pinned.headCommit, commands };
+      const failed = { status: 'check_failed' as const, targetRef, targetCommit, headCommit: head, commands };
       if (commands.length !== landing.precheck.length || commands.some(result => result.code)) return failed;
       const after = await this.clean(ws, signal).catch((error: Error) => error.message);
       if (typeof after === 'string') return { ...failed, reason: after };
-      if (after.headCommit !== pinned.headCommit) return { ...failed, reason: 'Checks changed the worktree HEAD' };
+      if (after.headCommit !== head) return { ...failed, reason: 'Checks changed the worktree HEAD' };
     }
-    const commits = Number((await this.git(ws.path, ['rev-list', '--count', `${targetCommit}..${pinned.headCommit}`], signal)).stdout.trim());
-    await this.publish(ws, pinned.headCommit, signal);
+    const commits = Number((await this.git(ws.path, ['rev-list', '--count', `${targetCommit}..${head}`], signal)).stdout.trim());
+    await this.publish(ws, head, signal);
+    await this.git(ws.repository, ['update-ref', this.workRef(ws, head), head], signal);
     signal.throwIfAborted();
     // The queue takes the commits by their IDs. The worktree starts the member's next item where a landing would
     // leave it: at the tip of the branch, without commits that may yet be turned back. One that cannot be moved is
     // left to the member, which is told so.
-    const quiet = new AbortController().signal;
     const moved = await this.reset(ws, targetCommit, quiet).then(() => true, () => false);
     flight.detach();
     let label: LandLabel | undefined;
-    try { label = input.submitted?.({ targetRef, targetCommit, headCommit: pinned.headCommit, commits, worktree: moved ? 'reset' : 'kept' }) || undefined; }
+    try { label = input.submitted?.({ targetRef, targetCommit, headCommit: head, commits, worktree: moved ? 'reset' : 'kept' }) || undefined; }
     catch (error) {
       // Nobody answers for the commits (the claim they were submitted for ended meanwhile, say). The queue does not
       // take them, and the worktree gets them back for whoever works there next.
-      const back = !moved || await this.reset(ws, pinned.headCommit, quiet).then(() => true, () => false);
+      const back = !moved || await this.reset(ws, head, quiet).then(() => true, () => false);
+      await this.git(ws.repository, ['update-ref', '-d', this.workRef(ws, head)], quiet, true).catch(() => {});
       if (back) throw error;
-      throw new Error(`${error instanceof Error ? error.message : String(error)}. The commits are ${targetCommit}..${pinned.headCommit}, and the worktree was moved back to ${targetCommit}: git cherry-pick brings them back`);
+      throw new Error(`${error instanceof Error ? error.message : String(error)}. The commits are ${targetCommit}..${head}, and the worktree was moved back to ${targetCommit}: git cherry-pick brings them back`);
     }
-    const boarded = this.board({ ws, base: targetCommit, head: pinned.headCommit, commits, ctx, ...(input.noticed ? { noticed: input.noticed } : {}), ...(label ? { label } : {}) });
+    const boarded = this.board({ ws, base: targetCommit, head: head, commits, ctx, ...(input.noticed ? { noticed: input.noticed } : {}), ...(label ? { label } : {}) });
     // Whoever submitted may be gone when the queue answers.
     void boarded.catch(() => {});
     return boarded;
+  }
+  /**
+   * Puts a member's worktree where the item it has just claimed starts, so that the member neither starts on a branch
+   * that has moved on nor fetches its own commits back by hand. For an item the landing queue turned back, `commits`
+   * names what was submitted for it (`base..head`), and the worktree is moved onto those commits as they were
+   * submitted, whoever submitted them; for any other item it is moved to the tip of the landing branch. Only a
+   * worktree that loses nothing by it is moved: one with uncommitted changes, with commits that are neither on the
+   * branch nor among `commits`, or in which a submission is being prepared is `kept`, and `note` says why. Resolves
+   * to nothing where there is no landing to position for.
+   */
+  async position(ctx: WorkspaceContext, input: { workspace: string; taskId: string; commits?: string }): Promise<LandPosition | undefined> {
+    const workflow = ctx.state.workflowId, { signal } = ctx;
+    const landing = this.landing(workflow);
+    if (!landing || this.closed) return undefined;
+    const ws = await this.binding(ctx.state.root, workflow, input.workspace, signal);
+    if (ws.kind !== 'task' || ws.busy?.taskId !== input.taskId) return undefined;
+    const head = await this.revision(ws.path, undefined, signal);
+    const kept = (note: string): LandPosition => ({ worktree: 'kept', headCommit: head, note });
+    if (this.inFlight.has(`${workflow}:${input.workspace}:${input.taskId}`)) return kept('submit_work is still at work in this worktree');
+    const ancestor = async (older: string, newer: string) => !(await this.git(ws.path, ['merge-base', '--is-ancestor', older, newer], signal, true)).code;
+    const branch = await this.refHead(ws.repository, landing.targetRef, signal);
+    // A branch that was moved from outside is not started from until the queue vouches for where it is.
+    const tip = this.vouched(ws, landing.targetRef, branch)?.head ?? branch ?? ws.baseCommit;
+    const returned = /^[0-9a-f]{40,64}\.\.([0-9a-f]{40,64})$/.exec(input.commits ?? '')?.[1];
+    if (returned && (await this.git(ws.path, ['cat-file', '-e', `${returned}^{commit}`], signal, true)).code) return kept(`The commits ${input.commits} are not in this repository any more`);
+    const want = returned ?? tip;
+    if (head === want || returned && await ancestor(returned, head)) return { worktree: returned ? 'commits' : 'tip', headCommit: head };
+    // What the worktree holds is on the branch, or among the commits it is given: nothing of it is left behind.
+    if (!await ancestor(head, tip) && !(returned && await ancestor(head, returned))) {
+      return kept(`The worktree holds commits that are not on the landing branch (HEAD ${head}), so it was left as it is. `
+        + (returned ? `The commits of this item are ${input.commits}: once yours are submitted or no longer needed, git reset --hard ${returned} takes the worktree there`
+          : `The tip of the landing branch is ${tip}: submit them, or git reset --hard ${tip} when they are no longer needed`));
+    }
+    try { await this.clean(ws, signal); }
+    catch (error) { if (signal.aborted) throw error; return kept(`${error instanceof Error ? error.message : String(error)}, so the worktree was left at ${head}; ${returned ? `the commits of this item end at ${returned}` : `the tip of the landing branch is ${tip}`}`); }
+    await this.reset(ws, want, signal);
+    return { worktree: returned ? 'commits' : 'tip', headCommit: want };
   }
   private async identity(path: string, signal: AbortSignal): Promise<string[]> {
     return (await this.git(path, ['config', 'user.email'], signal, true)).stdout.trim() ? [] : ['-c', 'user.name=Bridge workflow', '-c', 'user.email=workflow@localhost'];
@@ -1118,6 +1175,10 @@ export class WorkflowWorkspaces {
       const settled = <T>(settle: (value: T) => void, outcome: (value: T) => string) => (value: T) => {
         if (candidate.settled) return;
         candidate.settled = true; candidate.outcome = outcome(value); signal.removeEventListener('abort', leave); settle(value);
+        if (candidate.outcome !== 'landed') return;
+        // The branch holds them now.
+        const dropped = this.git(change.ws.repository, ['update-ref', '-d', this.workRef(change.ws, change.head)], new AbortController().signal, true).then(() => {}, () => {});
+        this.pending.add(dropped); void dropped.finally(() => this.pending.delete(dropped));
       };
       const candidate: Candidate = { ...change, resolve: settled<LandReport>(resolve, report => report.status), reject: settled<unknown>(reject, () => 'failed') };
       signal.addEventListener('abort', leave, { once: true });

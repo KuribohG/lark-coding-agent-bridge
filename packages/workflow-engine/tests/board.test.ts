@@ -1392,7 +1392,7 @@ describe('swarm', () => {
     const planning = ['staff_swarm({operationId', 'tell_worker({operationId', 'retry_work({operationId', 'set_status({operationId', 'settle_work({operationId', 'swarm_finish({operationId'];
     for (const name of ['lead', 'ql']) for (const text of planning) expect(system(name), name + ' ' + text).toContain(text);
     for (const text of planning) expect(system('w1'), text).not.toContain(text);
-    for (const text of ['claim_work({operationId', 'ask({operationId', 'defer_todo({operationId', 'pass_todo({operationId']) expect(system('w1'), text).toContain(text);
+    for (const text of ['claim_work({leaseMs?', 'ask({operationId', 'defer_todo({operationId', 'pass_todo({operationId']) expect(system('w1'), text).toContain(text);
     for (const name of ['lead', 'ql', 'w1']) for (const text of ['post_board', 'set_charter', 'task_status']) expect(system(name), name + ' ' + text).not.toContain(text);
 
     for (const text of ['You lead queue "q" under @lead: that part of the task is yours to plan', 'What your part must deliver is in the status of @lead', 'you do not do the work',
