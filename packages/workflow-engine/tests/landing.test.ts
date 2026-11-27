@@ -726,7 +726,10 @@ describe('taking a submission out of the queue', () => {
       expect(h.manager.withdraw(h.state.workflowId, b.submitted().headCommit, 'Withdrawn by b: wrong fix')).toBe('withdrawn');
       expect(await rest[1]).toMatchObject({ status: 'withdrawn' });
       expect(await rest[0]).toMatchObject({ status: 'landed' });
-      expect((await h.trains(1))[0]).toMatchObject({ outcome: 'done', submissions: [{ key: 'item-a', outcome: 'landed' }, { key: 'item-b', outcome: 'withdrawn' }], checks: [{ submissions: 1, passed: true }] });
+      // The order in which the two joined the queue is not fixed.
+      const train = (await h.trains(1))[0]!;
+      expect(train).toMatchObject({ outcome: 'done', checks: [{ submissions: 1, passed: true }] });
+      expect([...train.submissions].sort((x, y) => (x.key ?? '').localeCompare(y.key ?? ''))).toMatchObject([{ key: 'item-a', outcome: 'landed' }, { key: 'item-b', outcome: 'withdrawn' }]);
     } else expect((await Promise.all(rest)).map(report => report.status)).toEqual(['landed', 'landed']);
     expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).toContain('a.txt');
   }, 60_000);
@@ -739,6 +742,8 @@ describe('the landing queue as someone outside the service sees it', () => {
     const records = new LandingRecords(join(h.dir, 'workspaces.sqlite'));
     closes.push(async () => records.close());
     const read = () => records.read(h.state.workflowId, 10);
+    // The service names a repository by its real path, which is not the temporary directory's on every system.
+    const repository = await realpath(h.repo);
     expect(read()).toMatchObject({ landing: { batch: expect.any(Number) }, heads: [], live: [], trains: [] });
     const members = await Promise.all(['a', 'b', 'c'].map(name => h.member(name))), [a, b, c] = members;
     await Promise.all(members.map((member, index) => member.commit(`file-${index}.txt`, 'x\n')));
@@ -750,22 +755,22 @@ describe('the landing queue as someone outside the service sees it', () => {
     expect(records.version()).not.toBe(before);
     const held = read().live;
     // The branch does not exist before the first landing, so this train has no head to name as its base.
-    expect(held).toMatchObject([{ repository: h.repo, at: expect.any(Number), train: { since: expect.any(Number), step: 'checking', base: null, checks: [], checking: { submissions: 1, since: expect.any(Number) },
+    expect(held).toMatchObject([{ repository, at: expect.any(Number), train: { since: expect.any(Number), step: 'checking', base: null, checks: [], checking: { submissions: 1, since: expect.any(Number) },
       riders: [{ key: 'item-a', member: 'a', workspace: a!.ws.id, headCommit: a!.submitted().headCommit, commits: 1, since: expect.any(Number), state: 'stacked' }] } }]);
     expect(held[0]!.waiting.map(rider => rider.key).sort()).toEqual(['item-b', 'item-c']);
     expect(held[0]!.waiting[0]).toMatchObject({ commits: 1, since: expect.any(Number), headCommit: expect.any(String) });
     await writeFile(h.gate, '');
     expect((await Promise.all([first, ...rest])).map(report => report.status)).toEqual(['landed', 'landed', 'landed']);
     // Nothing waits and no train runs: the record says so, and what the trains did is in the ledger beside it.
-    await vi.waitFor(() => expect(read().live).toMatchObject([{ repository: h.repo, waiting: [] }]), { timeout: 20_000, interval: 20 });
+    await vi.waitFor(() => expect(read().live).toMatchObject([{ repository, waiting: [] }]), { timeout: 20_000, interval: 20 });
     const after = read();
     expect(after.live[0]!.train).toBeUndefined();
-    expect(after.heads).toEqual([{ targetRef: after.landing!.targetRef, head: await h.head(), repository: h.repo }]);
+    expect(after.heads).toEqual([{ targetRef: after.landing!.targetRef, head: await h.head(), repository }]);
     expect(after.trains.map(train => train.submissions.length)).toEqual([2, 1]);
     // The dashboard's view of it.
     const panel = landingPanel(h.state, after);
     expect(panel).toMatchObject({ configured: true, batch: after.landing!.batch, submitted: [], returned: [], overridden: [] });
-    expect(panel.branches).toMatchObject([{ repository: h.repo, landed: await h.head(), firstBlamed: 0, live: { waiting: [] }, totals: { trains: 2, checks: 2, landed: 3, turnedBack: 0 },
+    expect(panel.branches).toMatchObject([{ repository, landed: await h.head(), firstBlamed: 0, live: { waiting: [] }, totals: { trains: 2, checks: 2, landed: 3, turnedBack: 0 },
       trains: [{ submissions: 2, landed: 2, next: 0, outcome: 'done', stacked: 2, turnedBack: [], checks: [{ submissions: 2, passed: true }] }, { submissions: 1, landed: 1 }] }]);
   });
 
@@ -799,7 +804,7 @@ describe('the landing ledger', () => {
     // Newest first: the train of what came after the one that failed, if anything did, the train of four, and the one that was held.
     const four = trains.find(train => train.submissions.length === 4)!, at = trains.indexOf(four);
     expect(trains.at(-1)!.submissions).toMatchObject([{ outcome: 'landed' }]);
-    expect(four).toMatchObject({ repository: h.repo, outcome: 'done', base: expect.any(String), head: expect.any(String), since: expect.any(Number), ms: expect.any(Number) });
+    expect(four).toMatchObject({ repository: await realpath(h.repo), outcome: 'done', base: expect.any(String), head: expect.any(String), since: expect.any(Number), ms: expect.any(Number) });
     // The whole stack failed, and bisecting found the first submission that breaks it.
     expect(four.checks[0]).toMatchObject({ submissions: 4, passed: false, code: 3, command: expect.stringContaining(' -e '), ms: expect.any(Number), headCommit: expect.any(String) });
     expect(four.checks.length).toBeGreaterThanOrEqual(2);
