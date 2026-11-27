@@ -1,5 +1,5 @@
 import { leadsAbove, takesTurns } from '../swarm';
-import { deferTodo, passTodo } from '../todos';
+import { deferTodo, IDLE_DEFER_MINUTES, passTodo } from '../todos';
 import type { WorkflowView } from '../types';
 import { memberOperation } from './members';
 import type { WorkflowToolPlugin } from './types';
@@ -13,7 +13,7 @@ export const todoTools: WorkflowToolPlugin = {
   id: 'todos',
   memberInstructions: 'A to-do is something that waits on you: an ask, or a state of things you answer for. The brief of a swarm member lists them with their ids, and read_context.todos has them at any time. '
     + 'A to-do goes by itself once its cause is gone, and one you leave open goes to whoever stands above you. '
-    + 'defer_todo({operationId,id,note,minutes?}) says "not now" and why: the to-do is not put in front of you and does not go up until minutes (1–1440) have passed or, without minutes, for as long as its cause lasts. '
+    + 'defer_todo({operationId,id,note,minutes?}) says "not now" and why: the to-do is not put in front of you and does not go up until minutes (1–1440) have passed or, without minutes, for as long as its cause lasts (' + IDLE_DEFER_MINUTES + ' minutes for a dry queue or an idle swarm, after which you are asked again). '
     + 'pass_todo({operationId,id,to,note?}) hands it to another member, which is woken for it, or to "main" when no lead stands above you.',
   tools: [
     {

@@ -44,14 +44,20 @@ export interface Situation {
 }
 
 const MIN = 60_000;
+/** The minutes a deferral that names no time lasts where the to-do says that members have nothing to do (see `TIMING`). */
+export const IDLE_DEFER_MINUTES = 30;
 /**
  * For each kind: how long the situation must last before anyone is told (`grace`), how long each of those told has
  * before the one above is (`within`), and how long it must be gone before its to-do is (`linger`). A queue that gets
  * one item, which an idle member takes at once, has not stopped being dry.
+ *
+ * `defer` is how long a deferral lasts that names no time; without it, such a deferral lasts as long as the situation
+ * does. Members with nothing to do are not put off for good: whoever said that there was no work for them said it of
+ * how things stood then, and while it stands nobody else is told that they wait.
  */
-const TIMING: Record<TodoKind, { grace: number; within: number; linger: number }> = {
-  dry: { grace: 2 * MIN, within: 20 * MIN, linger: 3 * MIN },
-  idle: { grace: 0, within: 10 * MIN, linger: 0 },
+const TIMING: Record<TodoKind, { grace: number; within: number; linger: number; defer?: number }> = {
+  dry: { grace: 2 * MIN, within: 20 * MIN, linger: 3 * MIN, defer: IDLE_DEFER_MINUTES * MIN },
+  idle: { grace: 0, within: 10 * MIN, linger: 0, defer: IDLE_DEFER_MINUTES * MIN },
   member: { grace: 0, within: 15 * MIN, linger: 0 },
   unstaffed: { grace: 2 * MIN, within: 15 * MIN, linger: 0 },
   ask: { grace: 0, within: 15 * MIN, linger: 0 },
@@ -81,7 +87,15 @@ function facing(todo: TodoView): string[] {
   todo.told.forEach((told, index) => { if (told.by !== undefined) from = index; });
   return todo.told.slice(from).map(told => told.who);
 }
-const deferredNow = (todo: TodoView, now: number) => Boolean(todo.deferred && (todo.deferred.until === undefined || todo.deferred.until > now));
+/** When a deferral made at `at` that names no time is over, for a kind that has such a time. */
+const defaultUntil = (kind: string, at: number) => { const lasts = TIMING[kind as TodoKind]?.defer; return lasts === undefined ? undefined : at + lasts; };
+/**
+ * When the deferral of a to-do is over: at the time it names, or the time its kind gives one that names none;
+ * undefined for one that lasts as long as the situation does. Worked out where it is read and not recorded, so that
+ * a deferral recorded before its kind had such a time is held to it as well.
+ */
+export const deferredUntil = (todo: TodoView) => todo.deferred && (todo.deferred.until ?? defaultUntil(todo.kind, todo.deferred.at));
+const deferredNow = (todo: TodoView, now: number) => { const until = deferredUntil(todo); return Boolean(todo.deferred && (until === undefined || until > now)); };
 /** The subject of the notice that tells the main agent of a to-do. */
 const noticeSubject = (todo: TodoView) => `todo:${todo.id}`;
 
@@ -135,7 +149,8 @@ export function reconcileTodos(state: WorkflowView, found: readonly Situation[],
     const tell = (who: string) => { entry.told.push({ who, at: now }); delete entry.deferred; changed = true; };
     const again = () => { entry.told[entry.told.length - 1] = { ...entry.told.at(-1)!, at: now }; changed = true; };
     // A deferral that ran out puts the to-do in front of its holder again.
-    if (entry.deferred?.until !== undefined && entry.deferred.until <= now) { delete entry.deferred; again(); }
+    const until = deferredUntil(entry);
+    if (until !== undefined && until <= now) { delete entry.deferred; again(); }
     const holder = entry.told.at(-1);
     if (!holder) {
       const first = now - entry.since >= timing.grace ? next(entry, situation) : undefined;
@@ -250,7 +265,7 @@ export function todoView(todo: TodoView, situation: Situation | undefined, now: 
   return { id: todo.id, kind: todo.kind, minutes: Math.round((now - todo.since) / MIN), holder: holderOf(todo) ?? null,
     ...(todo.told.length > 1 ? { leftOpenBy: [...new Set(todo.told.slice(0, -1).map(told => told.who))] } : {}),
     ...(todo.told.at(-1)?.by ? { passedBy: todo.told.at(-1)!.by, ...(todo.told.at(-1)!.note ? { note: todo.told.at(-1)!.note } : {}) } : {}),
-    ...(todo.deferred ? { deferred: { by: todo.deferred.by, ...(todo.deferred.until === undefined ? {} : { until: todo.deferred.until }), ...(todo.deferred.note ? { note: todo.deferred.note } : {}) } } : {}),
+    ...(todo.deferred ? { deferred: { by: todo.deferred.by, ...(deferredUntil(todo) === undefined ? {} : { until: deferredUntil(todo) }), ...(todo.deferred.note ? { note: todo.deferred.note } : {}) } } : {}),
     ...(situation && said ? zh ? { text: situation.zh } : { text: said.en, act: said.act } : {}) };
 }
 
@@ -279,7 +294,8 @@ function may(todo: TodoView, who: string, above: (member: string) => string[]): 
 
 /**
  * "Not now": the to-do stays, but it is not put in front of its holder and does not go up, until `minutes` have
- * passed or, without them, for as long as its situation lasts. `note` says why, for those who look at it later.
+ * passed or, without them, for the time its kind has (`TIMING`) and otherwise for as long as its situation lasts.
+ * `note` says why, for those who look at it later.
  */
 export function deferTodo(state: WorkflowView, who: string, input: { id?: unknown; minutes?: unknown; note?: unknown }, now: number, above: (member: string) => string[]): unknown {
   const todo = named(state, input);
@@ -287,9 +303,10 @@ export function deferTodo(state: WorkflowView, who: string, input: { id?: unknow
   const note = typeof input.note === 'string' && input.note.trim() ? scriptText(input.note, 'note', NOTE_MAX).trim() : '';
   if (!note) throw new Error('defer_todo needs a note: why it need not be acted on now, and what would change that');
   const minutes = input.minutes === undefined || input.minutes === null ? undefined : boundedInteger(input.minutes, 0, 1, DEFER_MAX_MINUTES);
-  const until = minutes === undefined ? undefined : now + minutes * MIN;
-  emit(state, { type: 'todos_updated', upsert: [{ ...copy(todo), deferred: { by: who, at: now, ...(until === undefined ? {} : { until }), note } }], at: now });
+  const given = minutes === undefined ? undefined : now + minutes * MIN;
+  emit(state, { type: 'todos_updated', upsert: [{ ...copy(todo), deferred: { by: who, at: now, ...(given === undefined ? {} : { until: given }), note } }], at: now });
   if (holderOf(todo) === 'main') acknowledge(state, state.events.filter(event => !event.acknowledged && event.subject === noticeSubject(todo)), now);
+  const until = given ?? defaultUntil(todo.kind, now);
   return { id: todo.id, deferred: true, ...(until === undefined ? { until: 'its cause is gone' } : { until: new Date(until).toISOString() }) };
 }
 

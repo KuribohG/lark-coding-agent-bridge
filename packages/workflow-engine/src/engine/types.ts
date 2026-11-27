@@ -309,7 +309,7 @@ export interface WorkflowTodo {
   told: Array<{ who: string; at: number; by?: string; note?: string }>;
   /** Since when the situation has not held; the to-do goes once that has lasted (a queue fed for a moment is still dry). */
   goneAt?: number;
-  /** Whoever holds it has said that it need not be acted on now: until `until`, or for as long as the situation lasts. */
+  /** Whoever holds it has said that it need not be acted on now: until `until`; without it, for the time its kind has (`deferredUntil` in todos.ts), or for as long as the situation lasts. */
   deferred?: { by: string; at: number; until?: number; note?: string };
 }
 

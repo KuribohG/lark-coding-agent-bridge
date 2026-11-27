@@ -7,7 +7,7 @@ import { callCount, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import { openingPrompt, turnBrief, type BriefFacts } from './swarm-brief';
 import { answersFor, chainAbove, coordinates, leadsAbove, MEMBER_BUSY, plannedBy, plansQueue, queueLead, quoted, takesTurns, turnCount, type ItemView, type MemberView, type SwarmView } from './swarm';
-import { clearTodos, deferredOf, holderOf, openTodos, reconcileTodos, type Situation, todosOf, todoView, toldSince } from './todos';
+import { clearTodos, deferredOf, holderOf, IDLE_DEFER_MINUTES, openTodos, reconcileTodos, type Situation, todosOf, todoView, toldSince } from './todos';
 import { answersShown } from './turn-mail';
 import { availableWork, deadDependency, itemsByKey, keptFor, queueStanding, submittedWork, unfinishedWork, waitsOn, workFlow, workItem } from './work-queue';
 import { queueControl } from './work-routing';
@@ -279,11 +279,11 @@ function dry(state: WorkflowView, { swarm, queues, work, busy, turnsLeft }: Surv
     return [{ swarm: swarm.id, subject: `dry:${swarm.id}:${name}`, kind: 'dry' as const, chain: chainOf(state, answers.name),
       en: `Queue "${name}" has run dry: ${idle} of its ${consumers.length} members are idle and it has no item they can claim${blocked ? ` (${blocked.en})` : ''}.`,
       act: 'ask what the goal still lacks that these members could work on, a step you know or a question whose answer would change the plan, and add that with enqueue_work. '
-        + 'If there is nothing, do not make any up: defer_todo says that the queue has no work for now'
+        + `If there is nothing, do not make any up: defer_todo says that the queue has no work for now (you are asked again after ${IDLE_DEFER_MINUTES} minutes, or after the minutes you give)`
         + (answers.name === swarm.lead ? ', and staff_swarm({move, queue}) puts its idle members where there is more work than members. When the goal is met or cannot progress, end the swarm with swarm_finish instead.'
           : `; say so in your status, which @${swarm.lead} reads and which can move the members.`),
       zh: `swarm "${swarm.key}" 的队列 ${name} 断粮：${consumers.length} 名成员中 ${idle} 名空闲，没有可领工作项` + (blocked ? `（${blocked.zh}）` : '')
-        + '。有推进目标的工作就用 enqueue_work 补充；没有就不必凑：用 staff_swarm 的 move 把成员挪到有活的队列，或用 defer_todo 说明该队列暂无工作。' }];
+        + '。有推进目标的工作就用 enqueue_work 补充；没有就不必凑：用 staff_swarm 的 move 把成员挪到有活的队列，或用 defer_todo 说明该队列暂无工作（不写 minutes 则 ' + IDLE_DEFER_MINUTES + ' 分钟后再问）。' }];
   });
 }
 
@@ -332,7 +332,7 @@ function idle(state: WorkflowView, { swarm, queues, busy, stirring }: Survey, ho
   return [{ subject, kind: 'idle', chain: [lead.name, 'main'],
     en: 'Nobody in the swarm has anything to do: every member is idle, nothing can be claimed and nothing waits to be decided.',
     act: 'check the goal against evidence. If it is met or cannot progress, call swarm_finish and say which and what remains. If it is not met, the plan so far did not reach it: '
-      + 'find what is missing, what would have to be known and what has not been tried, and hand that out with enqueue_work. To wait for something outside the workflow, defer_todo with minutes and say what you wait for.',
+      + 'find what is missing, what would have to be known and what has not been tried, and hand that out with enqueue_work. To wait for something outside the workflow, defer_todo with minutes and say what you wait for; without minutes you are asked again after ' + IDLE_DEFER_MINUTES + '.',
     zh: `swarm "${swarm.key}" 停滞：全体成员空闲，没有可领的工作，也没有待裁决的事，lead 既未分派工作也未调用 swarm_finish。swarm 仍在运行并等待：`
       + '用 ask 让 lead 说明或继续、enqueue_work 补充工作，或 staff_swarm 加人、提高 maxTurns；确认无事可做再取消。' }];
 }

@@ -1,6 +1,7 @@
 import { boardTopics } from '../engine/board';
 import type { WorkflowArchive } from '../engine/kernel-store';
 import { BOARD_DEFAULT_TOPIC } from '../engine/limits';
+import { deferredUntil } from '../engine/todos';
 import { queueControl, queueNames } from '../engine/work-routing';
 import type {
   AgentTurn, BoardPost, DurableAgent, StoredArtifact, StoredTask, SwarmMember, WorkClaim, WorkflowState, WorkflowSwarm, WorkflowTask, WorkflowWorkItem,
@@ -387,7 +388,7 @@ export function overview(state: WorkflowState, now: number): OverviewView {
     queues: queueViews(state),
     todos: (state.todos?.open ?? []).map(todo => ({
       id: todo.id, kind: todo.kind, subject: todo.subject, since: todo.since, ...(todo.told.length ? { holder: todo.told.at(-1)!.who } : {}), told: todo.told,
-      ...(todo.goneAt !== undefined ? { goneAt: todo.goneAt } : {}), ...(todo.deferred ? { deferred: todo.deferred } : {}),
+      ...(todo.goneAt !== undefined ? { goneAt: todo.goneAt } : {}), ...(todo.deferred ? { deferred: { ...todo.deferred, ...(deferredUntil(todo) === undefined ? {} : { until: deferredUntil(todo) }) } } : {}),
     })),
     asks: (state.board?.asks ?? []).map(ask => ({ seq: ask.seq, from: name(ask.from), to: name(ask.to), at: ask.at, within: ask.within, excerpt: ask.excerpt })),
     notices: state.events.filter(event => !event.acknowledged).map(event => ({

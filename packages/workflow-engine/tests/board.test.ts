@@ -1034,10 +1034,10 @@ describe('swarm', () => {
     expect(await callWorkflow('status', { workflowId: h.state().workflowId }, main.env)).toMatchObject({ todos: [{ id: 1, kind: 'dry', holder: 'main', leftOpenBy: ['lead'] }],
       swarms: [{ queues: { default: { claimable: 0, blocked: 0, members: 1, running: 0, idle: 1 } } }] });
 
-    // The main agent says that the queue has no work for now: nothing more is said of it, and what is left to say
-    // is that nobody in the swarm has anything to do, which is the lead's to settle first.
+    // The main agent says that the queue has no work for now: nothing more is said of it for the time such an answer
+    // stands, and what is left to say is that nobody in the swarm has anything to do, which is the lead's to settle first.
     await expect(h.asMain('defer_todo', { id: 1 })).rejects.toThrow('note');
-    expect(await h.asMain('defer_todo', { id: 1, note: 'Nothing for this queue until the design is settled' })).toMatchObject({ id: 1, deferred: true, until: 'its cause is gone' });
+    expect(await h.asMain('defer_todo', { id: 1, note: 'Nothing for this queue until the design is settled' })).toMatchObject({ id: 1, deferred: true, until: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
     expect(h.notices('todo')).toMatchObject([{ acknowledged: true }]);
     await h.until(() => expect(h.order).toEqual(['lead1', 'lead2', 'lead3']));
     expect(h.prompts('lead')[2]).toContain('Nobody in the swarm has anything to do: every member is idle, nothing can be claimed and nothing waits to be decided.');
@@ -1467,7 +1467,7 @@ describe('swarm', () => {
     // Each dry queue is its own lead's to-do, and the queue nobody is left to work is the swarm lead's.
     expect([went('dry', 'q'), went('dry', 's'), went('unstaffed')]).toEqual([[['ql']], [['sub']], [['lead']]]);
     expect(h.prompts('ql')[1]).toContain('Queue "q" has run dry: 2 of its 2 members are idle and it has no item they can claim (1 pending items cannot be claimed');
-    expect(h.prompts('ql')[1]).toContain('defer_todo says that the queue has no work for now; say so in your status, which @lead reads and which can move the members.');
+    expect(h.prompts('ql')[1]).toContain('defer_todo says that the queue has no work for now (you are asked again after 30 minutes, or after the minutes you give); say so in your status, which @lead reads and which can move the members.');
     expect(h.prompts('ql')[1]).not.toContain('Queue "s"');
     expect(h.prompts('sub')[1]).toContain('Queue "s" has run dry: 1 of its 1 members are idle and it has no item they can claim.');
     expect(h.prompts('lead')[2]).toContain('Queue "r" has 1 item to claim and no member left to take it: its members have stopped or used their wake-ups.');
@@ -1559,7 +1559,7 @@ describe('swarm', () => {
     await h.cancel();
   }, 30_000);
 
-  it('lets a dry queue rest once whoever answers for it has deferred the to-do: for as long as the spell lasts, or for the time it names', async () => {
+  it('lets a dry queue rest once whoever answers for it has deferred the to-do: for the time it names, and for half an hour when it names none', async () => {
     const ahead = clock();
     const busy = gate();
     const h = await play([
@@ -1578,21 +1578,32 @@ describe('swarm', () => {
     // The lead says that the queue has no work for now, and why: the to-do stays, in front of nobody.
     await h.until(() => expect(h.todos('dry')).toMatchObject([{ id: 1, deferred: { by: 'lead', note: 'Nothing for q until the job is through' } }]));
     expect(h.errors).toEqual([expect.stringContaining('defer_todo needs a note: why it need not be acted on now, and what would change that')]);
-    expect(h.results).toMatchObject([{ id: 1, deferred: true, until: 'its cause is gone' }]);
+    // It named no time. Members with nothing to do are not put off for good: the answer stands for half an hour,
+    // which is not recorded with it, so that an answer recorded before there was such a time is held to it as well.
+    const answered = h.todos('dry')[0]!.deferred!.at;
+    expect(h.results).toMatchObject([{ id: 1, deferred: true, until: new Date(answered + 30 * MIN).toISOString() }]);
     expect(h.todos('dry')[0]!.deferred).not.toHaveProperty('until');
     const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
     const status = async () => await callWorkflow('status', { workflowId: h.state().workflowId }, main.env) as { todos: unknown[] };
-    expect((await status()).todos).toMatchObject([{ id: 1, kind: 'dry', holder: 'lead', deferred: { by: 'lead', note: 'Nothing for q until the job is through' } }]);
-    // Neither the lead nor the main agent is asked again, however long the queue stays empty.
-    await h.calm(); ahead.by(45 * MIN);
+    expect((await status()).todos).toMatchObject([{ id: 1, kind: 'dry', holder: 'lead', deferred: { by: 'lead', note: 'Nothing for q until the job is through', until: answered + 30 * MIN } }]);
+    // Until then neither the lead nor the main agent is asked again.
+    await h.calm(); ahead.by(20 * MIN);
     await quiet();
     // An item that is taken at once does not end the spell, so the answer stands.
     await add('c');
     await h.until(() => { expect(done('c')).toBe(true); expect(h.todos('dry')).toMatchObject([{ id: 1, deferred: { by: 'lead' } }]); expect(h.todos('dry')[0]).not.toHaveProperty('goneAt'); });
-    await h.calm(); ahead.by(45 * MIN);
+    await h.calm(); ahead.by(5 * MIN);
     await quiet();
     // The result of that item wakes the lead, whose brief says that nothing waits on it and what it has put off.
     await briefed(/Nothing waits on you now; 1 to-do you deferred is still open \(read_context lists them\)\.\n1 result came back since your last turn/);
+    // When the half hour is over the lead is asked again, with how the queue stands now. The main agent hears nothing:
+    // the to-do is the lead's as it was, with the time anyone has who is asked.
+    await h.calm(); ahead.by(6 * MIN);
+    await briefed(/- #1 \(3\d min\) Queue "q" has run dry: 2 of its 2 members are idle/);
+    expect(h.todos('dry')).toMatchObject([{ id: 1, told: [{ who: 'lead', at: expect.any(Number) }] }]);
+    expect(h.todos('dry')[0]).not.toHaveProperty('deferred');
+    expect(h.todos('dry')[0]!.told[0]!.at).toBeGreaterThanOrEqual(answered + 30 * MIN);
+    expect(h.notices('todo')).toEqual([]);
 
     // Once the queue has stayed fed the spell is over, and with it the answer: when it runs dry again its lead is asked again.
     await add('e');
@@ -1613,6 +1624,50 @@ describe('swarm', () => {
     expect(h.todos('dry')[0]).not.toHaveProperty('deferred');
     expect(h.state().swarms![0]!.dry).toMatchObject({ q: { spells: 1 } });
     busy.release();
+    await h.cancel();
+  }, 30_000);
+
+  it('asks again after half an hour of a swarm with nothing to do when the answer named no time, and leaves a to-do of another kind put off for as long as its cause lasts', async () => {
+    const ahead = clock();
+    // A lead that puts off whatever is in front of it, and names a time only for the dry queue.
+    const h = await play('await enqueueWork({key:"x", title:"X", input:1}); return await swarm("Wait", {key:"wait", lead:{name:"lead"}, members:[{name:"dev", queue:"q"},{name:"bad"}]});', {
+      bad: [{ fail: true }, { fail: true }],
+      lead: (_turn, state) => ({ calls: (state.todos?.open ?? []).filter(todo => todo.told.at(-1)?.who === 'lead' && !todo.deferred)
+        .map(todo => ['defer_todo', { id: todo.id, note: 'Nothing to do about it now', ...(todo.kind === 'dry' ? { minutes: 180 } : {}) }] as [string, Record<string, unknown>]) }),
+    });
+    const deferred = (kind: string) => h.todos(kind)[0]?.deferred;
+    await h.until(() => expect(deferred('member')).toMatchObject({ by: 'lead' }));
+    await h.asMain('update_work', { key: 'x', cancel: true, reason: 'Nobody is left to take it', expectedStateVersion: h.state().stateVersion });
+    await h.calm(); ahead.by(2 * MIN + 1000);
+    await h.until(() => { expect(deferred('dry')).toMatchObject({ by: 'lead' }); expect(deferred('idle')).toMatchObject({ by: 'lead' }); });
+    expect(h.errors).toEqual([]);
+    // A member that has stopped is put off for as long as it stays so; the dry queue for the time the lead named; the
+    // idle swarm, for which it named none, for half an hour.
+    const first = deferred('idle')!.at;
+    expect(h.results).toMatchObject([{ deferred: true, until: 'its cause is gone' }, { deferred: true, until: new Date(deferred('dry')!.at + 180 * MIN).toISOString() },
+      { deferred: true, until: new Date(first + 30 * MIN).toISOString() }]);
+    expect(deferred('member')).not.toHaveProperty('until');
+    expect(deferred('idle')).not.toHaveProperty('until');
+    const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
+    const shown = async () => (await callWorkflow('status', { workflowId: h.state().workflowId }, main.env) as { todos: Array<{ kind: string; deferred?: Record<string, unknown> }> }).todos;
+    expect((await shown()).find(todo => todo.kind === 'idle')!.deferred).toMatchObject({ by: 'lead', until: first + 30 * MIN });
+    expect((await shown()).find(todo => todo.kind === 'member')!.deferred).not.toHaveProperty('until');
+    const turns = h.prompts('lead').length;
+    await h.calm(); ahead.by(29 * MIN);
+    await h.ticks(4);
+    expect(h.prompts('lead')).toHaveLength(turns);
+    expect(deferred('idle')).toMatchObject({ at: first });
+    // The half hour is over: the lead is asked again whether the swarm has come to its end, and puts it off once more.
+    await h.calm(); ahead.by(2 * MIN);
+    await h.until(() => { expect(h.prompts('lead')).toHaveLength(turns + 1); expect(deferred('idle')?.at).toBeGreaterThanOrEqual(first + 30 * MIN); });
+    expect(h.prompts('lead').at(-1)).toContain('Nobody in the swarm has anything to do');
+    expect(h.prompts('lead').at(-1)).not.toContain('has run dry');
+    expect(h.prompts('lead').at(-1)).not.toContain('failed and has stopped');
+    // What it put off without a time and is not about idle members stays put off, and so does what has time left.
+    expect(deferred('member')).toMatchObject({ by: 'lead' });
+    expect(deferred('dry')).toMatchObject({ by: 'lead' });
+    expect(h.notices('todo')).toEqual([]);
+    expect(h.errors).toEqual([]);
     await h.cancel();
   }, 30_000);
 
