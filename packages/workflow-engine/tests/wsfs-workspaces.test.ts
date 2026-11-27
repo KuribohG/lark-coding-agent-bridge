@@ -163,6 +163,60 @@ describe.skipIf(!mounts)('wsfs workspaces', () => {
     expect(await git(b.ws.path, 'status', '--porcelain')).toBe('');
   }, 60_000);
 
+  it('puts a workspace where a claimed item starts by moving it, and prechecks a submission on the stacked commits', async () => {
+    const h = await fixture();
+    // The precheck records which files it ran on; the checks of the train turn back what holds bad.txt.
+    const seen = join(h.dir, 'precheck.log');
+    const landing = await h.op<WorkspaceLanding>('landing', 'landing-' + randomUUID(), {
+      checks: [{ argv: [process.execPath, '-e', `if(require('fs').existsSync('bad.txt'))process.exit(3)`] }],
+      precheck: [{ argv: [process.execPath, '-e', `const fs=require('fs');fs.appendFileSync(${JSON.stringify(seen)},fs.readdirSync('.').filter(n=>n.endsWith('.txt')).sort().join(',')+'\\n')`] }] });
+    const a = await h.member('a'), b = await h.member('b');
+    const place = (member: { ws: WorkspaceBinding }, taskId: string, commits?: string) => h.manager.position(h.ctx, { workspace: member.ws.id, taskId, ...(commits ? { commits } : {}) });
+    await a.commit('a.txt', 'a\n');
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    const first = await git(h.repo, 'rev-parse', landing.targetRef);
+    // b started before that landed: its commit is stacked on the branch, and the precheck runs on the stack in its workspace.
+    await mkdir(join(b.ws.path, 'build')); await writeFile(join(b.ws.path, 'build/out.o'), 'object\n');
+    const mine = await b.commit('bad.txt', 'x\n');
+    let info!: { targetCommit: string; headCommit: string };
+    expect(await h.manager.land(h.ctx, { workspace: b.ws.id, taskId: 'b', submitted: joined => { info = joined; } })).toMatchObject({ status: 'check_failed' });
+    expect((await readFile(seen, 'utf8')).trim().split('\n').at(-1)).toBe('a.txt,bad.txt,shared.txt');
+    expect(info.targetCommit).toBe(first);
+    expect(info.headCommit).not.toBe(mine);
+    expect(await git(b.ws.path, 'rev-parse', 'HEAD')).toBe(first);
+    // More lands meanwhile. A new item starts at the tip: the workspace is moved there, and holds no file of the commit.
+    await a.commit('a2.txt', 'a2\n');
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    const tip = await git(h.repo, 'rev-parse', landing.targetRef);
+    expect(await place(b, 'b')).toEqual({ worktree: 'tip', headCommit: tip });
+    expect(await git(b.ws.path, 'rev-parse', 'HEAD')).toBe(tip);
+    expect(await readFile(join(b.ws.path, 'a2.txt'), 'utf8')).toBe('a2\n');
+    expect(await git(b.ws.path, 'status', '--porcelain')).toBe('');
+    expect(await b.own()).toEqual(['build/out.o']);
+    // The item the queue turned back starts on its commits, in the workspace of another member as well.
+    const commits = `${info.targetCommit}..${info.headCommit}`;
+    expect(await place(b, 'b', commits)).toEqual({ worktree: 'commits', headCommit: info.headCommit });
+    expect(await git(b.ws.path, 'rev-parse', 'HEAD')).toBe(info.headCommit);
+    expect(await readFile(join(b.ws.path, 'bad.txt'), 'utf8')).toBe('x\n');
+    expect(await access(join(b.ws.path, 'a2.txt')).then(() => true, () => false)).toBe(false);
+    expect(await git(b.ws.path, 'status', '--porcelain')).toBe('');
+    expect(await b.own()).toEqual(['build/out.o']);
+    expect(await place(a, 'a', commits)).toEqual({ worktree: 'commits', headCommit: info.headCommit });
+    expect(await readFile(join(a.ws.path, 'bad.txt'), 'utf8')).toBe('x\n');
+    expect(await a.own()).toEqual([]);
+    // A workspace with work that is not committed is left alone.
+    await writeFile(join(a.ws.path, 'draft.txt'), 'draft\n');
+    expect(await place(a, 'a')).toMatchObject({ worktree: 'kept', headCommit: info.headCommit });
+    expect(await a.own()).toEqual(['draft.txt']);
+    // Repaired where claim_work put them, the commits land on what landed meanwhile.
+    await git(b.ws.path, 'rm', '-q', 'bad.txt'); await git(b.ws.path, 'commit', '-q', '-m', 'repair'); await b.commit('b.txt', 'b\n');
+    expect(await b.land()).toMatchObject({ status: 'landed', commits: 3 });
+    expect((await readFile(seen, 'utf8')).trim().split('\n').at(-1)).toBe('a.txt,a2.txt,b.txt,shared.txt');
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n').sort()).toEqual(['.gitignore', 'a.txt', 'a2.txt', 'b.txt', 'shared.txt', 'src']);
+    expect(await git(b.ws.path, 'rev-parse', 'HEAD')).toBe(tip);
+    expect(await b.own()).toEqual(['build/out.o']);
+  }, 90_000);
+
   it('is served again after its daemon died, with what was not committed', async () => {
     const h = await fixture();
     const a = await h.member('a');
