@@ -329,6 +329,47 @@ describe('a landing branch that only the queue moves', () => {
     expect(await git(h.repo, 'reflog', 'show', '--format=%gs', '-1', landing.targetRef)).toMatch(/^bridge-workflow: landed 1 submission\(s\), 1 commit\(s\) from [0-9a-f]{8}$/);
   }, 60_000);
 
+  it('lands while a member\'s worktree is on the branch, and takes the branch from that worktree where it stands', async () => {
+    const h = await fixture(); const { landing, landed } = await configured(h);
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    // A member switches to the branch to look at it, and goes on working there.
+    await git(a.ws.path, 'checkout', '-q', landing.targetRef.replace('refs/heads/', ''));
+    await writeFile(join(a.ws.path, 'shared.txt'), 'edited\n'); await git(a.ws.path, 'add', 'shared.txt'); await writeFile(join(a.ws.path, 'draft.txt'), 'draft\n');
+    const status = await git(a.ws.path, 'status', '--porcelain');
+    await b.commit('b.txt', 'b\n');
+    expect(await b.land()).toMatchObject({ status: 'landed', commits: 1 });
+    expect(await git(h.repo, 'rev-parse', `${landing.targetRef}~1`)).toBe(landed);
+    // The worktree is on the commit it was on, off the branch, and its index and files are as the member left them:
+    // on the branch they would read as a change that takes b.txt out again.
+    await expect(git(a.ws.path, 'symbolic-ref', '--quiet', 'HEAD')).rejects.toThrow();
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(landed);
+    expect(await git(a.ws.path, 'status', '--porcelain')).toBe(status);
+    expect(await git(a.ws.path, 'reflog', 'show', '--format=%gs', '-1')).toContain('taken off the landing branch');
+    // What it commits from here is its own, and reaches the branch through the queue.
+    await a.commit('a.txt', 'a\n');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 1 });
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).toEqual(expect.arrayContaining(['a.txt', 'b.txt', 'draft.txt']));
+    expect(await git(h.repo, 'show', `${landing.targetRef}:shared.txt`)).toBe('edited');
+    expect((await git(h.repo, 'reflog', 'show', '--format=%gs', landing.targetRef)).split('\n').every(line => line.startsWith('bridge-workflow: landed'))).toBe(true);
+  }, 60_000);
+
+  it('restores a branch that the worktree that moved it is still on, and leaves that worktree on its commit', async () => {
+    const h = await fixture(); const { landing, landed } = await configured(h);
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    await git(a.ws.path, 'checkout', '-q', landing.targetRef.replace('refs/heads/', ''));
+    await a.commit('bad.txt', 'x\n');
+    const bad = await git(a.ws.path, 'rev-parse', 'HEAD');
+    expect(await git(h.repo, 'rev-parse', landing.targetRef)).toBe(bad);
+    await b.commit('b.txt', 'b\n');
+    expect(await b.land()).toMatchObject({ status: 'halted', targetCommit: bad });
+    expect((await h.manager.configure(h.ctx, { branch: 'restore' })).settled).toMatchObject([{ branch: 'restored', head: landed }]);
+    expect(await git(h.repo, 'rev-parse', landing.targetRef)).toBe(landed);
+    await expect(git(a.ws.path, 'symbolic-ref', '--quiet', 'HEAD')).rejects.toThrow();
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(bad);
+    expect(await git(a.ws.path, 'status', '--porcelain')).toBe('');
+    expect(await b.land()).toMatchObject({ status: 'landed', commits: 1 });
+  }, 60_000);
+
   it('adopts commits from outside that pass the checks and reports them once', async () => {
     const h = await fixture(); const { landing, landed } = await configured(h);
     const stray = await outside(h, landing.targetRef, 'stray.txt');
@@ -1134,6 +1175,23 @@ describe('handing commits to the landing queue', () => {
     expect(await place(`${h.base}..${'1'.repeat(40)}`)).toMatchObject({ worktree: 'kept', note: expect.stringContaining('not in this repository') });
   }, 60_000);
 
+  it('takes a worktree off the landing branch before it moves it, so the branch stays where the queue put it', async () => {
+    const h = await fixture();
+    const landing = await h.configure([node(`if(require('fs').existsSync('bad.txt')){console.error('bad.txt present');process.exit(3)}`)]);
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    await b.commit('good.txt', 'g\n'); expect(await b.land()).toMatchObject({ status: 'landed' });
+    const tip = await git(h.repo, 'rev-parse', landing.targetRef);
+    await a.commit('bad.txt', 'x\n');
+    const handed = handOff(h, a, 'a'), info = await handed.submitted;
+    expect(await handed.report).toMatchObject({ status: 'check_failed' });
+    // The member switched to the branch, and now takes up the item whose commits the queue turned back.
+    await git(a.ws.path, 'checkout', '-q', landing.targetRef.replace('refs/heads/', ''));
+    expect(await h.manager.position(h.ctx, { workspace: a.ws.id, taskId: 'a', commits: `${info.targetCommit}..${info.headCommit}` })).toEqual({ worktree: 'commits', headCommit: info.headCommit });
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(info.headCommit);
+    await expect(git(a.ws.path, 'symbolic-ref', '--quiet', 'HEAD')).rejects.toThrow();
+    expect(await git(h.repo, 'rev-parse', landing.targetRef)).toBe(tip);
+  }, 60_000);
+
   it('reports a failed check with commits the member can bring back, and still answers a conflict in its worktree at once', async () => {
     const h = await fixture();
     await h.configure([node(`if(require('fs').existsSync('bad.txt')){console.error('bad.txt present');process.exit(3)}`)]);
@@ -1663,6 +1721,8 @@ describe('claim, fix and land through the runtime', () => {
         await spec.validateBeforeRun();
         const cwd = spec.workspace!.path;
         expect(spec.systemPrompt).toContain('Landing branch: bridge-workflow/');
+        // A clone has refs of its own, so switching to a branch there holds nothing of the source.
+        expect(spec.systemPrompt.includes('Do not switch this worktree to that branch (git checkout or git switch bridge-workflow/')).toBe(isolation !== 'clone');
         expect(spec.systemPrompt).toContain('Submit each item as soon as its own check passes');
         expect(spec.systemPrompt).toContain(`Managed ${isolation}: ${cwd}`);
         // A clone sees the landing branch through its remote; a worktree shares the checkout's refs.

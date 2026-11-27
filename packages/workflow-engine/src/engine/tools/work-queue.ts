@@ -298,7 +298,8 @@ const MEMBER_INSTRUCTIONS = [
     + 'When it takes longer it answers {status:"preparing",seconds}, and nothing is wrong: call submit_work again, as often as it takes, and leave your worktree as it is meanwhile. '
     + 'A call that was cut off loses nothing either: call it again. A worktree with nothing to land is answered {status:"landed",commits:0}, which completes the item you hold. '
     + 'For a member that holds no item, submit_work adds an item for the commits (key in the answer) and they are followed in the same way. '
-    + 'Only submit_work advances the landing branch: never commit, update-ref or push to it. '
+    + 'Only submit_work advances the landing branch: never commit, update-ref or push to it, and never switch your worktree to it (git checkout or git switch with its name). '
+    + 'It is the queue\'s branch: the queue moves it whether or not a worktree is on it, and detaches the HEAD of one it finds there. Read it with git log, git show or git checkout --detach <branch>. '
     + 'The queue checks in a worktree of its own (a train-… directory that git worktree list shows): never run a command in it, not even git status, which locks its index and stops the landing for everyone.',
   'When the queue turns your commits back you are told, and the item is yours again: claim_work hands it to you before other work, with item.landing = {status,reason?,commits,report}, and puts those commits back into your worktree. '
     + 'Repair what status and report say as described below, commit and submit again. '

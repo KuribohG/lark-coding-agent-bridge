@@ -163,6 +163,29 @@ describe.skipIf(!mounts)('wsfs workspaces', () => {
     expect(await git(b.ws.path, 'status', '--porcelain')).toBe('');
   }, 60_000);
 
+  it('takes the landing branch from a workspace that switched to it, lands, and moves that workspace by its daemon again', async () => {
+    const h = await fixture(); const landing = await h.configure();
+    const a = await h.member('a'), b = await h.member('b');
+    await a.commit('a.txt', 'a\n');
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    const first = await git(h.repo, 'rev-parse', landing.targetRef);
+    await git(b.ws.path, 'checkout', '--quiet', landing.targetRef.replace('refs/heads/', ''));
+    await a.commit('more.txt', 'more\n');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 1 });
+    const tip = await git(h.repo, 'rev-parse', landing.targetRef);
+    expect(await git(h.repo, 'rev-parse', `${tip}~1`)).toBe(first);
+    // Off the branch, on the commit it was on, and clean: on the branch it would show more.txt as deleted.
+    await expect(git(b.ws.path, 'symbolic-ref', '--quiet', 'HEAD')).rejects.toThrow();
+    expect(await git(b.ws.path, 'rev-parse', 'HEAD')).toBe(first);
+    expect(await git(b.ws.path, 'status', '--porcelain')).toBe('');
+    // With HEAD detached the daemon moves the workspace, and it keeps none of the files that landed.
+    await b.commit('b.txt', 'b\n');
+    expect(await b.land()).toMatchObject({ status: 'landed', commits: 1 });
+    expect(await git(b.ws.path, 'rev-parse', 'HEAD')).toBe(tip);
+    expect(await readFile(join(b.ws.path, 'more.txt'), 'utf8')).toBe('more\n');
+    expect(await b.own()).toEqual([]);
+  }, 60_000);
+
   it('puts a workspace where a claimed item starts by moving it, and prechecks a submission on the stacked commits', async () => {
     const h = await fixture();
     // The precheck records which files it ran on; the checks of the train turn back what holds bad.txt.

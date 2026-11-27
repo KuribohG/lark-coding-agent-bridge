@@ -80,6 +80,8 @@ const checkoutSlots = new Slots(WORKSPACE_CHECKOUT_SLOTS);
  * another from the first minute, not all at the end.
  */
 const largeCheckouts = new Slots(WORKSPACE_LARGE_CHECKOUTS);
+/** Detaches the HEAD of a checkout where it stands. It writes that one file: the index and the files stay as they are. */
+const DETACH = ['update-ref', '--no-deref', '-m', 'bridge-workflow: taken off the landing branch, which only the landing queue moves', 'HEAD', 'HEAD'];
 
 /** A submission waiting for a train: the member's commits `base..head`, already rebased onto the branch as it was then. */
 interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits: number; ctx: WorkspaceContext; resolve(report: LandReport): void; reject(error: unknown): void;
@@ -911,10 +913,14 @@ export class WorkflowWorkspaces {
    * Moves a workspace to `commit` as `git reset --hard` does, HEAD included. In a wsfs workspace whose HEAD is detached
    * the daemon does it and no file is written: through the mount Git would write every file that differs, and the
    * workspace would keep them all. Anything else is Git's own reset in the workspace, as is a move the daemon
-   * refused before it changed anything.
+   * refused before it changed anything. A workspace that is on the landing branch is taken off it first: the reset
+   * would move the branch with it, and only the queue moves that.
    */
   private async reset(ws: WorkspaceBinding, commit: string, signal: AbortSignal): Promise<void> {
-    if (ws.isolation === 'wsfs' && (await this.git(ws.path, ['symbolic-ref', '--quiet', 'HEAD'], signal, true)).code === 1) {
+    const on = ws.isolation === 'clone' ? undefined : await this.git(ws.path, ['symbolic-ref', '--quiet', 'HEAD'], signal, true);
+    let detached = on?.code === 1;
+    if (on && !on.code && on.stdout.trim() === this.landing(ws.workflowId)?.targetRef) { await this.git(ws.path, DETACH, signal); detached = true; }
+    if (ws.isolation === 'wsfs' && detached) {
       const moved = await this.mounts.move(ws, commit, signal);
       if (moved) return;
     }
@@ -988,6 +994,19 @@ export class WorkflowWorkspaces {
   }
   private async notCheckedOut(ws: WorkspaceBinding, ref: string, signal: AbortSignal): Promise<void> {
     if ((await this.worktree(ws, ['list', '--porcelain'], signal)).stdout.split('\n').includes(`branch ${ref}`)) throw new Error('Integration target is checked out; keep the checkout unchanged');
+  }
+  /**
+   * Takes the landing branch from every checkout that is on it, before the queue moves it: HEAD stays on the commit
+   * it was on, detached, and neither the index nor a file is touched. The branch is the queue's, and a member that
+   * switched to it does not hold up what everyone else submitted. Left on the branch, its checkout would show all
+   * that lands as a staged change that undoes it, and its next commit would take that work out of the branch again.
+   * A checkout whose HEAD cannot be written is left as it is, and the branch moves all the same.
+   */
+  private async takeBack(ws: WorkspaceBinding, ref: string, signal: AbortSignal): Promise<void> {
+    for (const entry of (await this.worktree(ws, ['list', '--porcelain'], signal)).stdout.split('\n\n')) {
+      const lines = entry.split('\n'), path = lines.find(line => line.startsWith('worktree '))?.slice(9);
+      if (path && lines.includes(`branch ${ref}`)) await this.git(path, DETACH, signal, true).catch(() => undefined);
+    }
   }
   private protect(value: unknown): WorkspaceLanding['protect'] {
     if (value === undefined) return undefined;
@@ -1503,7 +1522,7 @@ export class WorkflowWorkspaces {
     if (good) {
       // The next run looks at the branch first: it vouches for what was added and stacks these submissions on it, or halts.
       if (await this.refHead(ws.repository, targetRef, signal) !== expected) throw new BranchMoved('Landing branch was moved from outside the landing queue; submit again');
-      await this.notCheckedOut(ws, targetRef, signal);
+      await this.takeBack(ws, targetRef, signal);
       const landed = stack.slice(0, good), from = landed.slice(0, 16).map(candidate => candidate.ws.id.slice(0, 8)).join(',');
       await this.advance(ws, targetRef, head, expected, `bridge-workflow: landed ${good} submission(s), ${landed.reduce((total, candidate) => total + candidate.commits, 0)} commit(s) from ${from}${good > 16 ? ',…' : ''}`, signal);
       run.head = head;
@@ -1827,7 +1846,8 @@ export class WorkflowWorkspaces {
       this.putHead(ws, { targetRef, head: current });
       return { repository: ws.repository, branch: 'adopted', head: current };
     }
-    await this.notCheckedOut(ws, targetRef, signal);
+    // Whoever moved the branch may still be on it, and stays on the commits it made, which `kept` names.
+    await this.takeBack(ws, targetRef, signal);
     const kept = current ? `refs/bridge-workflow/${ws.workflowId}/outside/${current}` : undefined;
     if (kept) await this.git(ws.repository, ['update-ref', kept, current!], signal);
     await this.git(ws.repository, ['update-ref', '-m', 'bridge-workflow: restored after a move from outside the landing queue', targetRef, known.head, current ?? '0'.repeat(known.head.length)], signal);
