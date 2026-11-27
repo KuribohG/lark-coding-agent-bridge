@@ -318,8 +318,9 @@ const MEMBER_INSTRUCTIONS = [
     + '{status:"rejected",files,reason}: you changed paths this workflow does not let you change. Remove those changes (deletions and renames too) and submit again; do not work around it. '
     + '{status:"halted",reason}: the landing branch was changed outside the queue and landing is paused; the main agent has been told. Keep your commits and try again at your next turn. '
     + 'Commits that were already in the queue wait there and need nothing from you.',
-  'Adding work: enqueue_work({key,title,input,origin?,assignee?,queue?,priority?,dependsOn?,resources?,writes?,maxAttempts?}) adds work that someone has to do: '
-    + 'a part split off an item that is too large, a problem you found, or the next batch when the queue is empty and the goal is not met. '
+  'Adding work: whoever sees work that the goal needs and no item covers adds it, a worker as much as a lead, in the turn it is seen. Nobody has to allow it, and what is only said in a result, a note or an answer is not work until it is an item. '
+    + 'enqueue_work({key,title,input,origin?,assignee?,queue?,priority?,dependsOn?,resources?,writes?,maxAttempts?}) adds it: '
+    + 'a part split off an item that is too large, a problem you found, a step nobody planned, or the next batch when the queue is empty and the goal is not met. '
     + 'Before you add an item, and before you investigate a problem, look with search_work for its symptom, module or test name: someone may have reported it under another key, and then you use that result or go on from it. '
     + 'key is a stable name for the problem itself (bug-<module>-<symptom>); when it exists nothing is added and the answer is {itemId,key,existing:true,status}. '
     + 'title says it in one sentence; input gives the symptom, how to reproduce it and what is known. '

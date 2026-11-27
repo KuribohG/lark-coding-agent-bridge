@@ -1411,17 +1411,25 @@ describe('swarm', () => {
         // Work is delivered on its own check and looked at afterwards; what is checked is the work, by trying it.
         'do not make each result wait for a reviewer', 'Do not plan a review of a report or a check of another check', 'Only where a mistake would spread before anyone finds it',
         'amend an item nobody has claimed (update_work with title, input)', 'do not re-issue work under new keys', 'hold: true, with a reason, is only for what you set aside by decision',
-        'Members note in topic "noticed" what they saw that the plan does not account for']) expect(prompt(member), member + ': ' + text).toContain(text);
+        // Work that someone finds is added by whoever found it: a lead is told so in the words its members are, and steers what they added.
+        'The swarm runs itself, and work that someone finds is added by whoever found it', 'add it with enqueue_work in the turn you see it. Nobody has to allow it.',
+        'Members add the work they find themselves, to the queue whose work it is, and do not ask you first', 'So you steer what is in the queues rather than hand out every item',
+        'Topic "noticed" holds what members saw that changes the plan without being work']) expect(prompt(member), member + ': ' + text).toContain(text);
       expect(prompt(member)).toMatch(/Your review of (the plan|your part) is the wake-up you set with wake_me and every 8th turn/);
     }
-    // A member delivers what its item asks for, keeps to the purpose of the item, and reports what it sees beside it instead of taking it up.
-    for (const text of ['You do the work of queue "q".', '@ql leads your queue: it plans the work and judges the results', 'is your report, which @ql reads',
+    // Neither lead asks the one above it what to work on: the main agent is asked for what the swarm cannot settle itself.
+    expect(prompt('lead')).toContain('Do not ask the main agent what to do next, or for leave to add or change work: ask it only for what the swarm cannot settle itself, which is the goal and its test');
+    expect(prompt('ql')).toContain('Do not ask @lead what to do next, or for leave to add or change work. Work you see that belongs to another part goes into its queue (enqueue_work with queue).');
+    // A member delivers what its item asks for, keeps to the purpose of the item, and adds what it sees beside it to the queue instead of taking it up or only mentioning it.
+    for (const text of ['You do the work of queue "q".', '@ql leads your queue: it sets the direction, orders the queue and judges the results', 'adding work you found is not such a case', 'is your report, which @ql reads',
       'a description of how that could be done does not complete it', 'release_claim({reason, waitFor: [keys]})', 'that is what you are after, not the wording',
-      'When the better way reaches beyond the item, do not take it yourself', 'Deliver as soon as the check passes', 'Do not weaken a test, special-case an input or change an expected output',
-      'Write no account of your work beside it (a report, a summary, a log) unless the item names that document', 'What you find outside your item is new work, not yours to do',
-      'give origin, the key of that item, and how to see the fault for oneself', 'report it once and leave the repair to whoever is given it', 'goes in note({topic: "noticed", text})',
+      'When the better way reaches beyond the item, it is new work: add it as an item (below)', 'Deliver as soon as the check passes', 'Do not weaken a test, special-case an input or change an expected output',
+      'Write no account of your work beside it (a report, a summary, a log) unless the item names that document', 'The swarm runs itself, and work that someone finds is added by whoever found it', 'Nobody has to allow it.',
+      'For you that is what you come upon outside your item', 'and which part of the goal it moves. What you cannot write that last line for is not work.', 'Adding it is yours; doing it is not part of the item you hold',
+      'give origin, the key of that item, and how to see the fault for oneself', 'add it once and leave the repair to whoever is given it.\n- What changes the plan without being work for anyone', 'goes in note({topic: "noticed", text})',
+      'When items in a queue rest on it, ask @ql as well, which can amend or cancel them.',
       'After this first turn you can be woken at most 2 times.', 'One you leave open goes to whoever stands above you: @ql (lead of your queue), then @lead (lead of the swarm), then the main agent.']) expect(prompt('w1'), text).toContain(text);
-    expect(prompt('o1')).toContain('@lead is the lead: it plans the work and judges the results');
+    expect(prompt('o1')).toContain('@lead is the lead: it sets the direction, orders the queue and judges the results');
     // The rules of a first turn do not last a long run: every later turn of a lead says where it stands and how its queues are.
     const later = (name: string) => h.prompts(name).find(text => text.includes('came back since your last turn'))!;
     expect(later('lead')).toMatch(/Swarm "tree", wake-up \d\. You are lead, the lead; above you: the main agent\.\n(.|\n)*Queues now: .*"q" \d+ claimable, \d+ of 1 members idle, \d+ items completed in the last hour \(lead ql\)(.|\n)*leave each queue that has no lead of its own with the work the goal still needs, what you know and what has to be found out\. Idle members are not a reason to add items\./);

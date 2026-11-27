@@ -26,6 +26,13 @@ const TAKEOVER_NOTE_CHARS = 1500;
 
 const PLAN_ONLY = 'You plan and judge; you do not do the work: no code, builds, tests or measurements of your own, except to check a result before you rely on it';
 
+/**
+ * What a lead and a worker are told in the same words. Work that a member only mentions, in a result or a note, waits
+ * for a lead to make an item of it, and a lead reads far less than its members write; so whoever sees it adds it.
+ */
+const FOUND_WORK = 'The swarm runs itself, and work that someone finds is added by whoever found it: when you see something the goal needs and no item covers, look for it with search_work and, when it is not there, '
+  + 'add it with enqueue_work in the turn you see it. Nobody has to allow it. Said only in a result, a note or an answer, it waits for someone else to make an item of it, and may wait for good.';
+
 /** What both parts are told about turns, to-dos and speaking to each other. */
 function common(swarm: SwarmView, member: MemberView, above: string): string[] {
   const lead = coordinates(swarm, member);
@@ -59,6 +66,9 @@ function leadRules(swarm: SwarmView, member: MemberView): string[] {
       : `- You lead ${led.length > 1 ? 'queues' : 'queue'} ${quoted(led)} under @${boss}: that part of the task is yours to plan, its results are yours to judge, and what waits in it waits on you. `
         + `What your part must deliver is in the status of @${boss}: plan toward that, and when you think it is the wrong thing to deliver, ask @${boss} instead of planning toward something else.`,
     `- ${PLAN_ONLY}: every piece of work goes into a queue as an item.`,
+    `- ${FOUND_WORK} For you it also means that nobody ${whole ? 'outside the swarm plans its work: within the goal, what to work on is the swarm\'s to decide' : 'above you plans your queues: within what your part must deliver, what to work on is yours and your members\' to decide'}. `
+      + (whole ? 'Do not ask the main agent what to do next, or for leave to add or change work: ask it only for what the swarm cannot settle itself, which is the goal and its test, and what only someone outside can give (an access, a decision that is the user\'s).'
+        : `Do not ask @${boss} what to do next, or for leave to add or change work. Work you see that belongs to another part goes into its queue (enqueue_work with queue).`),
     '- The goal, and the test that tells when it is met, are the user\'s: only the main agent changes them. What you keep current is your status (set_status): '
       + `how far off ${part} is now by that test, what is being tried, what was ruled out (with where the evidence is, so that nobody tries it again), what is not known yet that would change the plan`
       + (delegates.length ? ', the priorities, and what each part that has a lead of its own must deliver. ' : ' and the priorities. ')
@@ -83,7 +93,9 @@ function leadRules(swarm: SwarmView, member: MemberView): string[] {
     '- An item that must wait names what it waits for in dependsOn: another item, or a gate (enqueue_work with gate: true), a condition that settle_work declares met; it is then handed out without you. '
       + 'When the plan changes, amend an item nobody has claimed (update_work with title, input), replace one that is claimed or done (supersededBy, or enqueue_work with supersedes), and cancel what no longer serves the goal; do not re-issue work under new keys. '
       + 'hold: true, with a reason, is only for what you set aside by decision; you answer for it until you return it.',
-    `- Members note in topic "${BOARD_NOTICED_TOPIC}" what they saw that the plan does not account for. Read it when you review, turn what bears on the goal into items, and mark what you dealt with (resolve_post).`,
+    '- Members add the work they find themselves, to the queue whose work it is, and do not ask you first; the results come back to the lead of that queue like those of the items it added. '
+      + 'So you steer what is in the queues rather than hand out every item: order it (priority), amend or cancel what does not move the goal (update_work), and say in your status what is wanted more of and what is not, which is how members know what to add. '
+      + `Topic "${BOARD_NOTICED_TOPIC}" holds what members saw that changes the plan without being work: read it when you review, act on what bears on the goal, and mark what you dealt with (resolve_post).`,
     '- tell_worker puts your words into the running turn of a member' + (whole ? '' : ' that works under you') + ' when work in flight must change now. '
       + (whole ? `A ruling that every member must follow is a note in topic "${BOARD_ANNOUNCE_TOPIC}": members get the new ones in their brief.` : `Rulings for everyone are made by @${swarm.lead}.`),
     ...(delegates.length ? [`- These members lead parts of the work under you: ${delegates.map(item => `${item.name} (${item.leads!.length > 1 ? 'queues' : 'queue'} ${quoted(item.leads!)})`).join(', ')}. `
@@ -116,16 +128,19 @@ function workerRules(swarm: SwarmView, member: MemberView): string[] {
       + 'or hand it back with release_claim({reason, waitFor: [keys]}) when it has to wait for other items. '
       + 'When you find that it should not be done, or that what it expects is not so, complete it with that finding and its evidence, and say plainly that nothing was changed.',
     '- An item is there for a part of the goal, which it names; that is what you are after, not the wording. When the item as written will not get it, or you see a clearly better way within what the item touches, '
-      + 'take that way and say in the result where you departed from the item and why. When the better way reaches beyond the item, do not take it yourself: finish or fail the item and say what you saw.',
+      + 'take that way and say in the result where you departed from the item and why. When the better way reaches beyond the item, it is new work: add it as an item (below), finish or fail your own and name the item you added in the result.',
     '- Deliver as soon as the check passes: nobody reviews each item before it counts, and what others later find wrong with it comes back as new work. '
       + 'Do not weaken a test, special-case an input or change an expected output to make a check pass: a check you cannot pass honestly is a blocker, so fail_work and say why.',
     '- The result you give complete_work is your report' + (planner ? `, which @${planner} reads` : '') + ': start with the conclusion, then what you did, what you found, where you departed from the item and what still worries you. '
       + 'Write no account of your work beside it (a report, a summary, a log) unless the item names that document; long output belongs where the task keeps such files, with the path in the result.',
-    '- What you find outside your item is new work, not yours to do: look for it with search_work, and if nobody has reported it add it with enqueue_work (for a fault in what was delivered, give origin, the key of that item, and how to see the fault for oneself). '
-      + 'That holds most of all for what everyone depends on (the shared branch, a build, a tool): report it once and leave the repair to whoever is given it.'
-      + (swarm.lead ? ` What you see that the plan does not account for (something it takes for granted that is not so, a cause behind several items, a shorter way to the goal, a way that cannot work) goes in note({topic: "${BOARD_NOTICED_TOPIC}", text}): `
-        + 'what you saw, how to see it for oneself and what it could change. Search that topic first; most items leave nothing to note.' : ''),
-    ...(planner ? [`- @${planner} ${planner === swarm.lead ? 'is the lead' : 'leads your queue'}: it plans the work and judges the results. Ask it when you cannot or should not go on without an answer.`] : []),
+    `- ${FOUND_WORK} For you that is what you come upon outside your item: a fault in what was delivered (give origin, the key of that item, and how to see the fault for oneself), a step nobody planned, `
+      + 'the rest of an item that proved too large, a cause behind several items, a shorter way to the goal, something the plan takes for granted that nobody has checked. '
+      + 'Write the item as you would want to be handed it: what is wanted, where, the check that tells done from not done, and which part of the goal it moves. What you cannot write that last line for is not work. '
+      + 'It goes to your queue, or with queue to the one whose work it is. Adding it is yours; doing it is not part of the item you hold: go on with your own, and the new item is taken by whoever is free, which may be you at your next claim. '
+      + 'That holds most of all for what everyone depends on (the shared branch, a build, a tool): add it once and leave the repair to whoever is given it.',
+    ...(swarm.lead ? [`- What changes the plan without being work for anyone (a way that cannot work, something the plan takes for granted that is not so) goes in note({topic: "${BOARD_NOTICED_TOPIC}", text}): `
+      + `what you saw and how to see it for oneself; search that topic first. When items in a queue rest on it, ask @${planner ?? swarm.lead} as well, which can amend or cancel them.`] : []),
+    ...(planner ? [`- @${planner} ${planner === swarm.lead ? 'is the lead' : 'leads your queue'}: it sets the direction, orders the queue and judges the results. Ask it when you cannot or should not go on without an answer; adding work you found is not such a case.`] : []),
   ];
 }
 
