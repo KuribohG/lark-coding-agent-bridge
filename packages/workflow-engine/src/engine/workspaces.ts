@@ -104,11 +104,13 @@ interface TrainTrouble { failures: number; since: number; reason: string; repeat
 /**
  * The run a train is on: the submissions it took from the queue and how far it has come with them. `stack` holds the
  * ones whose commits are in what the checks run on; withdrawing one of those aborts `stop`, which ends the check that
- * runs. Once the step is `landing` the branch is being moved and nothing can be taken back. `probes` are the runs of
- * the checks so far, for the ledger; `base` and `head` are where the branch was and where the train moved it.
+ * runs. `held` are the ones that put nothing on the stack, because the submissions below them hold all of their commits
+ * already, each with how many are below it. Once the step is `landing` the branch is being moved and nothing can be
+ * taken back. `probes` are the runs of the checks so far, for the ledger; `base` and `head` are where the branch was
+ * and where the train moved it.
  */
 interface TrainRun { batch: Candidate[]; since: number; step: 'stacking' | 'checking' | 'landing'; checks: number;
-  stack: Candidate[]; stop: AbortController; probes: LandingTrain['checks']; base?: string | null; head?: string;
+  stack: Candidate[]; held: Map<Candidate, number>; stop: AbortController; probes: LandingTrain['checks']; base?: string | null; head?: string;
   /** The digest of the check commands it ran: how long a check usually takes is only said of runs under the same ones. */
   checked?: string;
   /** The run of the checks that is going on, for whoever watches the queue (see `LandingLive`). */
@@ -1209,7 +1211,7 @@ export class WorkflowWorkspaces {
         if (!train.queue.length) return;
         const landing = this.landing(train.queue[0]!.ws.workflowId);
         const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
-        const run: TrainRun = train.current = { batch, since: Date.now(), step: 'stacking', checks: 0, stack: [], stop: new AbortController(), probes: [] };
+        const run: TrainRun = train.current = { batch, since: Date.now(), step: 'stacking', checks: 0, stack: [], held: new Map(), stop: new AbortController(), probes: [] };
         this.mirror(key);
         try {
           if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
@@ -1413,6 +1415,8 @@ export class WorkflowWorkspaces {
    * fail, the stack is bisected for the first submission that breaks the checks: the ones before it land, it gets the
    * failed checks back, and the ones after it ride the next train. A submission that does not apply to the branch
    * head is a conflict; one that only fails to apply on top of this train's cargo is tried first on the next train.
+   * A submission whose commits are all on the branch already has landed, and one whose commits the submissions below
+   * it hold lands when they do: neither adds a commit, so neither is a place the search looks at.
    * A submission that was withdrawn meanwhile is left out; when its commits were already in the stack the train stops
    * (`Restacked`) and runs again without them. Returns the submissions to queue again.
    */
@@ -1431,7 +1435,7 @@ export class WorkflowWorkspaces {
     const start = expected ?? batch[0]!.base;
     const at = (commit: string) => this.park(ws, path, commit, signal);
     const identity = await this.identity(path, signal);
-    const { stack } = run, heads = [start], again = new Set<Candidate>();
+    const { stack, held } = run, heads = [start], again = new Set<Candidate>();
     run.base = expected; run.checked = workflowDigest(landing.commands);
     for (const candidate of batch) {
       // Withdrawn since the train took it from the queue.
@@ -1447,9 +1451,16 @@ export class WorkflowWorkspaces {
       }
       // Withdrawn while its commits were being stacked: they stay out of what is checked.
       if (candidate.settled) continue;
-      if ('head' in stacked) { stack.push(candidate); heads.push(stacked.head); }
-      else if (head === start) candidate.resolve(told({ status: 'conflict', targetRef, targetCommit: start, detail: stacked.conflict }));
-      else again.add(candidate);
+      if (!('head' in stacked)) {
+        if (head === start) candidate.resolve(told({ status: 'conflict', targetRef, targetCommit: start, detail: stacked.conflict }));
+        else again.add(candidate);
+      }
+      // A branch that does not exist yet is made by the train that lands on it, whatever it carries.
+      else if (stacked.head !== head || expected === null && !stack.length) { stack.push(candidate); heads.push(stacked.head); }
+      // Everything it brings is below it already, so the stack is the same commit with it and without: the checks say
+      // nothing of it, and it takes no place in the search. On the branch itself it has landed.
+      else if (stack.length) held.set(candidate, stack.length);
+      else candidate.resolve(told({ status: 'landed', targetRef, headCommit: start, commits: 0 }));
     }
     this.mirror(key);
     const withdrawn = () => { if (run.stop.signal.aborted) throw new Restacked('A submission was withdrawn from the train'); };
@@ -1478,7 +1489,7 @@ export class WorkflowWorkspaces {
       } catch (error) { noted(undefined, error); throw error; }
       return noted();
     };
-    // heads[n] is the stack after n submissions. The branch head, heads[0], passed when it landed.
+    // heads[n] is the stack after n submissions, each of which added to it. The branch head, heads[0], passed when it landed.
     let good = 0, bad = stack.length + 1, failure: CheckFailure | undefined;
     for (let probe = stack.length; bad - good > 1; probe = Math.floor((good + bad) / 2)) {
       const failed = await check(heads[probe]!, probe);
@@ -1500,6 +1511,12 @@ export class WorkflowWorkspaces {
     for (const candidate of stack.slice(0, good)) candidate.resolve(told({ status: 'landed', targetRef, headCommit: head, commits: candidate.commits }));
     if (failure) stack[bad - 1]!.resolve(told({ status: 'check_failed', targetRef, targetCommit: head, headCommit: heads[bad]!, ...failure }));
     for (const candidate of stack.slice(bad)) again.add(candidate);
+    // What it stood on has landed, and with that all it brought; or it has not, and the next train stacks it anew.
+    for (const [candidate, below] of held) {
+      if (candidate.settled) continue;
+      if (below <= good) candidate.resolve(told({ status: 'landed', targetRef, headCommit: head, commits: 0 }));
+      else again.add(candidate);
+    }
     // Said once a report carried it; a train that only requeues its submissions says it on the next.
     if (said) this.unsaid.delete(key);
     return batch.filter(candidate => again.has(candidate) && !candidate.settled);
@@ -1591,7 +1608,7 @@ export class WorkflowWorkspaces {
       const rider = (candidate: Candidate): LandingRider => ({ ...candidate.label, workspace: candidate.ws.id, headCommit: candidate.head, commits: candidate.commits, since: candidate.queued });
       const live: Omit<LandingLive, 'at'> = { repository, waiting: (train?.queue ?? []).map(rider),
         ...(run ? { train: { since: run.since, step: run.step, ...(run.base === undefined ? {} : { base: run.base }),
-          riders: run.batch.map(candidate => ({ ...rider(candidate), state: candidate.settled ? candidate.outcome ?? 'failed' : run.stack.includes(candidate) ? 'stacked' : 'taken' })),
+          riders: run.batch.map(candidate => ({ ...rider(candidate), state: candidate.settled ? candidate.outcome ?? 'failed' : run.stack.includes(candidate) || run.held.has(candidate) ? 'stacked' : 'taken' })),
           checks: run.probes, ...(run.checking ? { checking: run.checking } : {}) } } : {}),
         ...(train?.trouble ? { retrying: { failures: train.trouble.failures, since: train.trouble.since, reason: train.trouble.reason } } : {}),
         ...(train?.halted ? { halted: train.halted.slice(0, 2000) } : {}) };

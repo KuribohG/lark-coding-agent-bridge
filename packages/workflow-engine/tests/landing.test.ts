@@ -26,6 +26,10 @@ async function git(cwd: string, ...argv: string[]) {
   return result.stdout.trim();
 }
 const node = (code: string) => ({ argv: [process.execPath, '-e', code] });
+/** The change a member's `commit` makes, in a commit of its own: two members that wrote the same fix. */
+const twinCommit = async (ws: WorkspaceBinding, file: string, content: string) => {
+  await writeFile(join(ws.path, file), content); await git(ws.path, 'add', '.'); await git(ws.path, 'commit', '-q', '-m', `${file}, by another`);
+};
 
 async function fixture(timing: Partial<TrainTiming> = {}, processes?: WorkflowProcesses) {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-landing-'));
@@ -485,6 +489,73 @@ describe('stacking a train', () => {
     expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).toEqual(expect.arrayContaining(['same.txt', 'b.txt']));
   }, 60_000);
 
+  /** Holds a train at its checks while the members submit one after the other, so that the next train stacks them in that order. */
+  const inOrder = async (h: Awaited<ReturnType<typeof fixture>>, members: Array<{ land(): Promise<LandReport> }>) => {
+    const blocker = await h.member('blocker'); await blocker.commit('blocker.txt', 'x\n');
+    const first = blocker.land();
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(1), { timeout: 20_000, interval: 20 });
+    const reports: Promise<LandReport>[] = [];
+    for (const [index, member] of members.entries()) {
+      reports.push(member.land());
+      await vi.waitFor(() => expect(h.waiting()).toBe(index + 1), { timeout: 20_000, interval: 20 });
+    }
+    await writeFile(h.gate, '');
+    expect(await first).toMatchObject({ status: 'landed' });
+    return Promise.all(reports);
+  };
+  const unlessBad = `if(fs.existsSync('bad.txt')){console.error('bad');process.exit(1)}`;
+
+  it('gives a submission that adds no commit to the stack no place in the search, and lands it with what holds its commits', async () => {
+    const h = await fixture(); const landing = await h.configure([h.logged(unlessBad, true)]);
+    const a = await h.member('a'), twin = await h.member('twin'), bad = await h.member('bad');
+    await a.commit('same.txt', 'the same change\n'); await twinCommit(twin.ws, 'same.txt', 'the same change\n'); await bad.commit('bad.txt', 'x\n');
+    const reports = await inOrder(h, [a, twin, bad]);
+    expect(reports).toMatchObject([{ status: 'landed', commits: 1 }, { status: 'landed', commits: 0, headCommit: await h.head() }, { status: 'check_failed' }]);
+    // The blocker's run, and two for the train of three: the two that added commits, then the first of them. The stack
+    // is the same commit with the twin and without, and no run was spent to tell the two apart.
+    expect(await h.runs()).toHaveLength(3);
+    const [train] = await h.trains(1);
+    expect(train).toMatchObject({ outcome: 'done', checks: [{ submissions: 2, passed: false }, { submissions: 1, passed: true }],
+      submissions: [{ member: 'a', outcome: 'landed' }, { member: 'twin', outcome: 'landed' }, { member: 'bad', outcome: 'check_failed' }] });
+    expect(new Set(train!.checks.map(probe => probe.headCommit)).size).toBe(2);
+    expect((await git(h.repo, 'log', '--format=%s', `${h.base}..${landing.targetRef}`)).split('\n')).toEqual(['same.txt', 'blocker.txt']);
+    expect((await h.branch()).recent![0]).toMatchObject({ submissions: 3, landed: 2, turnedBack: [{ member: 'bad', status: 'check_failed' }] });
+  }, 60_000);
+
+  it('has it ride the next train when what holds its commits fails the checks, where it is checked on its own', async () => {
+    const h = await fixture(); const landing = await h.configure([h.logged(unlessBad, true)]);
+    const bad = await h.member('bad'), twin = await h.member('twin'), c = await h.member('c');
+    await bad.commit('bad.txt', 'x\n'); await twinCommit(twin.ws, 'bad.txt', 'x\n'); await c.commit('c.txt', 'c\n');
+    const reports = await inOrder(h, [bad, twin, c]);
+    expect(reports.map(report => report.status)).toEqual(['check_failed', 'check_failed', 'landed']);
+    // The twin was answered for commits of its own, on the branch as it was.
+    const failed = reports[1] as Extract<LandReport, { status: 'check_failed' }>;
+    expect(await git(h.repo, 'rev-parse', `${failed.headCommit}~1`)).toBe(failed.targetCommit);
+    expect(await git(h.repo, 'log', '-1', '--format=%s', failed.headCommit)).toBe('bad.txt, by another');
+    const [third, second, first] = await h.trains(3);
+    expect(first).toMatchObject({ checks: [{ submissions: 2, passed: false }, { submissions: 1, passed: false }],
+      submissions: [{ member: 'bad', outcome: 'check_failed' }, { member: 'twin', outcome: 'next' }, { member: 'c', outcome: 'next' }] });
+    expect(second).toMatchObject({ checks: [{ submissions: 2, passed: false }, { submissions: 1, passed: false }],
+      submissions: [{ member: 'twin', outcome: 'check_failed' }, { member: 'c', outcome: 'next' }] });
+    expect(third).toMatchObject({ checks: [{ submissions: 1, passed: true }], submissions: [{ member: 'c', outcome: 'landed' }] });
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n').sort()).toEqual(['blocker.txt', 'c.txt', 'shared.txt']);
+  }, 60_000);
+
+  it('answers a submission whose commits the branch got while it waited as landed, without a run of the checks', async () => {
+    const h = await fixture(); const landing = await h.configure([h.logged('', true)], { batch: 1 });
+    const a = await h.member('a'), twin = await h.member('twin');
+    await a.commit('same.txt', 'the same change\n'); await twinCommit(twin.ws, 'same.txt', 'the same change\n');
+    const reports = await inOrder(h, [a, twin]);
+    expect(reports).toMatchObject([{ status: 'landed', commits: 1 }, { status: 'landed', commits: 0, headCommit: await h.head() }]);
+    // A train takes one submission here: the blocker's ran the checks, and a's. The twin's had nothing to run them on.
+    expect(await h.runs()).toHaveLength(2);
+    const [last, before] = await h.trains(2);
+    expect(last).toMatchObject({ outcome: 'done', checks: [], submissions: [{ member: 'twin', outcome: 'landed' }] });
+    expect(last!.head).toBeUndefined();
+    expect(before).toMatchObject({ head: await h.head(), submissions: [{ member: 'a', outcome: 'landed' }] });
+    expect(await git(h.repo, 'rev-list', '--count', `${h.base}..${landing.targetRef}`)).toBe('2');
+  }, 60_000);
+
   it('picks in its worktree what is not a plain line of commits, and hands a merge back as a conflict', async () => {
     const git2 = recorded(); const h = await fixture({}, git2.processes);
     await h.configure([h.logged('', true)]);
@@ -708,6 +779,30 @@ describe('taking a submission out of the queue', () => {
       { key: 'item-slow', member: 'slow', outcome: 'withdrawn', headCommit: slow.submitted().headCommit, commits: 1 }]);
     expect(again).toMatchObject({ outcome: 'done', head: await h.head(), checks: [{ submissions: 2, passed: true }] });
     expect(byKey(again)).toMatchObject([{ key: 'item-a', outcome: 'landed' }, { key: 'item-c', outcome: 'landed' }]);
+  }, 60_000);
+
+  it('does not stop the check for a withdrawn submission that added no commit to the stack', async () => {
+    const h = await fixture();
+    const { check, second } = held(h);
+    await h.configure([check]);
+    const slow = await h.member('slow'), twin = await h.member('twin');
+    await slow.commit('slow.txt', 's\n'); await twinCommit(twin.ws, 'slow.txt', 's\n');
+    const { first, rest } = await behind(h, 1, () => [slow.land()]);
+    const other = twin.land();
+    await vi.waitFor(() => expect(h.waiting()).toBe(2), { timeout: 20_000, interval: 20 });
+    await writeFile(h.gate, '');
+    expect(await first).toMatchObject({ status: 'landed' });
+    // The two share a train. Its stack is the commit of the first, which holds all the twin brought.
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(2), { timeout: 20_000, interval: 20 });
+    expect(h.manager.withdraw(h.state.workflowId, twin.submitted().headCommit, 'Withdrawn by twin: someone else has it')).toBe('withdrawn');
+    expect(await other).toMatchObject({ status: 'withdrawn' });
+    await writeFile(second, '');
+    expect(await rest[0]).toMatchObject({ status: 'landed', commits: 1 });
+    // The check that ran went on to its end, and no train ran again.
+    expect(await h.runs()).toHaveLength(2);
+    const [train] = await h.trains(1);
+    expect(train).toMatchObject({ outcome: 'done', checks: [{ submissions: 1, passed: true }],
+      submissions: [{ member: 'slow', outcome: 'landed' }, { member: 'twin', outcome: 'withdrawn' }] });
   }, 60_000);
 
   it('leaves a submission out that was withdrawn before its train stacked it, without stopping the train', async () => {
