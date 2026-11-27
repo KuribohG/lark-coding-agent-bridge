@@ -1,13 +1,14 @@
 import { CONTROL_ARGS } from './control-args';
 import { LANDING_HALTED, pushEvent, requireState } from '../kernel-state';
-import { assigned, closeWorkQueue, completeSubmission, enqueueFromMember, enqueueWork, heldWork, holdClaim, holdSubmission, mutateWork, returnSubmission, submitClaim, trackSubmission, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
+import { assigned, closeWorkQueue, completeSubmission, enqueueFromMember, enqueueWork, heldWork, holdClaim, holdSubmission, mutateWork, returnSubmission, submitClaim, submittedCommits, trackSubmission, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
+import { taskAgent } from '../durable-agents';
 import { queueName } from '../work-routing';
 import { boundedInteger, scriptText } from '../script-contract';
 import { workAuthority } from '../swarm';
 import { memberOperation } from './members';
 import type { ToolArgs, WorkflowTool, WorkflowToolPlugin } from './types';
 import type { KernelContext } from '../kernel-context';
-import type { WorkflowView } from '../types';
+import type { TaskView, WorkflowView } from '../types';
 import { versioned } from './versioned';
 
 function operationInput(args: ToolArgs): ToolArgs {
@@ -145,14 +146,17 @@ const submitWork: WorkflowTool = {
         // is answered. When it cannot (the claim ended meanwhile) this throws, and the commits stay in the worktree.
         const submitted = (info: { targetCommit: string; headCommit: string; commits: number; worktree: string }) => {
           const landing = { targetCommit: info.targetCommit, headCommit: info.headCommit, commits: info.commits };
-          const taken = bound((state, task) => claim ? submitClaim(state, task, caller.attemptId, { operationId, ...claim }, ctx.now(), landing, info.worktree)
-            : trackSubmission(state, task, caller.attemptId, operationId, ctx.now(), landing, info.worktree));
+          const taken = bound((state, task) => ({ member: taskAgent(state, task)?.key,
+            ...(claim ? submitClaim(state, task, caller.attemptId, { operationId, ...claim }, ctx.now(), landing, info.worktree)
+              : trackSubmission(state, task, caller.attemptId, operationId, ctx.now(), landing, info.worktree)) }));
           engine = taken.claim;
           answerWith(taken.response);
+          // What the queue calls these commits in its ledger and when it tells the main agent of them.
+          return { key: (taken.response as { key: string }).key, ...(taken.member ? { member: taken.member } : {}) };
         };
         void (async () => {
           let report;
-          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId, submitted, noticed: (notice: string) => raise(notice, true) }, controller.signal) as { status: string; headCommit?: string; commits?: number; reason?: string; notice?: string }; }
+          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId, submitted, noticed: raise }, controller.signal) as { status: string; headCommit?: string; commits?: number; reason?: string; notice?: string }; }
           catch (error) {
             // Before the queue had the commits this is the member's answer. After, the queue gave them up or was
             // closed: the item goes back to its member, unless the service is closing (the restart does that then) or
@@ -201,6 +205,33 @@ const submitWork: WorkflowTool = {
 };
 
 /**
+ * Takes commits out of the landing queue before they land (withdraw_work): the member that submitted them found them
+ * wrong, or whoever plans their queue knows that they break the checks or slow them down. The queue answers the
+ * submission `withdrawn`, and that answer returns its item to the member like any other that is not `landed` (see
+ * submit_work above), with who withdrew it and why in item.landing. `found` reads the commits of the named item for
+ * a caller that may withdraw them.
+ */
+async function withdrawWork<Task>(ctx: KernelContext, args: ToolArgs, by: string, read: <T>(apply: (state: WorkflowView, task: Task) => T) => T,
+  found: (state: WorkflowView, named: ToolArgs, task: Task) => ReturnType<typeof submittedCommits>): Promise<unknown> {
+  if (Object.keys(args).some(key => ![...CONTROL_ARGS, 'itemId', 'key', 'reason'].includes(key))) throw new Error('Unsupported withdraw_work option');
+  const reason = scriptText(args.reason, 'reason', 600).trim();
+  const named = { ...(args.itemId === undefined ? {} : { itemId: args.itemId }), ...(args.key === undefined ? {} : { key: args.key }) };
+  const { commits, view } = read((state, task) => {
+    if (state.script?.readOnly) throw new Error('Work landing is disabled in read-only workflows');
+    return { commits: found(state, named, task), view: ctx.store.workspaceView(state) };
+  });
+  const { itemId, key } = commits;
+  if (!('headCommit' in commits)) return { ...commits, status: 'absent', item: commits.status, note: 'The landing queue does not hold this item: it has answered the commits already, as work_status shows.' };
+  if (!ctx.host.withdraw) throw new Error('Landing is unavailable in this workflow');
+  const outcome = await ctx.host.withdraw(view, { headCommit: commits.headCommit, reason: `Withdrawn by ${by}: ${reason}` });
+  if (outcome === 'landing') return { status: 'landing', itemId, key, note: 'The train that carries these commits has passed the checks and is moving the branch, so they land. If work_status still shows the item with the queue in a moment, withdraw it again.' };
+  if (outcome === 'absent') return { status: 'absent', itemId, key, note: 'The landing queue no longer holds these commits: it has answered them meanwhile, or lost them in a restart. work_status shows how the item stands.' };
+  // The queue's answer returns the item to its member in a turn of the event loop of its own (submit_work).
+  await new Promise<void>(resolve => { setImmediate(resolve); });
+  return { status: 'withdrawn', itemId, key, ...(commits.member ? { member: commits.member } : {}), commits: `${commits.targetCommit}..${commits.headCommit}` };
+}
+
+/**
  * What a member is told about the queue, in the order it meets it: taking an item, doing it, landing it and what to
  * do when a landing is turned back; then adding, finding and changing items, and what a repeated call does.
  */
@@ -222,6 +253,8 @@ const MEMBER_INSTRUCTIONS = [
     + 'submit_work rebases your commits onto the tip of the landing branch and runs the workflow\'s precheck on them, in your worktree. What fails there is answered at once, as described below, and the item stays yours. '
     + 'Otherwise your commits join the landing queue and the call answers {status:"submitted",key,targetCommit,headCommit,commits,worktree}. You do not wait for the queue, '
     + 'which checks your commits in one batch with those of other members and advances the branch. The item is the queue\'s from then on: do not submit it again, and do not complete, fail or release it. '
+    + 'When you find that commits you submitted should not land (they are wrong, or they make the checks fail or take far longer), withdraw_work({key or itemId,reason}) takes them out of the queue '
+    + 'and the item is yours again, as when the queue turns them back; {status:"landing"} or {status:"absent"} says it was too late for that. '
     + 'It is completed with result (the landed commit when omitted) when the commits land, and items that wait on it are handed out only then. '
     + 'Your worktree is back at targetCommit, the tip of the landing branch, without the commits you submitted (worktree:"kept" says it could not be moved: run git reset --hard <targetCommit> yourself). '
     + 'Call claim_work for your next item and start it there; do not start work that needs commits that have not landed. '
@@ -234,6 +267,7 @@ const MEMBER_INSTRUCTIONS = [
   'When the queue turns your commits back you are told, and the item is yours again: claim_work hands it to you before other work, with item.landing = {status,reason?,commits,report}. '
     + 'Bring the commits back with git cherry-pick <commits> (a range, base..head), repair what status and report say as described below, commit and submit again with the claim you now hold. '
     + 'status "lost" or "failed" says the queue did not get to check them (the bridge restarted, or the queue gave up for a reason of its own): cherry-pick them and submit again. '
+    + 'status "withdrawn" says someone took them out of the queue before they landed, and reason says who and why: repair what it names before you submit again. '
     + 'An item of another member that carries item.landing is taken up the same way, from that member\'s commits.',
   'What turns a landing back. submit_work answers it at once when it happens in your worktree: the claim stays yours and the worktree holds your commits, so repair and submit again with a new operationId, '
     + 'or use release_claim or fail_work when you cannot. From the queue it comes later, in item.landing. '
@@ -279,7 +313,9 @@ const LEAD_INSTRUCTIONS = 'Changing items: you plan the queues you lead (the lea
   + 'and settle_work({operationId,key or itemId,result}) declares it met, with what was established as result; the items that named it are then handed out by themselves, and the answer lists them. '
   + 'settle_work likewise ends the wait for an unclaimed item whose work was done some other way. An item on hold with nothing else in its way, one that waits on an item that was cancelled or failed, '
   + 'a gate nobody has declared met and an item that keeps coming back without progress are to-dos of whoever planned them. '
-  + 'retry_work({operationId,key or itemId,additionalAttempts?}) gives a failed item more attempts (1 by default, 8 at most) and returns it to the queue.';
+  + 'retry_work({operationId,key or itemId,additionalAttempts?}) gives a failed item more attempts (1 by default, 8 at most) and returns it to the queue. '
+  + 'withdraw_work({key or itemId,reason}) takes the commits of an item out of the landing queue before they land, when you know that they break the checks or slow them down for everyone: '
+  + 'a train that carries them stops its check and runs again without them, and the item returns to the member that submitted it, with your reason in item.landing.';
 
 /** Durable work queues: the main agent produces and inspects items; persistent members claim and finish them. */
 export const workQueueTools: WorkflowToolPlugin = {
@@ -349,5 +385,22 @@ export const workQueueTools: WorkflowToolPlugin = {
     },
     ...claimTools,
     submitWork,
+    {
+      name: 'withdraw_work',
+      // The landing queue is not part of the versioned state: it is asked, and its answer changes the item.
+      main: { kind: 'direct', doc: 'withdraw_work(itemId 或 key,reason)',
+        run: async (ctx, _state, args, change) => withdrawWork<undefined>(ctx, args, 'the main agent', apply => change(state => apply(state, undefined)), (state, named) => submittedCommits(state, named)) },
+      worker: {
+        verifiesRoot: true,
+        call: () => { throw new Error('withdraw_work runs outside a transaction'); },
+        run: async (ctx, _caller, args, bound) => {
+          const by = bound((state, task) => { active(ctx, state); return taskAgent(state, task)?.key ?? 'a task'; });
+          return withdrawWork<TaskView>(ctx, args, by, bound, (state, named, task) => {
+            const member = taskAgent(state, task)?.key;
+            return submittedCommits(state, named, member ? workAuthority(state, member) : () => undefined, claim => claim.agentId === (task.agentId ?? `task:${task.taskId}`));
+          });
+        },
+      },
+    },
   ],
 };

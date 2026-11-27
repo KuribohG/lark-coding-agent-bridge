@@ -62,7 +62,7 @@ describe('workflow tool plugins', () => {
       'set_goal(text)', 'set_status', 'resolve_post 把', 'priority 为 -100..100', 'workflow guide', '不要读取或展示环境中的调用凭据']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
     for (const name of ['agent(prompt', 'parallel', 'pipeline', 'swarm(task', 'enqueueWork(', 'closeWorkQueue', 'post(text', 'schema']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).not.toContain(name);
     // A long run wakes the main agent dozens of times, and every wake's instructions stay in its session.
-    expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4650);
+    expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4750);
     // Waiting is told as a dependency on an item or a gate, and a revision as a replacement, where the fields of an item are.
     for (const name of ['settle_work(itemId 或 key,result)', 'update_work(itemId 或 key,title?,input?,writes?,resources?,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?)', 'gate:true 是条件项', '不用 hold', 'supersedes 是被本项取代的旧项']) {
       expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);

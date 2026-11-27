@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { callWorkflow, WorkflowRuntime } from '../src';
 import { WorkflowKernel } from '../src/engine/kernel';
 import { replaceWorkflowState } from '../src/engine/kernel-store';
+import { submittedCommits } from '../src/engine/work-queue';
 import { nodeProcesses, workspaceCommand } from '../src/engine/workspace-process';
 import type { WorkflowProcesses } from '../src/engine/ports';
 import { CLONE_REMOTE, WorkflowWorkspaces, type TrainTiming } from '../src/engine/workspaces';
@@ -48,7 +49,9 @@ async function fixture(timing: Partial<TrainTiming> = {}, processes?: WorkflowPr
     let last: LandSubmitted | undefined;
     return { ws,
       /** Submits the commits and waits for what the queue makes of them, which a member does not do. */
-      land: () => manager.land(ctx, { workspace: ws.id, taskId: name, submitted: info => { last = info; } }),
+      land: () => manager.land(ctx, { workspace: ws.id, taskId: name, submitted: info => { last = info; return { key: 'item-' + name, member: name }; } }),
+      /** The commits it last submitted, as the queue took them. */
+      submitted: () => last!,
       /** Brings the commits it last submitted back into the worktree, as a member does with an item that came back to it. */
       restore: () => git(ws.path, 'cherry-pick', `${last!.targetCommit}..${last!.headCommit}`),
       /** Moves the worktree to the landing branch as it is now. */
@@ -75,7 +78,10 @@ async function fixture(timing: Partial<TrainTiming> = {}, processes?: WorkflowPr
     expect(await first).toMatchObject({ status: 'landed' });
     return Promise.all(rest);
   };
-  return { dir, repo, base, state, manager, ctx, op, member, configure, head, logged, runs, together };
+  /** The latest trains of the landing ledger, newest first, and the branch as the main agent sees it. */
+  const trains = async (count = 10) => ((await manager.configure(ctx, { trains: count })) as LandingChange).trains!;
+  const branch = async () => ((await manager.configure(ctx, {})) as LandingChange).landing.branches[0]!;
+  return { dir, repo, base, state, manager, ctx, op, member, configure, head, logged, runs, together, waiting, gate, log, trains, branch };
 }
 
 describe('landing members\' work on a shared branch', () => {
@@ -394,7 +400,7 @@ describe('a landing branch that only the queue moves', () => {
     const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
     await a.commit('a.txt', 'a\n'); await b.commit('b.txt', 'b\n');
     const notices: string[] = [];
-    const submit = (member: typeof a, name: string) => h.manager.land(h.ctx, { workspace: member.ws.id, taskId: name, noticed: notice => { notices.push(notice); } });
+    const submit = (member: typeof a, name: string) => h.manager.land(h.ctx, { workspace: member.ws.id, taskId: name, noticed: (notice, halted) => { expect(halted).toBe(true); notices.push(notice); } });
     const before = (await h.runs()).length, held = submit(a, 'a');
     await vi.waitFor(async () => expect(await h.runs()).toHaveLength(before + 1), { timeout: 20_000, interval: 20 });
     const waiting = submit(b, 'b'), trains = (h.manager as unknown as { trains: Map<string, { queue: unknown[] }> }).trains;
@@ -627,6 +633,179 @@ describe('a train that fails for a reason of its own', () => {
   }, 60_000);
 });
 
+describe('taking a submission out of the queue', () => {
+  /**
+   * A check that holds a train while `block.txt` is on it and the gate is shut, and one that holds `slow.txt` until a
+   * second gate opens: the first lets submissions gather behind a train, the second keeps the train they share at its check.
+   */
+  const held = (h: Awaited<ReturnType<typeof fixture>>) => {
+    const second = join(h.dir, 'gate-2');
+    const check = node(`const fs=require('fs');fs.appendFileSync(${JSON.stringify(h.log)},process.cwd()+'\\n');`
+      + `const wait=f=>{const t=setInterval(()=>{if(fs.existsSync(f))clearInterval(t)},10)};`
+      + `if(fs.existsSync('slow.txt'))wait(${JSON.stringify(second)});else if(fs.existsSync('block.txt'))wait(${JSON.stringify(h.gate)})`);
+    return { check, second };
+  };
+  /** Holds a train at its check and has `submit` put its submissions in the queue behind it. */
+  const behind = async <T>(h: Awaited<ReturnType<typeof fixture>>, count: number, submit: () => T) => {
+    const blocker = await h.member('blocker'); await blocker.commit('block.txt', 'x\n');
+    const first = blocker.land();
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(1), { timeout: 20_000, interval: 20 });
+    const rest = submit();
+    await vi.waitFor(() => expect(h.waiting()).toBe(count), { timeout: 20_000, interval: 20 });
+    return { first, rest };
+  };
+
+  it('answers a submission that waits as withdrawn, and lands the others without it', async () => {
+    const h = await fixture();
+    const landing = await h.configure([held(h).check]);
+    const a = await h.member('a'), b = await h.member('b');
+    await a.commit('a.txt', 'a\n'); await b.commit('b.txt', 'b\n');
+    const { first, rest } = await behind(h, 2, () => [a.land(), b.land()]);
+    const workflow = h.state.workflowId, commits = b.submitted();
+    expect(h.manager.withdraw(workflow, commits.headCommit, 'Withdrawn by lead: breaks the build')).toBe('withdrawn');
+    expect(await rest[1]).toEqual({ status: 'withdrawn', targetRef: landing.targetRef, targetCommit: h.base, headCommit: commits.headCommit, reason: 'Withdrawn by lead: breaks the build' });
+    expect(h.waiting()).toBe(1);
+    // The queue does not hold it any more, nor commits it never had, nor those of another workflow.
+    expect(h.manager.withdraw(workflow, commits.headCommit, 'again')).toBe('absent');
+    expect(h.manager.withdraw(workflow, h.base, 'never submitted')).toBe('absent');
+    expect(h.manager.withdraw('other-workflow', a.submitted().headCommit, 'not ours')).toBe('absent');
+    await writeFile(h.gate, '');
+    expect(await first).toMatchObject({ status: 'landed' });
+    expect(await rest[0]).toMatchObject({ status: 'landed' });
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n').sort()).toEqual(['a.txt', 'block.txt', 'shared.txt']);
+    // Its commits are still there for the member to bring back, and what landed cannot be withdrawn.
+    expect(await git(h.repo, 'cat-file', '-t', commits.headCommit)).toBe('commit');
+    expect(h.manager.withdraw(workflow, a.submitted().headCommit, 'landed')).toBe('absent');
+  }, 60_000);
+
+  it('stops the check of the train that carries a withdrawn submission, and runs the train again at once without it', async () => {
+    const h = await fixture();
+    const { check, second } = held(h);
+    const landing = await h.configure([check]);
+    const a = await h.member('a'), slow = await h.member('slow'), c = await h.member('c');
+    await a.commit('a.txt', 'a\n'); await slow.commit('slow.txt', 's\n'); await c.commit('c.txt', 'c\n');
+    const { first, rest } = await behind(h, 3, () => [a.land(), slow.land(), c.land()]);
+    await writeFile(h.gate, '');
+    expect(await first).toMatchObject({ status: 'landed' });
+    // The three share a train, whose check does not end while slow.txt is on it.
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(2), { timeout: 20_000, interval: 20 });
+    expect(h.manager.withdraw(h.state.workflowId, slow.submitted().headCommit, 'Withdrawn by lead: its test never ends')).toBe('withdrawn');
+    expect(await rest[1]).toMatchObject({ status: 'withdrawn', reason: 'Withdrawn by lead: its test never ends' });
+    // Nobody opened the second gate: the check was stopped, and the others landed on a stack without the withdrawn commits.
+    expect((await Promise.all([rest[0]!, rest[2]!])).map(report => report.status)).toEqual(['landed', 'landed']);
+    await expect(readFile(second, 'utf8')).rejects.toThrow();
+    expect(await h.runs()).toHaveLength(3);
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n').sort()).toEqual(['a.txt', 'block.txt', 'c.txt', 'shared.txt']);
+    expect(await git(h.repo, 'rev-list', '--count', `${h.base}..${landing.targetRef}`)).toBe('3');
+    // The ledger tells it: the train that was stopped, with the check that did not finish, and the one that ran again.
+    const [again, stopped] = await h.trains();
+    // The order in which the three joined the queue is not fixed: the ledger keeps the order the train stacked them in.
+    const byKey = (train: typeof stopped) => [...train!.submissions].sort((one, other) => one.key! < other.key! ? -1 : 1);
+    expect(stopped).toMatchObject({ outcome: 'restacked', base: expect.any(String), checks: [{ submissions: 3, passed: false, reason: expect.stringContaining('aborted') }] });
+    expect(byKey(stopped)).toMatchObject([{ key: 'item-a', member: 'a', outcome: 'next' }, { key: 'item-c', member: 'c', outcome: 'next' },
+      { key: 'item-slow', member: 'slow', outcome: 'withdrawn', headCommit: slow.submitted().headCommit, commits: 1 }]);
+    expect(again).toMatchObject({ outcome: 'done', head: await h.head(), checks: [{ submissions: 2, passed: true }] });
+    expect(byKey(again)).toMatchObject([{ key: 'item-a', outcome: 'landed' }, { key: 'item-c', outcome: 'landed' }]);
+  }, 60_000);
+
+  it('leaves a submission out that was withdrawn before its train stacked it, without stopping the train', async () => {
+    const h = await fixture();
+    const landing = await h.configure([held(h).check]);
+    const a = await h.member('a'), b = await h.member('b');
+    await a.commit('a.txt', 'a\n'); await b.commit('b.txt', 'b\n');
+    const { first, rest } = await behind(h, 2, () => [a.land(), b.land()]);
+    // The train takes both from the queue once the worktree is free, and looks at the branch before it stacks them.
+    const trains = (h.manager as unknown as { trains: Map<string, { current?: { batch: unknown[]; stack: unknown[]; step: string } }> }).trains;
+    await writeFile(h.gate, '');
+    expect(await first).toMatchObject({ status: 'landed' });
+    await vi.waitFor(() => expect([...trains.values()][0]?.current?.batch).toHaveLength(2), { timeout: 20_000, interval: 1 });
+    const riding = [...trains.values()][0]!.current!;
+    if (!riding.stack.length) {
+      expect(h.manager.withdraw(h.state.workflowId, b.submitted().headCommit, 'Withdrawn by b: wrong fix')).toBe('withdrawn');
+      expect(await rest[1]).toMatchObject({ status: 'withdrawn' });
+      expect(await rest[0]).toMatchObject({ status: 'landed' });
+      expect((await h.trains(1))[0]).toMatchObject({ outcome: 'done', submissions: [{ key: 'item-a', outcome: 'landed' }, { key: 'item-b', outcome: 'withdrawn' }], checks: [{ submissions: 1, passed: true }] });
+    } else expect((await Promise.all(rest)).map(report => report.status)).toEqual(['landed', 'landed']);
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).toContain('a.txt');
+  }, 60_000);
+});
+
+describe('the landing ledger', () => {
+  it('writes down each train: what it carried, every run of the checks and what became of each submission', async () => {
+    const h = await fixture();
+    // Passes only while mine.txt and theirs.txt are not both there.
+    await h.configure([h.logged(`if(fs.existsSync('mine.txt')&&fs.existsSync('theirs.txt')){console.error('both present');process.exit(3)}`, true)]);
+    expect(await h.trains()).toEqual([]);
+    const names = ['other-1.txt', 'mine.txt', 'theirs.txt', 'other-2.txt'];
+    const members = await Promise.all(names.map((_, index) => h.member('m' + index)));
+    await Promise.all(members.map((member, index) => member.commit(names[index]!, 'x\n')));
+    const reports = await h.together(4, () => members.map(member => member.land()));
+    expect(reports.map(report => report.status).sort()).toEqual(['check_failed', 'landed', 'landed', 'landed']);
+    const trains = await h.trains();
+    // Newest first: the train of what came after the one that failed, if anything did, the train of four, and the one that was held.
+    const four = trains.find(train => train.submissions.length === 4)!, at = trains.indexOf(four);
+    expect(trains.at(-1)!.submissions).toMatchObject([{ outcome: 'landed' }]);
+    expect(four).toMatchObject({ repository: h.repo, outcome: 'done', base: expect.any(String), head: expect.any(String), since: expect.any(Number), ms: expect.any(Number) });
+    // The whole stack failed, and bisecting found the first submission that breaks it.
+    expect(four.checks[0]).toMatchObject({ submissions: 4, passed: false, code: 3, command: expect.stringContaining(' -e '), ms: expect.any(Number), headCommit: expect.any(String) });
+    expect(four.checks.length).toBeGreaterThanOrEqual(2);
+    expect(four.checks.filter(probe => probe.passed).map(probe => probe.submissions).sort().at(-1)).toBe(four.submissions.filter(entry => entry.outcome === 'landed').length);
+    // The order in which the four joined the queue is not fixed; the ledger keeps the order the train stacked them in.
+    expect(four.submissions.map(entry => entry.member).sort()).toEqual(['m0', 'm1', 'm2', 'm3']);
+    const failed = four.submissions.findIndex(entry => entry.outcome === 'check_failed'), culprit = four.submissions[failed]!;
+    // Whichever of the two that clash came second is the one that failed.
+    expect(['m1', 'm2']).toContain(culprit.member);
+    expect(four.submissions.slice(0, failed).every(entry => entry.outcome === 'landed')).toBe(true);
+    expect(four.submissions.slice(failed + 1).every(entry => entry.outcome === 'next')).toBe(true);
+    const loser = members[names.indexOf(culprit.member === 'm1' ? 'mine.txt' : 'theirs.txt')]!;
+    expect(culprit).toMatchObject({ key: 'item-' + culprit.member, workspace: loser.ws.id, headCommit: loser.submitted().headCommit, commits: 1 });
+    expect(JSON.stringify(four)).not.toContain('"checked"');
+    // What rode on lands with the next train, which is in the ledger as well.
+    const rode = four.submissions.length - failed - 1;
+    expect(at).toBe(rode ? 1 : 0);
+    if (rode) expect(trains[0]!.submissions.map(entry => entry.outcome)).toEqual(Array(rode).fill('landed'));
+    // The main agent sees the latest trains in short, and how long a check that passed usually takes.
+    const branch = await h.branch();
+    expect(branch.recent).toHaveLength(trains.length);
+    expect(branch.recent![at]).toMatchObject({ submissions: 4, landed: failed, outcome: 'done', turnedBack: [{ key: culprit.key, member: culprit.member, status: 'check_failed' }],
+      checks: expect.arrayContaining([{ submissions: 4, seconds: expect.any(Number), passed: false }]) });
+    expect(branch.recent!.at(-1)!.turnedBack).toBeUndefined();
+    expect(branch.usualCheckSeconds).toEqual(expect.any(Number));
+    // Asking for the ledger changes nothing, and is bounded.
+    expect(((await h.manager.configure(h.ctx, { trains: 1 })) as LandingChange)).toMatchObject({ changed: false, trains: [{ outcome: 'done' }] });
+    await expect(h.manager.configure(h.ctx, { trains: 0 })).rejects.toThrow('between 1 and 100');
+  }, 60_000);
+
+  it('tells the main agent of a check that runs far longer than the ones that passed lately, while it still runs', async () => {
+    const h = await fixture({ slowCheckFactor: 2, slowCheckExtraMs: 250 });
+    const second = join(h.dir, 'gate-2');
+    await h.configure([h.logged(`if(fs.existsSync('slow.txt')){const s=setInterval(()=>{if(fs.existsSync(${JSON.stringify(second)}))clearInterval(s)},10)}`)]);
+    const notices: Array<{ notice: string; halted: boolean }> = [];
+    const submit = (member: { ws: WorkspaceBinding }, name: string) => h.manager.land(h.ctx, { workspace: member.ws.id, taskId: name,
+      submitted: () => ({ key: 'item-' + name, member: name }), noticed: (notice, halted) => { notices.push({ notice, halted }); } });
+    // Too few checks have passed to say how long one takes: nothing is reported, however long this one takes.
+    const quick = await Promise.all(['q1', 'q2', 'q3'].map(name => h.member(name)));
+    for (const [index, member] of quick.entries()) { await member.commit(`quick-${index}.txt`, 'x\n'); expect(await submit(member, 'q' + (index + 1))).toMatchObject({ status: 'landed' }); }
+    expect(notices).toEqual([]);
+    expect((await h.branch()).usualCheckSeconds).toEqual(expect.any(Number));
+    const slow = await h.member('slow'); await slow.commit('slow.txt', 's\n');
+    const landing = submit(slow, 'slow');
+    await vi.waitFor(() => expect(notices).toHaveLength(1), { timeout: 30_000, interval: 20 });
+    expect(notices[0]!.halted).toBe(false);
+    expect(notices[0]!.notice).toContain('检查已经跑了');
+    expect(notices[0]!.notice).toContain('前 1 笔');
+    expect(notices[0]!.notice).toContain('item-slow（slow）');
+    expect(notices[0]!.notice).toContain('withdraw_work');
+    // It is told once for the run, and the run goes on: the check is slow, not failed.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(notices).toHaveLength(1);
+    await writeFile(second, '');
+    expect(await landing).toMatchObject({ status: 'landed' });
+    expect((await h.trains(1))[0]).toMatchObject({ outcome: 'done', submissions: [{ key: 'item-slow', outcome: 'landed' }], checks: [{ submissions: 1, passed: true, slow: true }] });
+    expect((await h.branch()).recent![0]!.checks).toEqual([{ submissions: 1, seconds: expect.any(Number), passed: true, slow: true }]);
+  }, 60_000);
+});
+
 describe('changing the landing while the workflow runs', () => {
   const fails = (name: string) => node(`if(require('fs').existsSync(${JSON.stringify(name)})){console.error(${JSON.stringify(name + ' is here')});process.exit(4)}`);
 
@@ -799,14 +978,17 @@ describe('handing commits to the landing queue', () => {
 });
 
 describe('submit_work', () => {
-  type Landed = { workspace: string; taskId: string; submitted?: (info: LandSubmitted) => void; noticed?: (notice: string) => void };
-  function harness(land: (input: Landed, signal: AbortSignal) => Promise<unknown>, landing?: (input: Record<string, unknown>) => Promise<unknown>, path = ':memory:') {
+  type Landed = { workspace: string; taskId: string; submitted?: (info: LandSubmitted) => { key?: string; member?: string } | void; noticed?: (notice: string, halted: boolean) => void };
+  type Withdrawal = { headCommit: string; reason: string };
+  function harness(land: (input: Landed, signal: AbortSignal) => Promise<unknown>, landing?: (input: Record<string, unknown>) => Promise<unknown>, path = ':memory:',
+    withdraw?: (input: Withdrawal) => 'withdrawn' | 'landing' | 'absent') {
     let now = 1_000_000;
     const root: WorkflowRoot = { scopeId: 'submit-test', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace', policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: {} };
     const requests: WorkflowWorkerRequest[] = [];
     const finishers: Array<(result: WorkflowWorkerResult) => void> = [];
     const kernel = new WorkflowKernel(path, { resolveRoot: async () => root, wakeMain: async () => {}, resolveWorkspace: async () => {},
       land: async (_state, input, signal) => land(input, signal), ...(landing ? { landing: async (_state: unknown, input: Record<string, unknown>) => landing(input) } : {}),
+      ...(withdraw ? { withdraw: async (_state: unknown, input: Withdrawal) => withdraw(input) } : {}),
       execute: async request => { requests.push(request); request.onRun('run-' + request.attemptId); request.onSession('native');
         return new Promise<WorkflowWorkerResult>(resolve => { finishers.push(resolve); request.signal.addEventListener('abort', () => resolve({ status: 'stopped' }), { once: true }); }); } }, () => now);
     closes.push(() => kernel.close());
@@ -926,17 +1108,28 @@ describe('submit_work', () => {
     /** A landing queue that takes every submission and answers when the test says so. */
     function queue(path?: string) {
       const lands: Landed[] = [], answers: Array<{ resolve(report: unknown): void; reject(error: unknown): void }> = [];
-      const h = harness(input => { lands.push(input); return new Promise((resolve, reject) => { answers.push({ resolve, reject }); }); }, undefined, path);
+      /** The commits each submission joined the queue with, what was asked to be withdrawn, and how the queue answers that. */
+      const heads: string[] = [], withdrawn: Withdrawal[] = [], gives = { up: 'withdrawn' as 'withdrawn' | 'landing' | 'absent' };
+      const h = harness(input => { lands.push(input); return new Promise((resolve, reject) => { answers.push({ resolve, reject }); }); }, undefined, path, input => {
+        withdrawn.push(input);
+        const at = heads.indexOf(input.headCommit);
+        if (at < 0) return 'absent';
+        if (gives.up === 'withdrawn') answers[at]!.resolve({ status: 'withdrawn', targetRef: 'refs/heads/x', targetCommit: 'aaa', headCommit: input.headCommit, reason: input.reason });
+        return gives.up;
+      });
       const item = (key = 'bug-1') => h.state().workQueue!.items.find(item => item.key === key)!;
+      /** What each submission told the queue it is for, as it joined. */
+      const labels: unknown[] = [];
       /** The member submits the item it holds; the queue takes it as the commits `targetCommit..headCommit`. */
       const handOff = async (request: WorkflowWorkerRequest, grant: Grant, operationId: string, targetCommit: string, headCommit: string) => {
         const pending = h.send(request, 'submit_work', { operationId, claimId: grant.claimId, generation: grant.generation, result: { fixed: operationId } });
         const at = lands.length;
         await vi.waitFor(() => expect(lands).toHaveLength(at + 1));
-        lands[at]!.submitted!(joined(targetCommit, headCommit));
+        heads[at] = headCommit;
+        labels.push(lands[at]!.submitted!(joined(targetCommit, headCommit)));
         return pending;
       };
-      return { ...h, lands, answers, item, handOff };
+      return { ...h, lands, answers, item, handOff, withdrawn, gives, labels };
     }
 
     it('hands the item to the landing queue, lets the member take the next one and completes the item when the commits land', async () => {
@@ -1015,6 +1208,55 @@ describe('submit_work', () => {
       expect(h.item()).toMatchObject({ status: 'pending', landing: { status: 'lost' } });
     });
 
+    it('takes commits out of the queue for the member that submitted them and for the main agent, and returns the item with who did it and why', async () => {
+      const h = queue();
+      const request = await h.start('ws-1');
+      const grant = await h.send(request, 'claim_work') as Taken;
+      await h.handOff(request, grant, 'submit-1', 'aaa', 'bbb');
+      // The queue was told what the commits are for and whose they are.
+      expect(h.labels).toEqual([{ key: 'bug-1', member: 'fixer' }]);
+      await expect(h.send(request, 'withdraw_work', { key: 'bug-1' })).rejects.toThrow('reason');
+      await expect(h.send(request, 'withdraw_work', { key: 'bug-1', reason: 'x', force: true })).rejects.toThrow('Unsupported withdraw_work option');
+      expect(await h.send(request, 'withdraw_work', { key: 'bug-1', reason: 'the new test takes 40 minutes' })).toEqual({ status: 'withdrawn', itemId: h.item().id, key: 'bug-1', member: 'fixer', commits: 'aaa..bbb' });
+      expect(h.withdrawn).toEqual([{ headCommit: 'bbb', reason: 'Withdrawn by fixer: the new test takes 40 minutes' }]);
+      // The item is the member's again by the time the call answers, with the reason, and no attempt of its is used up.
+      expect(h.item()).toMatchObject({ status: 'pending', assignee: 'fixer', landing: { status: 'withdrawn', commits: 'aaa..bbb', reason: 'Withdrawn by fixer: the new test takes 40 minutes' } });
+      expect(h.item().failures).toBeUndefined();
+      // The queue no longer holds it: a repeat says how the item stands and asks the queue nothing.
+      expect(await h.send(request, 'withdraw_work', { key: 'bug-1', reason: 'again' })).toMatchObject({ status: 'absent', key: 'bug-1', item: 'pending', landing: 'withdrawn' });
+      expect(h.withdrawn).toHaveLength(1);
+      const again = await h.send(request, 'claim_work') as Taken;
+      expect(again.item).toMatchObject({ key: 'bug-1', landing: { status: 'withdrawn' } });
+      await h.handOff(request, again, 'submit-2', 'ccc', 'ddd');
+      expect(await h.kernel.call({ kind: 'main', scopeId: 'submit-test' }, 'withdraw_work', { itemId: h.item().id, reason: 'breaks the build' })).toMatchObject({ status: 'withdrawn', key: 'bug-1', commits: 'ccc..ddd' });
+      expect(h.item()).toMatchObject({ status: 'pending', landing: { status: 'withdrawn', reason: 'Withdrawn by the main agent: breaks the build' } });
+    });
+
+    it('lets no other member withdraw commits, and says when a train is already landing them or the queue has lost them', async () => {
+      const h = queue();
+      const request = await h.start('ws-1');
+      const grant = await h.send(request, 'claim_work') as Taken;
+      await h.handOff(request, grant, 'submit-1', 'aaa', 'bbb');
+      await h.kernel.scriptAgent('submit-test', h.state().workflowId, h.state().script!.runId, { key: 'turn-2', member: 'other', prompt: 'Fix another bug', workspace: 'ws-2' });
+      await h.kernel.tick(); await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+      await expect(h.send(h.requests[1]!, 'withdraw_work', { key: 'bug-1', reason: 'not mine' })).rejects.toThrow('withdrawn from the landing queue by the member that submitted them');
+      expect(h.withdrawn).toHaveLength(0);
+      // Whoever plans the item's queue may, as the lead of a swarm does; having added the item is not enough.
+      const view = h.state() as unknown as Parameters<typeof submittedCommits>[0];
+      expect(submittedCommits(view, { key: 'bug-1' }, () => 'plans')).toMatchObject({ key: 'bug-1', member: 'fixer', targetCommit: 'aaa', headCommit: 'bbb' });
+      expect(() => submittedCommits(view, { key: 'bug-1' }, () => 'added')).toThrow('withdrawn from the landing queue by');
+      expect(submittedCommits(view, { key: 'bug-1' }, () => undefined, claim => claim.taskId === request.task.taskId)).toMatchObject({ headCommit: 'bbb' });
+      h.gives.up = 'landing';
+      expect(await h.send(request, 'withdraw_work', { key: 'bug-1', reason: 'too late' })).toMatchObject({ status: 'landing', key: 'bug-1' });
+      h.gives.up = 'absent';
+      expect(await h.send(request, 'withdraw_work', { key: 'bug-1', reason: 'gone' })).toMatchObject({ status: 'absent', key: 'bug-1' });
+      // Either way the item stays with the queue, whose answer decides it.
+      expect(h.item()).toMatchObject({ status: 'claimed' });
+      h.answers[0]!.resolve({ status: 'landed', targetRef: 'refs/heads/x', headCommit: 'ccc', commits: 1 });
+      await vi.waitFor(() => expect(h.item()).toMatchObject({ status: 'completed' }));
+      expect(await h.send(request, 'withdraw_work', { key: 'bug-1', reason: 'landed' })).toMatchObject({ status: 'absent', item: 'completed' });
+    });
+
     it('adds an item for commits a member submits for none, completes it when they land and returns it when they are turned back', async () => {
       const h = queue();
       const request = await h.start('ws-1');
@@ -1065,8 +1307,8 @@ describe('submit_work', () => {
       const grant = await h.send(request, 'claim_work') as Taken;
       await h.handOff(request, grant, 'submit-1', 'aaa', 'bbb');
       const attention = () => h.state().events.filter(event => event.kind === 'landing_attention');
-      h.lands[0]!.noticed!('落地已停止：x');
-      h.lands[0]!.noticed!('落地已停止：x');
+      h.lands[0]!.noticed!('落地已停止：x', true);
+      h.lands[0]!.noticed!('落地已停止：x', true);
       expect(attention()).toHaveLength(1);
       expect(attention()[0]).toMatchObject({ summary: '落地已停止：x', subject: 'landing:halted', acknowledged: false });
       // The member's turn ends while the branch stays halted: the queue still has the commits, so the item is not returned.

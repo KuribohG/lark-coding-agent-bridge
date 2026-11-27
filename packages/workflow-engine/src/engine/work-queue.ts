@@ -767,7 +767,7 @@ function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args
   const id = scriptText(args.claimId, 'claimId', 100);
   const claim = state.workQueue?.claims.find(claim => claim.id === id);
   if (claim?.status === 'active' && claim.landing && claim.agentId === task.agentId) throw new Error('This item is with the landing queue, which has your commits: '
-    + 'it is completed when they land and comes back to you when they are turned back. Claim your next item');
+    + 'it is completed when they land and comes back to you when they are turned back (withdraw_work takes them out of the queue when they should not land). Claim your next item');
   if (!claim || claim.status !== 'active' || claim.frozen || claim.heldUntil !== undefined || claim.leaseUntil <= now || claim.agentId !== task.agentId
     || claim.taskId !== task.taskId || claim.attemptId !== attemptId || claim.generation !== args.generation) {
     throw new Error('Claim is stale, expired or belongs to another execution attempt');
@@ -917,6 +917,22 @@ export function completeSubmission(state: WorkflowView, args: Record<string, unk
   emit(state, { type: 'work_completed', claimId: claim.id, result: json(result, 'Work result'), at: now });
   capacity(state, result);
   return { itemId: item.id, status: item.status, generation: item.generation };
+}
+
+/**
+ * The commits of an item the landing queue holds, for a request to take them out of the queue (withdraw_work).
+ * Whoever plans the item's queue may ask, and so may the member that submitted them, which `mine` tells by the claim.
+ * An item the queue does not hold is answered as it stands: the queue has dealt with its commits already.
+ */
+export function submittedCommits(state: WorkflowView, args: Record<string, unknown>, authority: WorkAuthority = () => 'plans', mine: (claim: ClaimView) => boolean = () => false):
+  { itemId: string; key: string; member?: string; targetCommit: string; headCommit: string } | { itemId: string; key: string; status: string; landing?: string } {
+  options(args, ['itemId', 'key']);
+  const item = itemOf(state, args);
+  const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && claim.landing && claim.itemId === item.id);
+  if (!claim) return { itemId: item.id, key: item.key, status: item.status, ...(item.landing ? { landing: item.landing.status } : {}) };
+  if (!mine(claim) && authority(item) !== 'plans') throw new Error('Commits are withdrawn from the landing queue by the member that submitted them, the main agent, the swarm lead or the lead of their queue');
+  const member = state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
+  return { itemId: item.id, key: item.key, ...(member ? { member } : {}), targetCommit: claim.landing!.targetCommit, headCommit: claim.landing!.headCommit };
 }
 
 /** The landing queue did not land a submission: see `turnBack`. */

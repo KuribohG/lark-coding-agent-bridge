@@ -92,6 +92,18 @@ export const TRAIN_STALE_LOCK_MS = 600_000;
  * was put right from outside.
  */
 export const TRAIN_HALT_POLL_MS = 30_000;
+/**
+ * A run of a train's checks that takes this many times as long as the ones that passed lately usually do, and at
+ * least this much longer, is reported to the main agent while it still runs. A submission that makes the checks slow
+ * without failing them is carried from train to train, and every run that includes it costs the whole queue that time.
+ */
+export const TRAIN_SLOW_CHECK_FACTOR = 3;
+export const TRAIN_SLOW_CHECK_EXTRA_MS = 300_000;
+/** How many of the latest check runs that passed say how long one usually takes, and how few are enough to say so. */
+export const TRAIN_USUAL_CHECKS = 20;
+export const TRAIN_USUAL_CHECKS_MIN = 3;
+/** The trains a workflow's landing ledger keeps; older ones are dropped as new ones are written. */
+export const TRAIN_LEDGER_KEPT = 500;
 
 export const MAILBOX_MAX_MESSAGES = 4096;
 export const MAILBOX_MAX_OPERATIONS = 8192;

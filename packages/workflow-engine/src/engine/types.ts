@@ -850,11 +850,17 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
    * (workspace-types.ts). What fails in the worktree is the report. Otherwise `submitted` is called with a
    * LandSubmitted as the commits join the queue (when it throws they do not, and the worktree keeps them), and the
    * report follows whenever the queue has dealt with them; `noticed` takes what the main agent should hear about the
-   * branch while they wait.
+   * branch while they wait, and whether that is that the branch is halted. `submitted` may answer with the key of
+   * the work item the commits are for and the member they are of, which the landing ledger and the notices name.
    */
   land?(state: WorkspaceStateView, input: { workspace: string; taskId: string;
-    submitted?: (info: { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }) => void;
-    noticed?: (notice: string) => void }, signal: AbortSignal): Promise<unknown>;
+    submitted?: (info: { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }) => { key?: string; member?: string } | void;
+    noticed?: (notice: string, halted: boolean) => void }, signal: AbortSignal): Promise<unknown>;
+  /**
+   * Takes the submission whose commits end at `headCommit` out of the landing queue, which answers it `withdrawn`
+   * with `reason`; resolves to a LandWithdrawal (workspace-types.ts).
+   */
+  withdraw?(state: WorkspaceStateView, input: { headCommit: string; reason: string }): Promise<'withdrawn' | 'landing' | 'absent'>;
   /** Reports the landing and applies the main agent's changes to it; resolves to a LandingChange (workspace-types.ts). */
   landing?(state: WorkspaceStateView, input: Record<string, unknown>): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;

@@ -118,9 +118,51 @@ export interface LandingView {
     /** Submissions in the queue behind the train that runs now; while the branch is halted they stay there. */
     waiting: number; halted?: string;
     /** The train that runs now: how many submissions it carries, how many runs of the checks it has started, and since when. */
-    train?: { submissions: number; step: 'stacking' | 'checking'; checks: number; since: number };
+    train?: { submissions: number; step: 'stacking' | 'checking' | 'landing'; checks: number; since: number };
     /** The train failed for a reason of its own (a Git command in its worktree) and runs again with its submissions kept. */
-    retrying?: { failures: number; since: number; reason: string } }>;
+    retrying?: { failures: number; since: number; reason: string };
+    /** How long a run of the checks that passed has usually taken lately, in seconds; compare it with the checks' `timeoutMs`. */
+    usualCheckSeconds?: number;
+    /** The latest trains of the landing ledger, newest first, in short; `configure_landing({trains})` reads them in full. */
+    recent?: Array<{ since: number; seconds: number; submissions: number; landed: number; outcome: LandingTrain['outcome'];
+      /** Each run of the checks: on the stack of how many submissions, for how long, and whether it passed. */
+      checks: Array<{ submissions: number; seconds: number; passed: boolean; slow?: true }>;
+      /** The submissions the train answered without landing them. */
+      turnedBack?: Array<{ key?: string; member?: string; status: string }> }>;
+  }>;
+}
+
+/**
+ * One run of a train, as the landing ledger keeps it: what it carried, every run of the checks, and what became of
+ * each submission. A train that ran no check and answered nobody (it waited for a halted branch, or failed at once
+ * and runs again) is not written down.
+ */
+export interface LandingTrain {
+  repository: string;
+  since: number;
+  ms: number;
+  /** The branch head the submissions were stacked on, and where the train moved the branch when any of them landed. */
+  base: string | null;
+  head?: string;
+  /**
+   * The submissions the train took from the queue, in the order it stacked them. `outcome` is the status each was
+   * answered with (`landed`, `check_failed`, `conflict`, `withdrawn`), `failed` when the train gave it up, or `next`
+   * when it went back to the queue for the next train.
+   */
+  submissions: Array<{ key?: string; member?: string; workspace: string; headCommit: string; commits: number; outcome: string }>;
+  /**
+   * Every run of the checks, in the order they ran: `submissions` says how many of the stacked submissions the commit
+   * under test held, `slow` that it ran far longer than usual, `command` and `code` which command failed, and `reason`
+   * what else was wrong (the checks left files behind, or the run was stopped).
+   */
+  checks: Array<{ submissions: number; headCommit: string; ms: number; passed: boolean; slow?: true; command?: string; code?: number; reason?: string }>;
+  /**
+   * `done` when the train answered its submissions or sent them on to the next one; `restacked` when it stopped to run
+   * again without a submission that was withdrawn; `halted` and `retrying` when it kept them for a branch that has to
+   * be settled or for a failure of its own; `failed` when it gave them up.
+   */
+  outcome: 'done' | 'restacked' | 'halted' | 'retrying' | 'failed';
+  error?: string;
 }
 
 /** A change configure_landing did not make, and why. */
@@ -140,7 +182,19 @@ export interface LandingChange {
   /** What `branch` did in each repository whose branch the queue did not vouch for. */
   settled?: Array<{ repository: string; branch: 'restored' | 'adopted'; head: string; kept?: string }>;
   landing: LandingView;
+  /** The latest trains of the landing ledger, newest first, as many as `trains` asked for. */
+  trains?: LandingTrain[];
 }
+
+/** What a submission is for and whose it is, as the ledger and the notices to the main agent name it. */
+export interface LandLabel { key?: string; member?: string }
+
+/**
+ * What became of a request to take a submission out of the landing queue. `withdrawn`: it left the queue, and a train
+ * that carried it runs again without it. `landing`: its train has passed the checks and is moving the branch, so the
+ * commits land. `absent`: the queue does not hold it, because it has been answered already.
+ */
+export type LandWithdrawal = 'withdrawn' | 'landing' | 'absent';
 
 /**
  * A submission that joined the landing queue, which is what its member is answered: it goes on to its next item, and
@@ -161,6 +215,8 @@ export type LandReport = (
   | { status: 'rejected'; targetRef: string; targetCommit: string; files: string[]; reason: string }
   /** The branch was moved from outside the queue to a commit it does not vouch for. What a new submission is answered until the main agent settles it; submissions already in the queue wait there. */
   | { status: 'halted'; targetRef: string; targetCommit: string | null; reason: string }
+  /** The commits were taken out of the queue before they landed (withdraw_work); `reason` says by whom and why. */
+  | { status: 'withdrawn'; targetRef: string; targetCommit: string; headCommit: string; reason: string }
   /** Something the main agent should hear about the branch; submit_work raises it as an event and keeps it from the member. */
 ) & { notice?: string };
 

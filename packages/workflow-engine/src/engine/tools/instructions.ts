@@ -35,11 +35,11 @@ script 是支持顶层 await/return 的 JS 函数体，无 import/process/requir
 ${WORKFLOW_SCHEDULING_INSTRUCTIONS}`;
 
 /** Running a workflow: what wakes the main agent and what it can do then. Told at every wake, which is when it is needed. */
-const OPERATING = `唤醒主会话的事件：整体结束或失败；review_due（定时复盘）；worker_reply（worker 的答复）；ask（成员请你答复，用 answer 答）；todo（等人处理的事交到了你这里）；landing_attention（落地分支被队列外改动）。回合中的新事件直接送进该回合。
+const OPERATING = `唤醒主会话的事件：整体结束或失败；review_due（定时复盘）；worker_reply（worker 的答复）；ask（成员请你答复，用 answer 答）；todo（等人处理的事交到了你这里）；landing_attention（落地分支被队列外改动，或落地检查明显变慢）。回合中的新事件直接送进该回合。
 待办是 swarm 里等人处理的事（成员失败已停、队列断粮、全员空闲而 lead 未结束、被搁置或卡住的工作项、超时未答的请求）：先在负责它的 lead 每轮的简报里，逾期未处理才逐级上交到你，事件里写明现状和办法。起因消失即自结，不必 ack；没有推进目标的活就不凑，暂不处理用 defer_todo 说明原因，该别人处理用 pass_todo。status 的 todos 列出全部未结待办及持有人。worker_reply、review_due 送达即结，其余用 ack_events。脚本结果是 workflow-result 产物：read_artifact、ack_events 后 complete，也可先发布 report。
 swarms[].queues 是各队列的供需：claimable 可领、blocked 被挡住、idle 空闲成员、flow 近 6 小时逐小时入队/完成数（末项为最近一小时）、dry 断粮次数与分钟。
 pause 取消在途 worker，resume 从头重放并复用已完成的结果；中断的工作流要 replay_script 或用户 /workflow resume 才继续。
-configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。tell_worker 把一段话作为用户消息插进运行中的 worker 会话（target 为 taskId、成员名或脚本 key）；持久成员不在轮次中或不能中途收消息时留在它的消息里（返回 left），它被唤醒并在下一轮读到。worker 可用 reply_main 答复一次；worker_messages 读往来记录，含 lead 发给成员的。
+configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。withdraw_work 把未落地的提交撤出落地队列，退回原成员。tell_worker 把一段话作为用户消息插进运行中的 worker 会话（target 为 taskId、成员名或脚本 key）；持久成员不在轮次中或不能中途收消息时留在它的消息里（返回 left），它被唤醒并在下一轮读到。worker 可用 reply_main 答复一次；worker_messages 读往来记录，含 lead 发给成员的。
 ${STAFF_SWARM}
 resolve_post 把办完或被取代的帖子标为已解决（note 怎么解决的、see 取代它的帖号，至少给一个；reopen:true 撤销）：read_board 默认跳过（resolved:true 一并返回），search_board 仍能搜到。`;
 
