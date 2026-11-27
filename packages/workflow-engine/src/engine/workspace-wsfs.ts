@@ -102,7 +102,7 @@ export class WsfsMounts {
   private live?: () => ReadonlySet<string>;
   private closed = false;
 
-  constructor(private readonly directory: string, private readonly processes: WorkflowProcesses) {}
+  constructor(private readonly directory: string, private readonly processes: WorkflowProcesses, private readonly stateRoot: () => string | undefined = () => undefined) {}
 
   private key(ws: Pick<WsfsOwner, 'commonDir'>): string { return workflowDigest(ws.commonDir).slice(0, 16); }
   /** The mount point of a workflow's workspaces in one repository. */
@@ -113,7 +113,7 @@ export class WsfsMounts {
   path(ws: WsfsOwner, directory?: string): string { return join(this.mount(ws, directory), ws.id); }
   /** Where a mount keeps its state unless it recorded another place when it was first served. */
   private state(ws: Mounted): string {
-    const root = process.env.WORKFLOW_WSFS_STATE;
+    const root = this.stateRoot();
     return root ? join(resolve(root), ws.workflowId, `wsfs-${this.key(ws)}`) : `${this.mount(ws)}.state`;
   }
 

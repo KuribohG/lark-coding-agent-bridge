@@ -18,7 +18,7 @@ import { bridgeAgentKind, createBridgeWorkerPolicy } from './execution';
 type BridgeGrant = { execution: WorkerExecution; policy: RunPolicyAllow };
 
 export interface BridgeWorkflowRuntimeDeps extends Pick<WorkflowRuntimeDeps,
-  'path' | 'workspaceRoot' | 'scratchRoot' | 'getTimeoutMinutes' | 'stallMs' | 'toolStallMs' | 'wakeMain' | 'showPlan' | 'notify' | 'cliPath'> {
+  'path' | 'workspaceRoot' | 'scratchRoot' | 'trainRoot' | 'wsfsStateRoot' | 'getTimeoutMinutes' | 'stallMs' | 'toolStallMs' | 'wakeMain' | 'showPlan' | 'notify' | 'cliPath'> {
   executor: RunExecutor;
   resolve(scopeId: string): Promise<{ root: WorkflowRoot; policy: RunPolicyAllow } | undefined>;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection, policy: RunPolicyAllow): Promise<BridgeGrant>;
@@ -168,6 +168,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
 
   return new WorkflowRuntime({
     path: deps.path, workspaceRoot: deps.workspaceRoot, scratchRoot: deps.scratchRoot, getTimeoutMinutes: deps.getTimeoutMinutes,
+    trainRoot: deps.trainRoot, wsfsStateRoot: deps.wsfsStateRoot,
     ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
     ...(deps.toolStallMs === undefined ? {} : { toolStallMs: deps.toolStallMs }),
     wakeMain: deps.wakeMain, showPlan: deps.showPlan, notify: deps.notify, cliPath: deps.cliPath,

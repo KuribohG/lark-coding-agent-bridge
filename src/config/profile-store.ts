@@ -80,6 +80,7 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
     // disable the gate and lose the table on the next save.
     ...(root.modelGate ? { modelGate: structuredClone(root.modelGate) } : {}),
     ...(root.agentState ? { agentState: root.agentState } : {}),
+    ...(root.workflow ? { workflow: root.workflow } : {}),
     // Raw global launch layers; dropping them would lose [agents.*] on a fallback save.
     ...(root.agentLaunches ? { agentLaunches: root.agentLaunches } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),

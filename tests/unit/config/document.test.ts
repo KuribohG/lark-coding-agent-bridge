@@ -375,6 +375,48 @@ binaryPath = "/opt/pi"
     expect(execution.pi?.binaryPath).toBe('/opt/pi');
   });
 
+  it('shares the workflow placement table with every profile and round-trips it', () => {
+    const doc = parseDocument(source + `
+[workflow]
+train_directory = "/tmp/trains"
+wsfs_state_directory = "~/wsfs-state"
+`);
+    const root = documentToRoot(doc);
+    const placement = { trainDirectory: '/tmp/trains', wsfsStateDirectory: '~/wsfs-state' };
+    expect(root.workflow).toEqual(placement);
+    for (const profile of Object.values(root.profiles)) expect(profile.workflow).toEqual(placement);
+    // A host without messaging credentials resolves the same table.
+    expect(resolveExecutionProfile(doc, 'codex', { profile: 'bot' }).workflow).toEqual(placement);
+    const written = parse(formatDocument(rootToDocument(root)));
+    expect(written.workflow).toEqual({ train_directory: '/tmp/trains', wsfs_state_directory: '~/wsfs-state' });
+    for (const profile of Object.values(written.profiles as Record<string, object>)) expect(profile).not.toHaveProperty('workflow');
+    // Without the table nothing is written, and nothing is set.
+    expect(documentToRoot(parseDocument(source)).workflow).toBeUndefined();
+    expect(parse(formatDocument(rootToDocument(documentToRoot(parseDocument(source))))).workflow).toBeUndefined();
+    expect(() => parseDocument(source + '\n[workflow]\ntrain_dir = "/tmp/x"\n')).toThrow('workflow.train_dir: unknown setting');
+    expect(() => parseDocument(source + '\n[workflow]\ntrain_directory = "relative/x"\n')).toThrow('workflow.train_directory: expected an absolute or ~/ path');
+    expect(() => parseDocument(source + '\n[workflow]\nwsfs_state_directory = ""\n')).toThrow('workflow.wsfs_state_directory: expected a nonempty path');
+  });
+
+  it('keeps the workflow placement through an unrelated save and applies an edit of it without a restart', async () => {
+    const path = await file(source + '\n[workflow]\ntrain_directory = "/tmp/trains"\n');
+    const root = (await loadRootConfig(path))!;
+    root.profiles.bot!.preferences.model = 'new-model';
+    await saveRootConfig(root, path);
+    expect((await loadRootConfig(path))!.workflow).toEqual({ trainDirectory: '/tmp/trains' });
+    expect(await readFile(path, 'utf8')).toContain('[workflow]\ntrain_directory = "/tmp/trains"');
+    // A running host reads the profile on every use: the reload hands it the new table, and nothing is left pending.
+    const state = view((await loadRootConfig(path))!.profiles.bot!);
+    await patchConfig(path, ['workflow', 'train_directory'], '/tmp/elsewhere');
+    await patchConfig(path, ['workflow', 'wsfs_state_directory'], '/tmp/state');
+    expect((await reload(state, path)).pending).toEqual([]);
+    expect(state.profileConfig.workflow).toEqual({ trainDirectory: '/tmp/elsewhere', wsfsStateDirectory: '/tmp/state' });
+    await patchConfig(path, ['workflow', 'train_directory'], undefined);
+    await patchConfig(path, ['workflow', 'wsfs_state_directory'], undefined);
+    expect((await reload(state, path)).pending).toEqual([]);
+    expect(state.profileConfig.workflow ?? {}).toEqual({});
+  });
+
   it('distinguishes removing an override, native delegation and disabled values', () => {
     const inherited = parseDocument(editToml(source, ['profiles','bot','run','model'], undefined));
     expect(resolveRun(inherited, 'codex', 'bot').preferences.model).toBe('global-model');

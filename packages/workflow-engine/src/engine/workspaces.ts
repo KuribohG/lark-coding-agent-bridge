@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
-import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
+import { access, mkdir, realpath, rm, rmdir, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
 import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_HALT_POLL_MS, TRAIN_LEDGER_KEPT, TRAIN_RETRY_DELAYS_MS, TRAIN_SLOW_CHECK_EXTRA_MS, TRAIN_SLOW_CHECK_FACTOR, TRAIN_STALE_LOCK_MS, TRAIN_USUAL_CHECKS, TRAIN_USUAL_CHECKS_MIN, WORKSPACE_CHECKOUT_PROCESSES, WORKSPACE_CHECKOUT_SLOTS, WORKSPACE_LARGE_CHECKOUTS } from './limits';
@@ -142,6 +142,16 @@ interface LandInput { workspace: string; taskId: string;
  * How long a train waits before it runs again or looks at a halted branch again, when a lock nobody releases counts as
  * abandoned, and how much longer than usual a run of the checks takes before the main agent is told (see limits.ts).
  */
+/**
+ * Where a host has the service put what need not be beside the members' worktrees. Each is asked for when it is used, so
+ * a host that changes its mind is followed from then on.
+ */
+export interface WorkspacePlaces {
+  /** The directory the trains' own worktrees are made in: plain worktrees there, whatever the members' workspaces are. */
+  trainRoot?: () => string | undefined;
+  /** The directory wsfs workspaces keep what they change in, asked for when a workflow's first one in a repository is made. */
+  wsfsStateRoot?: () => string | undefined;
+}
 export interface TrainTiming { retryDelaysMs: readonly number[]; staleLockMs: number; haltPollMs: number; slowCheckFactor: number; slowCheckExtraMs: number }
 /** What Git says when the index of a worktree cannot be read at all. */
 const INDEX_UNREADABLE = /index file smaller than expected|index file corrupt|bad index file sha1 signature|bad signature 0x|bad index version/;
@@ -203,10 +213,10 @@ export class WorkflowWorkspaces {
   /** Git for `writeCheckout`; one function for the life of the service, which is what it remembers this Git by. */
   private readonly checkoutGit: CheckoutGit = (cwd, args, signal, env) => this.git(cwd, args, signal, false, env);
 
-  constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}) {
+  constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}, private readonly places: WorkspacePlaces = {}) {
     this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, haltPollMs: TRAIN_HALT_POLL_MS,
       slowCheckFactor: TRAIN_SLOW_CHECK_FACTOR, slowCheckExtraMs: TRAIN_SLOW_CHECK_EXTRA_MS, ...timing };
-    this.mounts = new WsfsMounts(directory, processes);
+    this.mounts = new WsfsMounts(directory, processes, () => this.places.wsfsStateRoot?.());
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
@@ -1376,7 +1386,7 @@ export class WorkflowWorkspaces {
   /** Puts the train's worktree of `ws`'s repository at `commit`, with nothing in it that Git does not ignore. */
   private async park(ws: WorkspaceBinding, path: string, commit: string, signal: AbortSignal): Promise<void> {
     // wsfs moves its workspace without writing a file. Git resets any other, and one the daemon would not move.
-    const moved = ws.isolation === 'wsfs' && await this.mounts.move(this.trainOwner(ws), commit, signal)
+    const moved = this.trainMounted(ws) && await this.mounts.move(this.trainOwner(ws), commit, signal)
       // A move left unfinished is the train's own trouble, like a Git command that failed: it runs again.
       .catch((error: Error) => { throw new GitFailure(error.message); });
     if (!moved) await this.git(path, ['reset', '--hard', '--quiet', commit], signal);
@@ -1725,23 +1735,39 @@ export class WorkflowWorkspaces {
    * The train of a wsfs member is a wsfs workspace beside the members': a plain worktree is a checkout of every file,
    * and each move of it has Git look at every one of them. A workflow whose members were made in both ways has a
    * train of each kind, and they take turns like everything else that runs for the repository.
+   *
+   * A host may name another place for the trains (`WorkspacePlaces.trainRoot`), for instance a directory on a local
+   * disk, where the checks build as fast as a local build. A checkout and its moves are cheap there, so the train is
+   * then a plain worktree whatever the members are, and one for both kinds. Nothing in it is worth keeping: when the
+   * directory is gone, as it is after the machine was replaced, the next train makes it again.
    */
   private trainPath(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir' | 'isolation'>): string {
-    return ws.isolation === 'wsfs' ? this.mounts.path(this.trainOwner(ws)) : join(resolve(this.directory), ws.workflowId, `train-${workflowDigest(ws.commonDir).slice(0, 16)}`);
+    return this.trainMounted(ws) ? this.mounts.path(this.trainOwner(ws)) : this.trainCheckout(ws, this.trainRoot() ?? resolve(this.directory));
+  }
+  private trainRoot(): string | undefined {
+    const root = this.places.trainRoot?.();
+    return root ? resolve(root) : undefined;
+  }
+  /** Whether the train of `ws`'s repository is a wsfs workspace. */
+  private trainMounted(ws: Pick<WorkspaceBinding, 'isolation'>): boolean { return ws.isolation === 'wsfs' && !this.trainRoot(); }
+  /** The train's plain worktree below `directory`. */
+  private trainCheckout(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>, directory: string): string {
+    return join(directory, ws.workflowId, `train-${workflowDigest(ws.commonDir).slice(0, 16)}`);
   }
   /** The train as wsfs knows it. Its name is also that of its worktree record, which the repository shares with other workflows. */
   private trainOwner(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>): WsfsOwner {
     return { workflowId: ws.workflowId, id: `train-${ws.workflowId}`, commonDir: ws.commonDir };
   }
   private async trainWorktree(ws: WorkspaceBinding, signal: AbortSignal): Promise<string> {
-    const path = this.trainPath(ws);
+    const path = this.trainPath(ws), mounted = this.trainMounted(ws);
     // Asked of the daemon, which is started again if it died: its mount would only say that nothing is there.
-    const made = ws.isolation === 'wsfs' ? await this.mounts.has(this.trainOwner(ws)) : await access(join(path, '.git')).then(() => true, () => false);
+    const made = mounted ? await this.mounts.has(this.trainOwner(ws)) : await access(join(path, '.git')).then(() => true, () => false);
     if (made) await this.git(path, ['cherry-pick', '--abort'], signal, true);
-    else if (ws.isolation === 'wsfs') await this.mounts.create(this.trainOwner(ws), ws.baseCommit, signal);
+    else if (mounted) await this.mounts.create(this.trainOwner(ws), ws.baseCommit, signal);
     else {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      await this.worktree(ws, ['add', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
+      // Forced twice: a worktree whose directory is gone leaves a locked record of itself, and this one takes its place.
+      await this.worktree(ws, ['add', '--force', '--force', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
     }
     return path;
   }
@@ -1749,10 +1775,17 @@ export class WorkflowWorkspaces {
   private async retireTrain(ws: WorkspaceBinding, signal: AbortSignal): Promise<void> {
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.kind')='task' AND json_extract(data,'$.status')!='removed' AND json_extract(data,'$.commonDir')=?").get(ws.workflowId, ws.commonDir) as { n: number };
     if (left.n || this.trains.has(`${ws.workflowId}:${ws.commonDir}`)) return;
-    const path = this.trainPath({ ...ws, isolation: undefined });
-    if (await access(path).then(() => true, () => false)) {
+    const beside = this.trainCheckout(ws, resolve(this.directory)), apart = this.trainRoot();
+    if (await access(beside).then(() => true, () => false)) {
+      await this.worktree(ws, ['unlock', beside], signal, true);
+      await this.worktree(ws, ['remove', '--force', beside], signal, true);
+    }
+    if (apart) {
+      // Its directory may be gone already. The record of it in the repository goes all the same.
+      const path = this.trainCheckout(ws, apart);
       await this.worktree(ws, ['unlock', path], signal, true);
       await this.worktree(ws, ['remove', '--force', path], signal, true);
+      await rmdir(dirname(path)).catch(() => undefined);
     }
     // With it goes the daemon, which serves no workspace of the workflow any more.
     if (await this.mounts.used(ws)) await this.mounts.remove(this.trainOwner(ws), signal).catch(() => undefined);

@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { access, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WorkflowKernel } from '../src/engine/kernel';
 import { workspaceCommand } from '../src/engine/workspace-process';
-import { WorkflowWorkspaces } from '../src/engine/workspaces';
+import { WorkflowWorkspaces, type WorkspacePlaces } from '../src/engine/workspaces';
 import type { WorkspaceBinding, WorkspaceLanding } from '../src/engine/workspace-types';
 
 const closes: Array<() => Promise<unknown>> = [];
@@ -36,7 +36,7 @@ const binary = process.env.WORKFLOW_WSFS_COMMAND || fileURLToPath(new URL('../..
 const mounts = process.platform === 'linux' && existsSync(binary) && existsSync('/dev/fuse')
   && (await run('fusermount3', ['--version'])).code === 0;
 
-async function fixture() {
+async function fixture(places: WorkspacePlaces = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-wsfs-'));
   closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   // A test that failed leaves its daemon serving: nothing is deleted through a mount.
@@ -55,7 +55,7 @@ async function fixture() {
   closes.push(() => kernel.close());
   await kernel.call({ kind: 'main', scopeId: 'scope', allowStart: true }, 'run_script', { operationId: 'start', goal: 'test', plan: 'test wsfs workspaces', script: 'return null;' });
   const state = kernel.state('scope')!;
-  const open = () => { const manager = new WorkflowWorkspaces(join(dir, 'workspaces.sqlite'), join(dir, 'worktrees')); closes.push(() => manager.close()); return manager; };
+  const open = () => { const manager = new WorkflowWorkspaces(join(dir, 'workspaces.sqlite'), join(dir, 'worktrees'), undefined, {}, places); closes.push(() => manager.close()); return manager; };
   const manager = open();
   const ctx = { state, signal: signal() };
   const op = <T>(kind: string, key: string, args: object = {}) => manager.perform(ctx, { kind, key, ...args }) as Promise<T>;
@@ -301,6 +301,58 @@ describe.skipIf(!mounts)('wsfs workspaces', () => {
     expect(await git(h.repo, 'worktree', 'list', '--porcelain')).not.toContain(mount);
     expect((await readFile('/proc/self/mountinfo', 'utf8')).includes(mount)).toBe(false);
     for (const left of [mount, `${mount}.state`, `${mount}.json`]) expect(await exists(left)).toBe(false);
+  }, 60_000);
+
+  it('keeps what the workspaces change where the host says', async () => {
+    let states = '';
+    const h = await fixture({ wsfsStateRoot: () => states });
+    states = join(h.dir, 'states');
+    const a = await h.member('a');
+    const mount = a.ws.path.slice(0, a.ws.path.lastIndexOf('/')), state = join(states, h.state.workflowId, mount.slice(mount.lastIndexOf('/') + 1));
+    await writeFile(join(a.ws.path, 'note.txt'), 'kept\n');
+    expect(await readFile(join(state, 'ws', a.ws.id, 'upper', 'note.txt'), 'utf8')).toBe('kept\n');
+    expect(await exists(`${mount}.state`)).toBe(false);
+    // The place is recorded with the mount: told another one later, the service keeps the workspaces of the mount together.
+    states = join(h.dir, 'elsewhere');
+    const b = await h.member('b');
+    await writeFile(join(b.ws.path, 'other.txt'), 'kept\n');
+    expect(await readFile(join(state, 'ws', b.ws.id, 'upper', 'other.txt'), 'utf8')).toBe('kept\n');
+    expect(await exists(join(h.dir, 'elsewhere'))).toBe(false);
+    await rm(join(a.ws.path, 'note.txt')); await rm(join(b.ws.path, 'other.txt'));
+    a.idle(); b.idle();
+    for (const member of [a, b]) expect(await h.op('cleanup', 'clean-' + member.ws.id, { workspace: member.ws.id })).toMatchObject({ removed: true });
+  }, 60_000);
+
+  it('checks in a plain worktree where the host says, and the members stay wsfs workspaces', async () => {
+    let trains = '';
+    const h = await fixture({ trainRoot: () => trains });
+    trains = join(h.dir, 'trains');
+    const check = 'const fs=require("fs");if(!fs.existsSync("src/code.txt"))process.exit(1);fs.mkdirSync("build",{recursive:true});fs.writeFileSync("build/checked",process.cwd())';
+    const landing = await h.op<WorkspaceLanding>('landing', 'landing', { checks: [{ argv: [process.execPath, '-e', check] }] });
+    const a = await h.member('a'), b = await h.member('b');
+    const mount = a.ws.path.slice(0, a.ws.path.lastIndexOf('/')), train = join(trains, h.state.workflowId, 'train-' + mount.slice(mount.lastIndexOf('-') + 1));
+    await a.commit('a.txt', 'a\n');
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    // The whole checkout is there as files of that directory, and the daemon has no workspace for the train.
+    expect(await readFile(join(train, 'build/checked'), 'utf8')).toBe(await realpath(train));
+    expect((await readFile(join(train, '.git'), 'utf8'))).toContain('/worktrees/train-');
+    expect((await readFile('/proc/self/mountinfo', 'utf8')).includes(train)).toBe(false);
+    expect(await exists(join(mount, `train-${h.state.workflowId}`))).toBe(false);
+    expect(await exists(join(`${mount}.state`, 'ws', `train-${h.state.workflowId}`))).toBe(false);
+    expect(a.ws.isolation).toBe('wsfs');
+    // The directory is gone, as after the machine was replaced: the next train makes it again and lands as before.
+    await rm(trains, { recursive: true });
+    await b.commit('b.txt', 'b\n');
+    expect(await b.land()).toMatchObject({ status: 'landed' });
+    const head = await git(h.repo, 'rev-parse', landing.targetRef);
+    expect(await git(train, 'rev-parse', 'HEAD')).toBe(head);
+    expect((await git(h.repo, 'ls-tree', '-r', '--name-only', head)).split('\n').sort()).toEqual(['.gitignore', 'a.txt', 'b.txt', 'shared.txt', 'src/code.txt']);
+    // Gone once more when the last member goes: the record of it in the repository goes all the same.
+    await rm(trains, { recursive: true });
+    a.idle(); b.idle();
+    for (const member of [a, b]) expect(await h.op('cleanup', 'clean-' + member.ws.id, { workspace: member.ws.id })).toMatchObject({ removed: true });
+    expect(await git(h.repo, 'worktree', 'list', '--porcelain')).not.toContain('/train-');
+    expect((await readFile('/proc/self/mountinfo', 'utf8')).includes(mount)).toBe(false);
   }, 60_000);
 
   it('refuses a repository it cannot serve before anything is recorded', async () => {

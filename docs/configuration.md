@@ -216,6 +216,21 @@ Edits are picked up on reload; in-flight permits keep their old limits. See
 [Model gate](model-gate.md) for the permit lifecycle, failure behaviour and the
 `/status` endpoint.
 
+## Workflow placement
+
+```toml
+[workflow]
+# train_directory = "/tmp/lark-wf-trains"      # default: beside the members' worktrees
+# wsfs_state_directory = "/local/wsfs-state"   # default: beside each wsfs mount
+```
+
+Where workflows put what need not be beside the members' worktrees. Both are directories of the machine the bridge runs on, absolute or under `~/`, so the table is bridge-wide and every profile shares it. Use them when the worktrees are on a network filesystem and the machine has a local disk.
+
+- `train_directory`: the landing queue's own worktree, where the `checks` of a landing run, is made at `<train_directory>/<workflow-id>/train-<repository>` as a plain Git worktree, whatever kind the members' workspaces are. The checks then build at the speed of that disk. Nothing in it has to survive: when the directory is gone, as after the machine was replaced, the next train checks the commit out again. See [Claim, fix and land](workflows.md#claim-fix-and-land).
+- `wsfs_state_directory`: what `wsfs` workspaces change is kept at `<wsfs_state_directory>/<workflow-id>/wsfs-<repository>/`. Members' uncommitted work is there, so a directory that does not survive the machine loses it. See [wsfs workspaces](workflow-worktrees.md).
+
+Edits are picked up on reload. A train made before the edit stays where it is until its workflow is cleaned up and the next train is made in the new place; a wsfs mount keeps the place it recorded when its first workspace was made.
+
 ## Inspecting and editing
 
 ```sh
@@ -244,7 +259,7 @@ Every setting declares how it takes effect in a running bridge (`src/config/sett
 
 | Class | Settings (examples) | How it applies |
 | --- | --- | --- |
-| `live` | `run.*` (model, effort, concurrency, timeouts), `access.*`, Lark display (`reply_mode`, `progress`, `show_tools`, `file_links`, `message_debounce_ms`), `attachments.*`, `workspaces.*` | Next message / run. Raising concurrency releases queued runs immediately; lowering it never cancels running tasks. Meeting fields apply to new meetings. |
+| `live` | `run.*` (model, effort, concurrency, timeouts), `access.*`, Lark display (`reply_mode`, `progress`, `show_tools`, `file_links`, `message_debounce_ms`), `attachments.*`, `workspaces.*`, `[workflow]` | Next message / run. Raising concurrency releases queued runs immediately; lowering it never cancels running tasks. Meeting fields apply to new meetings. |
 | `execution` | `agent`, `agents.*.launch` / `profiles.*.launch` (binary, env, homes, provider), `permissions`, `[state]`, `model_services` | The default engine adapter is rebuilt and availability-checked before it replaces the old one; active runs keep their adapter. A failed check keeps the old adapter. A busy Codex daemon defers the swap until its runs finish. |
 | `lark-cli` | `mode`, `larkCli.identityPreset` | The lark-cli identity policy is re-applied; on failure the previous mode/identity stays in effect. |
 | `monitoring` | `bridge.monitors_file`, monitor sources, `concurrency` | Picked up by the next monitor reconcile (immediately on a detected change, at most 15 s otherwise). |

@@ -15,6 +15,7 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import { bridgeAgentKind, resolveWorkerExecution } from '../workflows/bridge/execution';
 import { createBridgeWorkflowRuntime } from '../workflows/bridge/runtime';
+import { placementDirectory, type WorkflowPlacement } from '../workflows/placement';
 import type { WorkspaceStore } from '../workspace/store';
 import type { AgentEntry } from './agent-entry';
 import { CacheKeepalive, type CachePing } from './cache-keepalive';
@@ -66,6 +67,8 @@ export interface WorkflowSettings {
   /** How long a silent worker is left alone; the engine default when undefined. */
   stallMs(): number | undefined;
   stopGraceMs(): number;
+  /** The `[workflow]` table: where trains and wsfs workspaces keep their files. */
+  placement(): WorkflowPlacement | undefined;
 }
 
 export interface WorkflowHostDeps<M> {
@@ -195,6 +198,8 @@ export class WorkflowHost<M> {
       path: join(stateDir, 'workflows.sqlite'), executor,
       // On the local disk: the state directory may be on a network filesystem, where builds and caches do not belong.
       scratchRoot: process.env.LARK_WORKFLOW_SCRATCH_DIR || join(tmpdir(), 'lark-wf-scratch'),
+      trainRoot: () => placementDirectory(settings.placement()?.trainDirectory),
+      wsfsStateRoot: () => placementDirectory(settings.placement()?.wsfsStateDirectory),
       getTimeoutMinutes: root => getWorkflowTimeoutMinutes(settings.profileFor(bridgeAgentKind(root.agentKind), root.scopeId)),
       // A silent worker is stopped and retried; the conversation idle timeout is the natural knob for it.
       stallMs: settings.stallMs() ?? DEFAULT_STALL_MS,

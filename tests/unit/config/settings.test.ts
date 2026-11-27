@@ -30,6 +30,9 @@ env = { A = "1" }
 [agents.claude.launch]
 binaryPath = "claude"
 [state]
+[workflow]
+train_directory = "/tmp/trains"
+wsfs_state_directory = "~/wsfs-state"
 [model_services.svc]
 protocol = "responses"
 baseUrl = "https://example.invalid/v1"
@@ -113,6 +116,7 @@ describe('setting registry', () => {
     ['larkCli.identityPreset', 'lark-cli'],
     ['larkCli.localUserImport.status', 'live'],
     ['attachments.maxBytes', 'live'],
+    ['workflow.trainDirectory', 'live'],
   ])('classifies profile %s as %s', (path, apply) => {
     expect(classifySetting(PROFILE_SETTINGS, path.split('.'))).toBe(apply);
   });
@@ -124,6 +128,7 @@ describe('setting registry', () => {
     ['gitlabCi.enabled', 'monitoring'],
     ['monitorConfigFile', 'monitoring'],
     ['profiles.newbot', 'restart'],
+    ['workflow.wsfsStateDirectory', 'live'],
   ])('classifies root %s as %s', (path, apply) => {
     expect(classifySetting(ROOT_SETTINGS, path.split('.'))).toBe(apply);
   });
@@ -148,6 +153,7 @@ describe('setting registry', () => {
     ['bridge.monitors_file', 'monitoring'],
     ['model_services.svc.baseUrl', 'execution'],
     ['secrets.providers.p.source', 'reconnect'],
+    ['workflow.train_directory', 'live'],
     ['unknown.key', 'restart'],
   ])('maps TOML path %s to %s', (path, apply) => {
     expect(classifyDocumentPath(path.split('.'))).toBe(apply);

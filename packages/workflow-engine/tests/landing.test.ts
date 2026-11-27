@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, realpath, rm, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readdir, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,7 +12,7 @@ import { replaceWorkflowState } from '../src/engine/kernel-store';
 import { submittedCommits } from '../src/engine/work-queue';
 import { nodeProcesses, workspaceCommand } from '../src/engine/workspace-process';
 import type { WorkflowProcesses } from '../src/engine/ports';
-import { CLONE_REMOTE, WorkflowWorkspaces, type TrainTiming } from '../src/engine/workspaces';
+import { CLONE_REMOTE, WorkflowWorkspaces, type TrainTiming, type WorkspacePlaces } from '../src/engine/workspaces';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 import type { LandingChange, LandReport, LandSubmitted, WorkspaceBinding, WorkspaceLanding } from '../src/engine/workspace-types';
 import { LARGE_PATHS, largeCommit, printed } from './helpers/large-tree';
@@ -31,7 +31,7 @@ const twinCommit = async (ws: WorkspaceBinding, file: string, content: string) =
   await writeFile(join(ws.path, file), content); await git(ws.path, 'add', '.'); await git(ws.path, 'commit', '-q', '-m', `${file}, by another`);
 };
 
-async function fixture(timing: Partial<TrainTiming> = {}, processes?: WorkflowProcesses) {
+async function fixture(timing: Partial<TrainTiming> = {}, processes?: WorkflowProcesses, places: WorkspacePlaces = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-landing-'));
   closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const repo = join(dir, 'repo'); await mkdir(repo);
@@ -44,7 +44,7 @@ async function fixture(timing: Partial<TrainTiming> = {}, processes?: WorkflowPr
   closes.push(() => kernel.close());
   await kernel.call({ kind: 'main', scopeId: 'scope', allowStart: true }, 'run_script', { operationId: 'start', goal: 'test', plan: 'test landing', script: 'return null;' });
   const state = kernel.state('scope')!;
-  const manager = new WorkflowWorkspaces(join(dir, 'workspaces.sqlite'), join(dir, 'worktrees'), processes, timing);
+  const manager = new WorkflowWorkspaces(join(dir, 'workspaces.sqlite'), join(dir, 'worktrees'), processes, timing, places);
   closes.push(() => manager.close());
   const ctx = { state, signal: signal() };
   const op = <T>(kind: string, key: string, args: object = {}) => manager.perform(ctx, { kind, key, ...args }) as Promise<T>;
@@ -292,6 +292,32 @@ describe('landing members\' work on a shared branch', () => {
     h.manager.end(ws, (await h.manager.binding(h.state.root, h.state.workflowId, ws.id, signal())).busy!.token);
     expect(await h.op('cleanup', 'clean', { workspace: ws.id })).toMatchObject({ removed: true });
     expect(await git(other, 'worktree', 'list', '--porcelain')).not.toContain('/train-');
+  }, 60_000);
+
+  it('keeps the train where the host says, and makes it again when that directory is gone', async () => {
+    let trains = '';
+    const h = await fixture({}, undefined, { trainRoot: () => trains });
+    trains = join(h.dir, 'trains');
+    await h.configure([h.logged()]);
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 1 });
+    const own = join(trains, h.state.workflowId), found = await readdir(own);
+    expect(found).toEqual([expect.stringMatching(/^train-[a-f0-9]{16}$/)]);
+    const train = join(own, found[0]!);
+    // Every check ran there, and nothing of the train is beside the members' worktrees.
+    expect([...new Set(await h.runs())]).toEqual([await realpath(train)]);
+    expect((await readdir(join(h.dir, 'worktrees', h.state.workflowId))).filter(name => name.startsWith('train-'))).toEqual([]);
+    // The directory is gone, as after the machine was replaced, and the repository still has the locked record of it.
+    await rm(trains, { recursive: true });
+    await a.update(); await a.commit('b.txt', 'b\n');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 1 });
+    expect(await git(train, 'rev-parse', 'HEAD')).toBe(await h.head());
+    expect((await git(h.repo, 'worktree', 'list', '--porcelain')).split('\n').filter(line => line.startsWith('worktree ') && line.includes('/train-'))).toHaveLength(1);
+    // It goes with the last member worktree, and with it the directory the workflow had there.
+    h.manager.end(a.ws, (await h.manager.binding(h.state.root, h.state.workflowId, a.ws.id, signal())).busy!.token);
+    expect(await h.op('cleanup', 'clean', { workspace: a.ws.id })).toMatchObject({ removed: true });
+    expect(await git(h.repo, 'worktree', 'list', '--porcelain')).not.toContain('/train-');
+    expect(await access(own).then(() => true, () => false)).toBe(false);
   }, 60_000);
 
   it('requires the task running in the worktree and a configured landing', async () => {
@@ -1716,7 +1742,10 @@ describe('claim, fix and land through the runtime', () => {
     await writeFile(join(repo, 'README'), 'base\n'); await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'base');
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: repo, policyFingerprint: 'full', catalogBinding: 'main', modelSettings: {} };
     const rejected: string[] = [], returned: string[] = [];
+    // Where the host has the trains made, and where the checks say they ran.
+    const trains = join(await realpath(dir), 'trains'), checked = join(dir, 'checked-in');
     const runtime = new WorkflowRuntime({ path: join(dir, 'workflows.sqlite'), resolveRoot: async () => root, wakeMain: async () => {}, authorizeWorkspace: async () => {},
+      trainRoot: () => trains,
       runner: { async start(spec) {
         await spec.validateBeforeRun();
         const cwd = spec.workspace!.path;
@@ -1762,13 +1791,18 @@ describe('claim, fix and land through the runtime', () => {
     const keys = Array.from({ length: 12 }, (_, index) => `bug-${index}`);
     await callWorkflow('run_script', { operationId: randomUUID(), goal: 'Fix bugs', plan: 'Four fixers claim twelve bugs and land each fix.', maxConcurrent: 4, maxAgents: 64,
       script: await readFile(new URL('../../../workflow-definitions/scripted/examples/claim-and-land.js', import.meta.url), 'utf8'),
-      args: { members: 4, isolation, items: keys.map(key => ({ key, title: key })), checks: [{ argv: [process.execPath, '-e', `if(!require('fs').existsSync('fixed.txt'))process.exit(1)`] }] } }, main.env);
+      args: { members: 4, isolation, items: keys.map(key => ({ key, title: key })), checks: [{ argv: [process.execPath, '-e',
+        `const fs=require('fs');fs.appendFileSync(${JSON.stringify(checked)},process.cwd()+'\\n');if(!fs.existsSync('fixed.txt'))process.exit(1)`] }] } }, main.env);
     main.release();
     await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).not.toBe('running'); }, { timeout: 100_000, interval: 100 });
     const state = runtime.kernel.state(root.scopeId)!;
     expect(state.script).toMatchObject({ status: 'result_ready' });
     const result = JSON.parse(state.artifacts.find(artifact => artifact.ref === state.script?.resultRef)!.text!) as { branch: string; queues: Record<string, unknown> };
     expect(result.queues).toMatchObject({ default: { completed: 12 } });
+    // The checks ran in the train, and the train was where the runtime was told to make it.
+    const ran = [...new Set((await readFile(checked, 'utf8')).trim().split('\n'))];
+    expect(ran).toEqual([expect.stringMatching(/\/train-[a-f0-9]{16}$/)]);
+    expect(ran[0]!.startsWith(join(trains, state.workflowId) + '/')).toBe(true);
     expect(state.workQueue!.items.map(item => item.result)).toEqual(expect.arrayContaining(keys.map(key => ({ fixed: key }))));
     // Every fix is on the branch exactly once, the history is linear, and the original checkout never moved.
     expect((await git(repo, 'show', `${result.branch}:fixed.txt`)).split('\n').sort()).toEqual([...keys].sort());

@@ -15,6 +15,7 @@ import { isTable } from './table';
 import { larkDisplay } from './lark-display';
 import { modelGateTable, normalizeModelGate } from '../model-gate/config';
 import { modelServiceName } from '../model-service/config';
+import { parseWorkflowTable, workflowTable } from '../workflows/placement';
 import { validateLarkNetwork } from './lark-network';
 import { SLACK_DISPLAY_DEFAULTS, WEB_DISPLAY_DEFAULTS } from './channel-display';
 import { normalizeFileLinks } from './file-links';
@@ -39,6 +40,8 @@ export interface ConfigDocument extends Table {
   channels?: Table;
   /** Bridge-wide model-provider limits; see docs/model-gate.md. */
   gate?: Table;
+  /** Bridge-wide placement of what workflows write outside the members' worktrees. */
+  workflow?: Table;
   profiles: Record<string, Table>;
   /** Read only by `up` / `down`; a running bridge ignores it. */
   deploy?: Table;
@@ -235,7 +238,7 @@ function checkDeploy(value: unknown, profiles: Table): void {
 }
 
 function validateDocument(input: unknown): ConfigDocument {
-  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'gate', 'profiles', 'secrets', 'model_services', 'deploy'], 'config');
+  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'gate', 'workflow', 'profiles', 'secrets', 'model_services', 'deploy'], 'config');
   if (doc.version !== 3) throw new Error('config.version must be 3');
   if (doc.bridge !== undefined) {
     const bridge = keys(doc.bridge, ['active_profile', 'autostart_profiles', 'monitors_file'], 'bridge');
@@ -279,6 +282,7 @@ function validateDocument(input: unknown): ConfigDocument {
   }
   if (doc.state !== undefined) parseAgentStateTable(doc.state);
   if (doc.gate !== undefined) normalizeModelGate(doc.gate);
+  if (doc.workflow !== undefined) parseWorkflowTable(doc.workflow);
   if (doc.channels !== undefined) for (const [channel, value] of Object.entries(keys(doc.channels, ['lark', 'web', 'slack'], 'channels'))) {
     const c = object(value, `channels.${channel}`);
     const { profiles: overrides, ...display } = c;
@@ -360,6 +364,7 @@ export function resolveExecutionProfile(
     permissions,
     ...resolveAgentLaunches(agentKind, launchFor),
     ...(doc.state ? { state: parseAgentStateTable(doc.state) } : {}),
+    ...(doc.workflow ? { workflow: parseWorkflowTable(doc.workflow) } : {}),
     ...(profile?.exec_sandbox !== undefined ? { execSandbox: normalizeExecSandbox(profile.exec_sandbox) } : {}),
   };
 }
@@ -402,6 +407,7 @@ export function documentToRoot(doc: ConfigDocument): RootConfig {
     ...(doc.secrets ? { secrets: doc.secrets } : {}),
     ...(doc.model_services ? { modelServices: doc.model_services } : {}),
     ...(doc.gate ? { modelGate: normalizeModelGate(doc.gate)! } : {}),
+    ...(doc.workflow ? { workflow: parseWorkflowTable(doc.workflow) } : {}),
   };
 }
 
@@ -439,6 +445,7 @@ export function rootToDocument(root: RootConfig): ConfigDocument {
   if (root.secrets) doc.secrets = root.secrets;
   if (root.modelServices) doc.model_services = root.modelServices;
   if (root.modelGate) doc.gate = modelGateTable(root.modelGate);
+  if (root.workflow && Object.keys(workflowTable(root.workflow)).length > 0) doc.workflow = workflowTable(root.workflow);
   return doc;
 }
 

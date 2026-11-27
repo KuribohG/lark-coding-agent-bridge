@@ -55,6 +55,14 @@ export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
    * may be shared with other runtimes. Absent leaves workers on the machine's shared temporary directory.
    */
   scratchRoot?: string;
+  /**
+   * Where the landing queues' own worktrees are made: a directory on a local disk, for a workflow whose worktrees are
+   * on a network filesystem and whose checks build. Asked for when a train needs its worktree; undefined leaves the
+   * trains beside the members' worktrees.
+   */
+  trainRoot?: () => string | undefined;
+  /** Where wsfs workspaces keep what they change; undefined leaves it beside their mount. */
+  wsfsStateRoot?: () => string | undefined;
   runner: WorkerRunner;
   getTimeoutMinutes?(root: WorkflowRoot): number;
   /** Silence after which a running worker with no tool in flight is presumed hung; 0 disables the watchdog. */
@@ -657,7 +665,8 @@ export class WorkflowRuntime {
     if (!this.deps.workspaceRoot && this.deps.path === ':memory:') throw new Error('In-memory workflows require an explicit workspaceRoot');
     if (!this.workspaces) {
       this.workspaces = new WorkflowWorkspaces(this.deps.path === ':memory:' ? ':memory:' : this.deps.path + '.workspaces.sqlite',
-        this.deps.workspaceRoot ?? join(dirname(this.deps.path), 'worktrees'), this.deps.processes);
+        this.deps.workspaceRoot ?? join(dirname(this.deps.path), 'worktrees'), this.deps.processes, {},
+        { trainRoot: () => this.deps.trainRoot?.(), wsfsStateRoot: () => this.deps.wsfsStateRoot?.() });
       // A member that was held back for its worktree is scheduled as soon as the worktree is ready, or stopped for its failure.
       this.workspaces.watch(() => this.requestAdmission());
     }
