@@ -747,6 +747,8 @@ export interface RiderView {
   since: number;
   /** On a train: `taken`, `stacked`, or the status it was answered with. */
   state?: string;
+  /** Why a lead put it at the head of the queue. */
+  front?: string;
 }
 
 /** One run of a train from the landing ledger. */
@@ -839,7 +841,8 @@ export function landing(state: WorkflowState, record: LandingRecord): LandingPan
   const byHead = new Map(held.map(claim => [claim.landing!.headCommit, { key: items.get(claim.itemId)?.key, member: name(claim.agentId) }]));
   const rider = (entry: LandingRider & { state?: string }): RiderView => {
     const known = byHead.get(entry.headCommit), key = entry.key ?? known?.key, member = entry.member ?? known?.member;
-    return { ...(key ? { key } : {}), ...(member ? { member } : {}), headCommit: entry.headCommit, commits: entry.commits, since: entry.since, ...(entry.state ? { state: entry.state } : {}) };
+    return { ...(key ? { key } : {}), ...(member ? { member } : {}), headCommit: entry.headCommit, commits: entry.commits, since: entry.since, ...(entry.state ? { state: entry.state } : {}),
+      ...(entry.front === undefined ? {} : { front: entry.front }) };
   };
   const base = record.landing, over = record.override ?? {};
   const shown = (commands: WorkspaceCommands | undefined) => commands?.map(command => ({ command: command.argv.join(' '), timeoutMs: command.timeoutMs }));
@@ -851,7 +854,8 @@ export function landing(state: WorkflowState, record: LandingRecord): LandingPan
     ...(base ? { targetRef: base.targetRef, checks: shown(over.commands ?? base.commands)!, batch: over.batch ?? base.batch } : {}),
     ...(precheck ? { precheck: shown(precheck)! } : {}), ...(protect.length ? { protect } : {}),
     overridden: [['commands', 'checks'], ['precheck', 'precheck'], ['protect', 'protect'], ['batch', 'batch']].flatMap(([key, shownAs]) => over[key as keyof typeof over] === undefined ? [] : [shownAs!]),
-    submitted: held.map(claim => rider({ ...byHead.get(claim.landing!.headCommit), workspace: '', headCommit: claim.landing!.headCommit, commits: claim.landing!.commits, since: claim.landing!.since }))
+    submitted: held.map(claim => rider({ ...byHead.get(claim.landing!.headCommit), workspace: '', headCommit: claim.landing!.headCommit, commits: claim.landing!.commits, since: claim.landing!.since,
+      ...(claim.landing!.front === undefined ? {} : { front: claim.landing!.front }) }))
       .sort((a, b) => a.since - b.since),
     returned: turnedBack(state).map(item => ({
       key: item.key, title: compact(item.title, 200), ...(item.assignee ? { member: item.assignee } : {}), status: item.landing!.status, at: item.landing!.at,

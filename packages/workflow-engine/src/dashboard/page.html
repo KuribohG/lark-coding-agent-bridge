@@ -428,7 +428,7 @@ const TODO = { dry: '队列断粮', idle: '成员空闲', member: '成员停止'
 const CLAIM = { active: '持有中', completed: '已完成', failed: '失败', released: '已交还', expired: '租约过期', cancelled: '已取消' };
 const LAND = { landed: ['good', '已落地'], next: ['mute', '坐下一班'], check_failed: ['bad', '检查不过'], conflict: ['serious', '冲突'], withdrawn: ['mute', '已撤回'], failed: ['bad', '列车放弃'],
   lost: ['warn', '队列丢失'], rejected: ['serious', '被拒'], halted: ['warn', '分支停止'], taken: ['mute', '待叠入'], stacked: ['run', '已叠入'] };
-const TRAIN = { done: ['good', '跑完'], restacked: ['mute', '有撤回，重新组批'], halted: ['warn', '等分支处理'], retrying: ['warn', '自身出错，重跑'], failed: ['bad', '放弃整班'] };
+const TRAIN = { done: ['good', '跑完'], restacked: ['mute', '有撤回，重新组批'], preempted: ['mute', '让插队的提交先走'], halted: ['warn', '等分支处理'], retrying: ['warn', '自身出错，重跑'], failed: ['bad', '放弃整班'] };
 const STEP = { stacking: '组批中', checking: '检查中', landing: '推进分支' };
 const TABS = [['overview', '总览'], ['members', '成员'], ['work', '工作项'], ['landing', '落地'], ['board', '留言板'], ['turns', '轮次'], ['plan', '方案'], ['journal', '事件日志']];
 const pair = (table, key) => table[key] || ['mute', key];
@@ -919,7 +919,8 @@ function probes(checks, checking) {
 function paintLanding(d) {
   if (!d.configured && !d.submitted.length && !d.returned.length && !d.branches.length) return h('div', { class: 'empty' }, '这个工作流没有配置落地（脚本没有调用 configureLanding）。');
   const who = row => row.member ? h('a', { onclick: event => { event.stopPropagation(); openDrawer('member', row.member); } }, row.member) : h('span', { class: 'faint' }, '—');
-  const what = row => row.key ? h('a', { class: 'mono', title: row.key, onclick: event => { event.stopPropagation(); openDrawer('item', row.key); } }, brief(row.key)) : h('span', { class: 'mono faint' }, short(row.headCommit, 10));
+  const named = row => row.key ? h('a', { class: 'mono', title: row.key, onclick: event => { event.stopPropagation(); openDrawer('item', row.key); } }, brief(row.key)) : h('span', { class: 'mono faint' }, short(row.headCommit, 10));
+  const what = row => row.front === undefined ? named(row) : [named(row), ' ', chip('warn', '插队', { title: row.front })];
   const riderColumns = state => [
     { title: '#', num: true, cell: row => row.place },
     { title: '工作项', cell: what },
@@ -954,7 +955,7 @@ function paintLanding(d) {
     if (branch.halted) blocks.push(h('div', { class: 'error' }, h('b', {}, `落地已停止（${name}）`), `：落地分支被队列外改动到 ${short(branch.halted.head, 10) || '（已删除）'}，队列不接纳：${branch.halted.reason}\n提交留在队列里等待，主 agent 用 configure_landing 的 branch:"restore" 或 "adopt" 处理后继续。`));
     if (branch.live && branch.live.retrying) blocks.push(h('div', { class: 'error' }, h('b', {}, `列车自身出错（${name}）`), `：已连续 ${branch.live.retrying.failures} 次，`, tick('for', branch.live.retrying.since, '持续 '), `，提交留在队列里重跑。\n${branch.live.retrying.reason}`));
     if (branch.firstBlamed >= 2) blocks.push(h('div', { class: 'error' }, h('b', {}, `最近连续 ${branch.firstBlamed} 班一笔都没落地，每班只退回了第 1 笔（${name}）`),
-      '：每次检查都不过，很可能与提交内容无关——分支头自身已经不过检查，或者检查环境有问题。先在分支头上单独跑一次检查确认，否则每一班都会再退回一笔无辜的提交。'));
+      '：每次检查都不过，很可能与提交内容无关——分支头自身已经不过检查，或者检查环境有问题。先在分支头上单独跑一次检查确认，否则每一班都会再退回一笔无辜的提交。修复要先于队列里的其他提交落地：由 lead 用 submit_work 的 front 插到队首。'));
   }
   for (const branch of d.branches) {
     const name = branch.repository.split('/').filter(Boolean).pop() || branch.repository, now = branch.live, train = now && now.train;

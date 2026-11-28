@@ -5,7 +5,7 @@ import { assigned, closeWorkQueue, completeSubmission, enqueueFromMember, enqueu
 import { taskAgent } from '../durable-agents';
 import { queueName } from '../work-routing';
 import { boundedInteger, scriptText } from '../script-contract';
-import { workAuthority } from '../swarm';
+import { plansWork, takesTurns, workAuthority } from '../swarm';
 import { memberOperation } from './members';
 import type { ToolArgs, WorkflowTool, WorkflowToolPlugin } from './types';
 import type { KernelContext } from '../kernel-context';
@@ -118,6 +118,11 @@ const submissions = new WeakMap<KernelContext, Map<string, Submission>>();
  * From then on the engine holds the claim of the work item the commits are for; commits submitted for none get an
  * item of their own. When they land it completes the item, as the work of that member. When the queue turns them
  * back it returns the item to the member, with what the queue answered.
+ *
+ * `front` puts the commits at the head of the queue and names why they cannot wait: a repair the landing itself waits
+ * for, which behind everything else would land after the submissions it is to unblock. It stops the train that runs
+ * and holds every other submission up for one run of the checks, so only a lead may ask it: the lead of the swarm or
+ * of one of its queues, which answers for what the others wait for. The commits pass the same checks as any others.
  */
 const submitWork: WorkflowTool = {
   name: 'submit_work',
@@ -126,7 +131,8 @@ const submitWork: WorkflowTool = {
     prepare: (ctx, state) => ctx.scheduler.expireClaims(state),
     call: () => { throw new Error('submit_work runs outside a transaction'); },
     run: async (ctx, caller, args, bound) => {
-      if (Object.keys(args).some(key => !['operationId', 'claimId', 'generation', 'result', 'waitSeconds'].includes(key))) throw new Error('Unsupported submit_work option');
+      if (Object.keys(args).some(key => !['operationId', 'claimId', 'generation', 'result', 'waitSeconds', 'front'].includes(key))) throw new Error('Unsupported submit_work option');
+      const front = args.front === undefined ? undefined : scriptText(args.front, 'front', 600).trim();
       // A call that names nothing submits for the item the member holds; an ID or a claim it names must be right.
       const operationId = args.operationId === undefined ? `submit-${randomUUID()}` : scriptText(args.operationId, 'operationId', 160);
       let claim = args.claimId === undefined ? undefined : { claimId: args.claimId, generation: args.generation };
@@ -146,6 +152,11 @@ const submitWork: WorkflowTool = {
           if (prior) return { prior: prior.response };
           if (!task.workspaceId) throw new Error('submit_work requires a member that runs in a managed worktree');
           if (!ctx.host.land) throw new Error('Landing is unavailable in this workflow');
+          const member = taskAgent(state, task)?.key;
+          if (front !== undefined && !(member && plansWork(state, member) && takesTurns(state, member))) {
+            throw new Error('Only a lead (of the swarm or of one of its queues) puts commits at the head of the landing queue. Submit without front; '
+              + 'when the landing cannot go on without these commits, say so to your lead, which can land them there');
+          }
           // Commits that complete nothing would leave the item the member is at without its work when the worktree
           // goes back to the branch: they are for the item it holds, and for no item only when it holds none.
           const at = heldWork(state, task);
@@ -181,7 +192,7 @@ const submitWork: WorkflowTool = {
         // The commits join the queue: the engine takes the claim, or adds the item that follows them, and the member
         // is answered. When it cannot (the claim ended meanwhile) this throws, and the commits stay in the worktree.
         const submitted = (info: { targetCommit: string; headCommit: string; commits: number; worktree: string }) => {
-          const landing = { targetCommit: info.targetCommit, headCommit: info.headCommit, commits: info.commits };
+          const landing = { targetCommit: info.targetCommit, headCommit: info.headCommit, commits: info.commits, ...(front === undefined ? {} : { front }) };
           const taken = bound((state, task) => ({ member: taskAgent(state, task)?.key,
             ...(claim ? submitClaim(state, task, caller.attemptId, { operationId, ...claim }, ctx.now(), landing, info.worktree)
               : trackSubmission(state, task, caller.attemptId, operationId, ctx.now(), landing, info.worktree)) }));
@@ -192,7 +203,7 @@ const submitWork: WorkflowTool = {
         };
         void (async () => {
           let report;
-          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId, submitted, noticed: raise }, controller.signal) as { status: string; headCommit?: string; commits?: number; reason?: string; notice?: string }; }
+          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId, submitted, noticed: raise, ...(front === undefined ? {} : { front }) }, controller.signal) as { status: string; headCommit?: string; commits?: number; reason?: string; notice?: string }; }
           catch (error) {
             // Before the queue had the commits this is the member's answer. After, the queue gave them up or was
             // closed: the item goes back to its member, unless the service is closing (the restart does that then) or
@@ -353,7 +364,13 @@ const LEAD_INSTRUCTIONS = 'Changing items: you plan the queues you lead (the lea
   + 'a gate nobody has declared met and an item that keeps coming back without progress are to-dos of whoever planned them. '
   + 'retry_work({operationId,key or itemId,additionalAttempts?}) gives a failed item more attempts (1 by default, 8 at most) and returns it to the queue. '
   + 'withdraw_work({key or itemId,reason}) takes the commits of an item out of the landing queue before they land, when you know that they break the checks or slow them down for everyone: '
-  + 'a train that carries them stops its check and runs again without them, and the item returns to the member that submitted it, with your reason in item.landing.';
+  + 'a train that carries them stops its check and runs again without them, and the item returns to the member that submitted it, with your reason in item.landing.\n'
+  + 'submit_work({front:"why"}) puts commits of yours at the head of the landing queue, which only a lead may ask. It is for a repair the landing itself waits for: '
+  + 'the landing branch fails the checks or everyone\'s precheck by itself, or a check is broken, so that behind the other submissions the repair would land after the ones it is to unblock. '
+  + 'The train that runs stops and starts over afterwards, yours rides a train of its own and lands after one run of the checks, and every other submission waits that much longer: '
+  + 'work that is merely important or late takes its turn. front says in a sentence what is broken for everyone; the commits pass the precheck and the checks like any others. '
+  + 'When a member has made the repair, bring its commits into your own worktree (work_status of its item shows them in claim.landing; git cherry-pick <targetCommit>..<headCommit> onto the tip of the landing branch) '
+  + 'and submit them with front: the member\'s own submission then adds nothing and lands with yours.';
 
 /** Durable work queues: the main agent produces and inspects items; persistent members claim and finish them. */
 export const workQueueTools: WorkflowToolPlugin = {

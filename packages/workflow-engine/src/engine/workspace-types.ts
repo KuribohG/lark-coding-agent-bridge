@@ -117,8 +117,11 @@ export interface LandingView {
   branches: Array<{ repository: string; head: string | null; landed?: string;
     /** Submissions in the queue behind the train that runs now; while the branch is halted they stay there. */
     waiting: number; halted?: string;
-    /** The train that runs now: how many submissions it carries, how many runs of the checks it has started, and since when. */
-    train?: { submissions: number; step: 'stacking' | 'checking' | 'landing'; checks: number; since: number };
+    /**
+     * The train that runs now: how many submissions it carries, how many runs of the checks it has started, and since
+     * when. `front` says it carries the submissions that were put at the head of the queue, and nothing else.
+     */
+    train?: { submissions: number; step: 'stacking' | 'checking' | 'landing'; checks: number; since: number; front?: true };
     /** The train failed for a reason of its own (a Git command in its worktree) and runs again with its submissions kept. */
     retrying?: { failures: number; since: number; reason: string };
     /** How long a run of the checks that passed has usually taken lately, in seconds; compare it with the checks' `timeoutMs`. */
@@ -147,9 +150,9 @@ export interface LandingTrain {
   /**
    * The submissions the train took from the queue, in the order it stacked them. `outcome` is the status each was
    * answered with (`landed`, `check_failed`, `conflict`, `withdrawn`), `failed` when the train gave it up, or `next`
-   * when it went back to the queue for the next train.
+   * when it went back to the queue for the next train. `front` is why one was put at the head of the queue.
    */
-  submissions: Array<{ key?: string; member?: string; workspace: string; headCommit: string; commits: number; outcome: string }>;
+  submissions: Array<{ key?: string; member?: string; workspace: string; headCommit: string; commits: number; outcome: string; front?: string }>;
   /**
    * Every run of the checks, in the order they ran: `submissions` says how many of the stacked submissions the commit
    * under test held, `slow` that it ran far longer than usual, `command` and `code` which command failed, and `reason`
@@ -158,10 +161,11 @@ export interface LandingTrain {
   checks: Array<{ submissions: number; headCommit: string; ms: number; passed: boolean; slow?: true; command?: string; code?: number; reason?: string }>;
   /**
    * `done` when the train answered its submissions or sent them on to the next one; `restacked` when it stopped to run
-   * again without a submission that was withdrawn; `halted` and `retrying` when it kept them for a branch that has to
-   * be settled or for a failure of its own; `failed` when it gave them up.
+   * again without a submission that was withdrawn; `preempted` when it stopped for a submission that was put at the
+   * head of the queue, and runs again after the train that carries that one; `halted` and `retrying` when it kept them
+   * for a branch that has to be settled or for a failure of its own; `failed` when it gave them up.
    */
-  outcome: 'done' | 'restacked' | 'halted' | 'retrying' | 'failed';
+  outcome: 'done' | 'restacked' | 'preempted' | 'halted' | 'retrying' | 'failed';
   error?: string;
 }
 
@@ -172,15 +176,18 @@ export interface LandingRider extends LandLabel {
   commits: number;
   /** When it joined the queue; one that rides another train keeps the time it first joined. */
   since: number;
+  /** Why it was put at the head of the queue (submit_work `front`); the others have none. */
+  front?: string;
 }
 
 /**
  * The landing queue of one repository as it stands. The queue lives in the memory of the service, which writes this
  * to the workspace store whenever the queue changes, so that a reader outside it (the dashboard) can show what waits
- * and what the train is doing. `waiting` are the submissions behind the train, in the order they board. `train` is the
- * train that runs: the submissions it took, in order (`taken` until their commits are in what the checks run on,
- * `stacked` from then on, and the status one was answered with after that), the runs of the checks so far, and the
- * run that is going on. `halted` is what the main agent was told of a branch the queue waits for.
+ * and what the train is doing. `waiting` are the submissions behind the train, in the order they board: the ones
+ * that were put at the head of the queue first, which ride a train of their own. `train` is the train that runs: the
+ * submissions it took, in order (`taken` until their commits are in what the checks run on, `stacked` from then on,
+ * and the status one was answered with after that), the runs of the checks so far, and the run that is going on.
+ * `halted` is what the main agent was told of a branch the queue waits for.
  */
 export interface LandingLive {
   repository: string;

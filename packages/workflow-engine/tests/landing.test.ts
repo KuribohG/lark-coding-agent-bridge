@@ -54,8 +54,8 @@ async function fixture(timing: Partial<TrainTiming> = {}, processes?: WorkflowPr
     manager.begin(ws, name);
     let last: LandSubmitted | undefined;
     return { ws,
-      /** Submits the commits and waits for what the queue makes of them, which a member does not do. */
-      land: () => manager.land(ctx, { workspace: ws.id, taskId: name, submitted: info => { last = info; return { key: 'item-' + name, member: name }; } }),
+      /** Submits the commits and waits for what the queue makes of them, which a member does not do. `front` puts them at the head of the queue. */
+      land: (front?: string) => manager.land(ctx, { workspace: ws.id, taskId: name, submitted: info => { last = info; return { key: 'item-' + name, member: name }; }, ...(front === undefined ? {} : { front }) }),
       /** The commits it last submitted, as the queue took them. */
       submitted: () => last!,
       /** Brings the commits it last submitted back into the worktree, as a member does with an item that came back to it. */
@@ -897,6 +897,111 @@ describe('taking a submission out of the queue', () => {
   }, 60_000);
 });
 
+describe('putting a submission at the head of the queue', () => {
+  /** A check that holds a train while `block.txt` is on it and the gate is shut, and one that carries `slow.txt` until a second gate opens. */
+  const held = (h: Awaited<ReturnType<typeof fixture>>) => {
+    const second = join(h.dir, 'gate-2');
+    const check = node(`const fs=require('fs');fs.appendFileSync(${JSON.stringify(h.log)},process.cwd()+'\\n');`
+      + `const wait=f=>{const t=setInterval(()=>{if(fs.existsSync(f))clearInterval(t)},10)};`
+      + `if(fs.existsSync('slow.txt'))wait(${JSON.stringify(second)});else if(fs.existsSync('block.txt'))wait(${JSON.stringify(h.gate)})`);
+    return { check, second };
+  };
+  /** The submissions that wait, in the order they board. */
+  const queued = (h: Awaited<ReturnType<typeof fixture>>) => [...(h.manager as unknown as { trains: Map<string, { queue: Array<{ label?: { key?: string } }> }> }).trains.values()]
+    .flatMap(train => train.queue.map(candidate => candidate.label?.key));
+  const subjects = (h: Awaited<ReturnType<typeof fixture>>, targetRef: string) => git(h.repo, 'log', '--reverse', '--format=%s', `${h.base}..${targetRef}`).then(out => out.split('\n'));
+  const soon = { timeout: 20_000, interval: 20 };
+
+  it('stops the train that runs, lands the submission on a train of its own, and has the others land on top of it', async () => {
+    const h = await fixture();
+    const landing = await h.configure([held(h).check]);
+    const blocker = await h.member('blocker'), a = await h.member('a'), lead = await h.member('lead');
+    await blocker.commit('block.txt', 'x\n'); await a.commit('a.txt', 'a\n'); await lead.commit('fix.txt', 'f\n');
+    // A train is held at its check, and a submission waits behind it.
+    const first = blocker.land();
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(1), soon);
+    const second = a.land();
+    await vi.waitFor(() => expect(h.waiting()).toBe(1), soon);
+    // Nobody opens the gate: the check that runs is stopped, and the repair lands after one run of the checks on it alone.
+    expect(await lead.land('the tip fails the build for everyone')).toMatchObject({ status: 'landed', commits: 1 });
+    expect(await subjects(h, landing.targetRef)).toEqual(['fix.txt']);
+    // The train that was stopped runs again with what it had and what waited behind it, in the order they had.
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(3), soon);
+    expect(await h.branch()).toMatchObject({ waiting: 0, train: { submissions: 2, step: 'checking' } });
+    expect((await h.branch()).train).not.toHaveProperty('front');
+    await writeFile(h.gate, '');
+    expect((await Promise.all([first, second])).map(report => report.status)).toEqual(['landed', 'landed']);
+    expect(await subjects(h, landing.targetRef)).toEqual(['fix.txt', 'block.txt', 'a.txt']);
+    // The ledger tells it: the train that made way, the one that carried the repair and why, and the one that ran again.
+    const [again, own, stopped] = await h.trains();
+    expect(stopped).toMatchObject({ outcome: 'preempted', submissions: [{ key: 'item-blocker', outcome: 'next' }], checks: [{ submissions: 1, passed: false, reason: expect.stringContaining('aborted') }] });
+    expect(own).toMatchObject({ outcome: 'done', submissions: [{ key: 'item-lead', member: 'lead', outcome: 'landed', front: 'the tip fails the build for everyone' }], checks: [{ submissions: 1, passed: true }] });
+    expect(again).toMatchObject({ outcome: 'done', head: await h.head(), submissions: [{ key: 'item-blocker', outcome: 'landed' }, { key: 'item-a', outcome: 'landed' }], checks: [{ submissions: 2, passed: true }] });
+    expect([...stopped!.submissions, ...again!.submissions].some(entry => 'front' in entry)).toBe(false);
+  }, 60_000);
+
+  it('has the ones put there ride together in the order they came, without the others, and leaves a train that carries one of them to finish', async () => {
+    const h = await fixture();
+    const { check, second } = held(h);
+    const landing = await h.configure([check]);
+    const [one, two, three, a] = await Promise.all(['one', 'two', 'three', 'a'].map(name => h.member(name)));
+    await one!.commit('slow.txt', 's\n'); await two!.commit('two.txt', '2\n'); await three!.commit('three.txt', '3\n'); await a!.commit('a.txt', 'a\n');
+    // The train of the first repair is held at its check.
+    const first = one!.land('the build is broken');
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(1), soon);
+    const waits = a!.land();
+    await vi.waitFor(() => expect(h.waiting()).toBe(1), soon);
+    const next = two!.land('the repair needs a repair');
+    await vi.waitFor(() => expect(h.waiting()).toBe(2), soon);
+    const last = three!.land('and one more');
+    await vi.waitFor(() => expect(h.waiting()).toBe(3), soon);
+    // They are ahead of what waited before them and behind one another; the check that runs was not stopped for them.
+    expect(queued(h)).toEqual(['item-two', 'item-three', 'item-a']);
+    expect(await h.runs()).toHaveLength(1);
+    expect(await h.branch()).toMatchObject({ waiting: 3, train: { submissions: 1, step: 'checking', checks: 1, front: true } });
+    // Whoever watches the queue from outside sees which of them are there for what.
+    const records = new LandingRecords(join(h.dir, 'workspaces.sqlite'));
+    closes.push(async () => records.close());
+    const panel = landingPanel(h.state, records.read(h.state.workflowId, 10));
+    expect(panel.branches[0]!.live!.waiting.map(rider => [rider.key, rider.front])).toEqual([['item-two', 'the repair needs a repair'], ['item-three', 'and one more'], ['item-a', undefined]]);
+    expect(panel.branches[0]!.live!.train!.riders).toMatchObject([{ key: 'item-one', front: 'the build is broken', state: 'stacked' }]);
+    await writeFile(second, '');
+    expect((await Promise.all([first, next, last, waits])).map(report => report.status)).toEqual(['landed', 'landed', 'landed', 'landed']);
+    expect(await subjects(h, landing.targetRef)).toEqual(['slow.txt', 'two.txt', 'three.txt', 'a.txt']);
+    // Three trains, none of which was stopped: the first repair, the two that came while it ran, and then the other.
+    expect((await h.trains()).map(train => [train.outcome, train.submissions.map(entry => entry.key), train.submissions.map(entry => entry.front)])).toEqual([
+      ['done', ['item-a'], [undefined]], ['done', ['item-two', 'item-three'], ['the repair needs a repair', 'and one more']], ['done', ['item-one'], ['the build is broken']]]);
+    expect(await h.runs()).toHaveLength(3);
+  }, 60_000);
+
+  it('keeps them ahead of the others when the train that carries them hands one back, and answers one that fails the checks like any other', async () => {
+    const h = await fixture();
+    const second = join(h.dir, 'gate-2');
+    // Fails with bad.txt on the train, and holds a train with slow.txt until the gate opens.
+    const check = node(`const fs=require('fs');fs.appendFileSync(${JSON.stringify(h.log)},process.cwd()+'\\n');if(fs.existsSync('bad.txt'))process.exit(1);`
+      + `const wait=f=>{const t=setInterval(()=>{if(fs.existsSync(f))clearInterval(t)},10)};if(fs.existsSync('slow.txt'))wait(${JSON.stringify(second)})`);
+    const landing = await h.configure([check]);
+    const [one, bad, good, a] = await Promise.all(['one', 'bad', 'good', 'a'].map(name => h.member(name)));
+    await one!.commit('slow.txt', 's\n'); await bad!.commit('bad.txt', 'b\n'); await good!.commit('good.txt', 'g\n'); await a!.commit('a.txt', 'a\n');
+    const first = one!.land('the build is broken');
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(1), soon);
+    const waits = a!.land();
+    await vi.waitFor(() => expect(h.waiting()).toBe(1), soon);
+    const fails = bad!.land('a repair that is none');
+    await vi.waitFor(() => expect(h.waiting()).toBe(2), soon);
+    const follows = good!.land('the repair');
+    await vi.waitFor(() => expect(h.waiting()).toBe(3), soon);
+    await writeFile(second, '');
+    // The checks are the same for a submission at the head of the queue: the one that breaks them is turned back.
+    expect(await fails).toMatchObject({ status: 'check_failed', targetRef: landing.targetRef });
+    expect((await Promise.all([first, follows, waits])).map(report => report.status)).toEqual(['landed', 'landed', 'landed']);
+    // The one behind it went back to the queue and boarded before the submission that was there first.
+    expect(await subjects(h, landing.targetRef)).toEqual(['slow.txt', 'good.txt', 'a.txt']);
+    expect((await h.trains()).map(train => train.submissions.map(entry => `${entry.key}:${entry.outcome}`))).toEqual([
+      ['item-a:landed'], ['item-good:landed'], ['item-bad:check_failed', 'item-good:next'], ['item-one:landed']]);
+  }, 60_000);
+});
+
 describe('the landing queue as someone outside the service sees it', () => {
   it('writes what waits and what the train is doing whenever the queue changes', async () => {
     const h = await fixture();
@@ -1271,7 +1376,7 @@ describe('handing commits to the landing queue', () => {
 });
 
 describe('submit_work', () => {
-  type Landed = { workspace: string; taskId: string; submitted?: (info: LandSubmitted) => { key?: string; member?: string } | void; noticed?: (notice: string, halted: boolean) => void };
+  type Landed = { workspace: string; taskId: string; submitted?: (info: LandSubmitted) => { key?: string; member?: string } | void; noticed?: (notice: string, halted: boolean) => void; front?: string };
   type Withdrawal = { headCommit: string; reason: string };
   type Placing = { workspace: string; taskId: string; commits?: string };
   type Placed = { worktree: 'tip' | 'commits' | 'kept'; headCommit: string; note?: string } | undefined;
@@ -1534,6 +1639,35 @@ describe('submit_work', () => {
       await h.handOff(request, again, 'submit-2', 'ccc', 'ddd');
       expect(await h.kernel.call({ kind: 'main', scopeId: 'submit-test' }, 'withdraw_work', { itemId: h.item().id, reason: 'breaks the build' })).toMatchObject({ status: 'withdrawn', key: 'bug-1', commits: 'ccc..ddd' });
       expect(h.item()).toMatchObject({ status: 'pending', landing: { status: 'withdrawn', reason: 'Withdrawn by the main agent: breaks the build' } });
+    });
+
+    it('lets a lead put its commits at the head of the queue, and no other member', async () => {
+      const h = queue();
+      const fixer = await h.start('ws-1');
+      const grant = await h.send(fixer, 'claim_work') as Taken;
+      // A member that leads nothing is refused before anything is done with its worktree, and keeps its claim.
+      await expect(h.send(fixer, 'submit_work', { claimId: grant.claimId, generation: grant.generation, front: 'the build is broken' })).rejects.toThrow('Only a lead (of the swarm or of one of its queues) puts commits at the head of the landing queue');
+      await expect(h.send(fixer, 'submit_work', { front: ' ' })).rejects.toThrow('front must be nonempty text');
+      expect(h.lands).toHaveLength(0);
+      await h.handOff(fixer, grant, 'submit-1', 'aaa', 'bbb');
+      expect(h.lands[0]).not.toHaveProperty('front');
+      expect(h.state().workQueue!.claims[0]!.landing).toEqual({ since: expect.any(Number), targetCommit: 'aaa', headCommit: 'bbb', commits: 1 });
+      // The lead of a swarm may, and so may the lead of one of its queues; a member of the swarm that leads nothing may not.
+      await h.kernel.scriptWork('submit-test', h.state().workflowId, h.state().script!.runId, { kind: 'swarm', key: 'crew', task: 'Fix bugs', maxTurns: 4,
+        lead: { name: 'boss', workspace: 'ws-boss' }, members: [{ name: 'keeper', workspace: 'ws-keeper', leads: ['gate'] }, { name: 'hand', workspace: 'ws-hand', queue: 'gate' }] });
+      await h.kernel.scriptWork('submit-test', h.state().workflowId, h.state().script!.runId, { kind: 'enqueue', key: 'gate-1', title: 'gate-1', input: {}, queue: 'gate' });
+      const turn = (name: string) => h.requests.find(request => h.state().agents!.find(agent => agent.agentId === request.task.agentId)?.key === name);
+      await vi.waitFor(async () => { await h.kernel.tick(); expect(['boss', 'keeper', 'hand'].map(name => Boolean(turn(name)))).toEqual([true, true, true]); });
+      await expect(h.send(turn('hand')!, 'submit_work', { front: 'mine is urgent' })).rejects.toThrow('Only a lead');
+      expect(h.lands).toHaveLength(1);
+      const submitting = [h.send(turn('boss')!, 'submit_work', { front: '  the tip fails the build for everyone ' }), h.send(turn('keeper')!, 'submit_work', { front: 'the gate script rejects every header' })];
+      await vi.waitFor(() => expect(h.lands).toHaveLength(3));
+      expect(h.lands.slice(1).map(input => [input.workspace, input.front]).sort()).toEqual([['ws-boss', 'the tip fails the build for everyone'], ['ws-keeper', 'the gate script rejects every header']]);
+      // The reason goes with the commits: the member is answered with it, and the claim the queue holds says it.
+      const boss = h.lands.findIndex(input => input.workspace === 'ws-boss');
+      h.lands[boss]!.submitted!(joined('bbb', 'ccc'));
+      expect(await submitting[0]).toMatchObject({ status: 'submitted', key: 'submitted-ccc', targetCommit: 'bbb', headCommit: 'ccc', front: 'the tip fails the build for everyone' });
+      expect(h.state().workQueue!.claims.find(claim => claim.landing?.headCommit === 'ccc')!.landing).toMatchObject({ front: 'the tip fails the build for everyone' });
     });
 
     it('lets no other member withdraw commits, and says when a train is already landing them or the queue has lost them', async () => {
