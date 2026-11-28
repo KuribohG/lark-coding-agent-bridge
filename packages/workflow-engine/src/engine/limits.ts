@@ -99,6 +99,12 @@ export const TRAIN_HALT_POLL_MS = 30_000;
  */
 export const TRAIN_SLOW_CHECK_FACTOR = 3;
 export const TRAIN_SLOW_CHECK_EXTRA_MS = 300_000;
+/**
+ * A train that has waited this long for its worktree, while something else has it, is reported to the main agent with
+ * what that is. Used until enough runs of the checks have passed to say how long one usually takes: from then on the
+ * wait is measured by that, with the margins of a slow check, since what the train waits for is a run of some checks.
+ */
+export const TRAIN_STALL_WAIT_MS = 600_000;
 /** How many of the latest check runs that passed say how long one usually takes, and how few are enough to say so. */
 export const TRAIN_USUAL_CHECKS = 20;
 export const TRAIN_USUAL_CHECKS_MIN = 3;

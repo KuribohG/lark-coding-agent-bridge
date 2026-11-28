@@ -836,6 +836,9 @@ function turnBack(state: WorkflowView, claim: ClaimView, now: number, back: { st
 
 /** What a submission is answered once the landing queue holds it, and the claim the engine holds for it from then on. */
 interface Submitted { response: unknown; claim: Record<string, unknown> }
+/** The commits a member handed to the landing queue, and what the claim keeps beside them for a restart (see `WorkClaim.landing`). */
+type SubmittedCommits = Pick<NonNullable<WorkClaim['landing']>, 'targetCommit' | 'headCommit' | 'commits'>;
+type SubmissionKept = Pick<NonNullable<WorkClaim['landing']>, 'workspace' | 'result'>;
 
 /** The claim of a submission the landing queue holds, named as the member named it. */
 function submission(state: WorkflowView, args: Record<string, unknown>): ClaimView {
@@ -850,17 +853,19 @@ function submission(state: WorkflowView, args: Record<string, unknown>): ClaimVi
  * (`completeSubmission`, `returnSubmission`). The answer is recorded for `operationId`, so a repeated call reads it.
  */
 export function submitClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number,
-  landing: Omit<NonNullable<WorkClaim['landing']>, 'since'>, worktree: string): Submitted {
+  landing: SubmittedCommits, worktree: string, kept: SubmissionKept = {}): Submitted {
   const operationId = scriptText(args.operationId, 'operationId', 160);
   const claim = ownedClaim(state, task, attemptId, args, now), item = itemById(state, claim.itemId);
   if ((state.workQueue?.operations ?? []).length >= WORK_MAX_OPERATIONS) throw new Error('Work operation limit reached');
-  emit(state, { type: 'claim_submitted', claimId: claim.id, landing: { since: now, ...landing } });
+  // The result is kept as the item will take it, so one it cannot take is refused before the commits join the queue.
+  const result = kept.result === undefined ? {} : { result: json(kept.result, 'Work result') };
+  emit(state, { type: 'claim_submitted', claimId: claim.id, landing: { since: now, ...landing, ...(kept.workspace ? { workspace: kept.workspace } : {}), ...result } });
   // A renewal, not the hand-over, is what a replay reads the lease from.
   emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(now + SUBMITTED_LEASE_MS, state.deadlineAt) });
   const response = { status: 'submitted', itemId: item.id, key: item.key, ...landing, worktree };
   emit(state, { type: 'work_operation_recorded', operation: { key: `${task.taskId}:${attemptId}:${operationId}`,
     digest: workflowDigest({ method: 'submit_work', claimId: claim.id, generation: claim.generation }), response } });
-  capacity(state, response);
+  capacity(state, response, result);
   return { response, claim: { claimId: claim.id, generation: claim.generation } };
 }
 
@@ -871,7 +876,7 @@ export function submitClaim(state: WorkflowView, task: TaskView, attemptId: stri
  * only if the queue turns the commits back.
  */
 export function trackSubmission(state: WorkflowView, task: TaskView, attemptId: string, operationId: unknown, now: number,
-  landing: Omit<NonNullable<WorkClaim['landing']>, 'since'>, worktree: string): Submitted {
+  landing: SubmittedCommits, worktree: string, kept: SubmissionKept = {}): Submitted {
   const operation = scriptText(operationId, 'operationId', 160);
   const work = state.workQueue;
   if ((work?.operations ?? []).length >= WORK_MAX_OPERATIONS) throw new Error('Work operation limit reached');
@@ -892,7 +897,7 @@ export function trackSubmission(state: WorkflowView, task: TaskView, attemptId: 
   // A task that is no persistent member has no agent: the claim names the task, and an item that comes back is anyone's.
   const claim: WorkClaim = { id: randomUUID(), itemId: item.id, agentId: task.agentId ?? `task:${task.taskId}`, taskId: task.taskId, attemptId, generation: 1, progress: 0, leaseUntil, status: 'active', createdAt: now };
   emit(state, { type: 'work_claimed', claim });
-  emit(state, { type: 'claim_submitted', claimId: claim.id, landing: { since: now, ...landing } });
+  emit(state, { type: 'claim_submitted', claimId: claim.id, landing: { since: now, ...landing, ...(kept.workspace ? { workspace: kept.workspace } : {}) } });
   emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil });
   const response = { status: 'submitted', itemId: item.id, key, ...landing, worktree };
   emit(state, { type: 'work_operation_recorded', operation: { key: `${task.taskId}:${attemptId}:${operation}`, digest: workflowDigest({ method: 'submit_work', headCommit: landing.headCommit }), response } });
@@ -952,13 +957,51 @@ export function submittedWork(state: WorkflowView, names?: readonly string[]): b
 }
 
 /**
- * The landing queue is held in memory, so a restart loses what waited in it. Every submission goes back to its member,
- * whose commits are where it left them.
+ * The landing queue is held in memory, so a restart loses what waited in it. Where nothing hands the submissions to
+ * the queue again (see `keepSubmissions`), every one goes back to its member, whose commits are where it left them.
  */
 export function returnSubmissions(state: WorkflowView, now: number): number {
   const lost = state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.landing) ?? [];
   for (const claim of lost) turnBack(state, claim, now, { status: 'lost', reason: SUBMISSION_LOST });
   return lost.length;
+}
+
+/**
+ * A restart emptied the landing queue while it held these submissions, and the workflow is replayed by itself: the
+ * engine keeps their claims until `until`, by when the queue has them again (`keptSubmissions`) and renews the
+ * leases as before. One the queue did not take back by then is lost like any other whose lease ran out.
+ */
+export function keepSubmissions(state: WorkflowView, until: number): number {
+  const kept = state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.landing) ?? [];
+  for (const claim of kept) emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: until });
+  return kept.length;
+}
+
+/** A submission the engine kept through a restart: its claim, and what the landing queue takes it back with. */
+export interface KeptSubmission {
+  claim: { claimId: string; generation: number };
+  key: string; member?: string;
+  /** The worktree the commits were submitted from; nothing when the workflow no longer says which it was. */
+  workspace?: string;
+  landing: NonNullable<WorkClaim['landing']>;
+}
+
+/** The submissions the engine holds for the landing queue, in the order they joined it. */
+export function keptSubmissions(state: WorkflowView): KeptSubmission[] {
+  return (state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.landing) ?? [])
+    .sort((a, b) => a.landing!.since - b.landing!.since)
+    .map(claim => {
+      const member = state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
+      // A submission made before the claim kept the worktree names the task that made it, which ran in that worktree.
+      const workspace = claim.landing!.workspace ?? state.tasks.find(task => task.taskId === claim.taskId)?.workspaceId;
+      return { claim: { claimId: claim.id, generation: claim.generation }, key: itemById(state, claim.itemId).key, ...(member ? { member } : {}), ...(workspace ? { workspace } : {}), landing: claim.landing! };
+    });
+}
+
+/** Keeps with the claim of an item that its commits were put at the head of the landing queue, for a restart. */
+export function frontSubmission(state: WorkflowView, itemId: string, reason: string, now: number): void {
+  const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && claim.landing && claim.itemId === itemId);
+  if (claim && !claim.landing!.front) emit(state, { type: 'claim_submitted', claimId: claim.id, landing: { ...claim.landing!, front: { reason: reason.slice(0, 800), at: now } } });
 }
 
 export function workContext(state: WorkflowView, task: TaskView): unknown {

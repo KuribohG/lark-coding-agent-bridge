@@ -124,6 +124,12 @@ export interface LandingView {
     train?: { submissions: number; step: 'stacking' | 'checking' | 'landing'; checks: number; since: number; front?: true };
     /** The train failed for a reason of its own (a Git command in its worktree) and runs again with its submissions kept. */
     retrying?: { failures: number; since: number; reason: string };
+    /**
+     * What has the train's worktree now and for how long, and what waits for it, in the order it gets it (see
+     * `LandingUse`). A train runs when its turn comes, so submissions that wait behind another use are not stuck: the
+     * use ends when its commands do. Absent while nothing has the worktree.
+     */
+    worktree?: LandingWorktree & { seconds: number };
     /** How long a run of the checks that passed has usually taken lately, in seconds; compare it with the checks' `timeoutMs`. */
     usualCheckSeconds?: number;
     /** The latest trains of the landing ledger, newest first, in short; `configure_landing({trains})` reads them in full. */
@@ -134,6 +140,20 @@ export interface LandingView {
       turnedBack?: Array<{ key?: string; member?: string; status: string }> }>;
   }>;
 }
+
+/**
+ * What takes turns in a train's worktree. `train`: a run of the train, which stacks submissions and checks them.
+ * `new checks`: configure_landing tries commands it was given on the branch head before the landing changes to them.
+ * `outside commits`: commits that reached the branch from outside the queue are checked before the queue vouches for
+ * them. `branch`: configure_landing restores or adopts the branch.
+ */
+export type LandingUse = 'train' | 'new checks' | 'outside commits' | 'branch';
+
+/**
+ * The use that has a train's worktree and since when, the uses that wait for it in the order they get it, and for a
+ * trial of new checks the commands it runs.
+ */
+export interface LandingWorktree { use: LandingUse; since: number; detail?: string; next: LandingUse[] }
 
 /**
  * One run of a train, as the landing ledger keeps it: what it carried, every run of the checks, and what became of
@@ -183,11 +203,12 @@ export interface LandingRider extends LandLabel {
 /**
  * The landing queue of one repository as it stands. The queue lives in the memory of the service, which writes this
  * to the workspace store whenever the queue changes, so that a reader outside it (the dashboard) can show what waits
- * and what the train is doing. `waiting` are the submissions behind the train, in the order they board: the ones
- * that were put at the head of the queue first, which ride a train of their own. `train` is the train that runs: the
- * submissions it took, in order (`taken` until their commits are in what the checks run on, `stacked` from then on,
- * and the status one was answered with after that), the runs of the checks so far, and the run that is going on.
- * `halted` is what the main agent was told of a branch the queue waits for.
+ * and what the train is doing. It is not what a restart reads the queue from: the claims of the submissions are, and
+ * the workflow puts them back (see `LandResume`). `waiting` are the submissions behind the train, in the order they
+ * board: the ones that were put at the head of the queue first, which ride a train of their own. `train` is the train
+ * that runs: the submissions it took, in order (`taken` until their commits are in what the checks run on, `stacked`
+ * from then on, and the status one was answered with after that), the runs of the checks so far, and the run that is
+ * going on. `halted` is what the main agent was told of a branch the queue waits for.
  */
 export interface LandingLive {
   repository: string;
@@ -205,6 +226,8 @@ export interface LandingLive {
   };
   retrying?: { failures: number; since: number; reason: string };
   halted?: string;
+  /** What has the train's worktree and what waits for it (see `LandingView`). */
+  worktree?: LandingWorktree;
 }
 
 /** A change configure_landing did not make, and why. */
@@ -230,6 +253,19 @@ export interface LandingChange {
 
 /** What a submission is for and whose it is, as the ledger and the notices to the main agent name it. */
 export interface LandLabel { key?: string; member?: string }
+
+/**
+ * A submission that was with the landing queue when its service stopped, as the workflow kept it with the claim of
+ * its item: the commits `targetCommit..headCommit` of `workspace`, which joined the queue at `since`. `front` is who
+ * had put it at the head of the queue and why, and when. `signal` takes it out of the queue again once nobody answers
+ * for it; `noticed` is what `LandInput` has. The queue takes it back in the order of `since`, the ones at its head first.
+ */
+export interface LandResume extends LandLabel {
+  workspace: string; targetCommit: string; headCommit: string; commits: number; since: number;
+  front?: { reason: string; at: number };
+  signal: AbortSignal;
+  noticed?: (notice: string, halted: boolean) => void;
+}
 
 /**
  * What became of a request to take a submission out of the landing queue. `withdrawn`: it left the queue, and a train

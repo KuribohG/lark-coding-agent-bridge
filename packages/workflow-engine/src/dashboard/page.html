@@ -430,6 +430,8 @@ const LAND = { landed: ['good', '已落地'], next: ['mute', '坐下一班'], ch
   lost: ['warn', '队列丢失'], rejected: ['serious', '被拒'], halted: ['warn', '分支停止'], taken: ['mute', '待叠入'], stacked: ['run', '已叠入'] };
 const TRAIN = { done: ['good', '跑完'], restacked: ['mute', '有撤回，重新组批'], preempted: ['mute', '让提到队首的提交先走'], halted: ['warn', '等分支处理'], retrying: ['warn', '自身出错，重跑'], failed: ['bad', '放弃整班'] };
 const STEP = { stacking: '组批中', checking: '检查中', landing: '推进分支' };
+// 列车工作树上轮流进行的几件事（LandingUse）：列车没开出时，占着工作树的是其中哪一件。
+const USE = { train: '列车', 'new checks': 'configure_landing 试跑新的检查命令', 'outside commits': '核对队列外的提交', branch: 'configure_landing 恢复或接受分支' };
 const TABS = [['overview', '总览'], ['members', '成员'], ['work', '工作项'], ['landing', '落地'], ['board', '留言板'], ['turns', '轮次'], ['plan', '方案'], ['journal', '事件日志']];
 const pair = (table, key) => table[key] || ['mute', key];
 
@@ -959,12 +961,17 @@ function paintLanding(d) {
   }
   for (const branch of d.branches) {
     const name = branch.repository.split('/').filter(Boolean).pop() || branch.repository, now = branch.live, train = now && now.train;
+    // 占着列车工作树的那件事，以及排在它后面的事里不是列车的那些。
+    const held = now && now.worktree, behind = held ? held.next.filter(use => use !== 'train') : [];
     blocks.push(card('落地队列 · ' + name, now ? ['实时状态写于 ', tick('ago', now.at)] : '没有实时队列状态', h('div', { class: 'body' }, h('dl', { class: 'kv' },
       h('dt', {}, '仓库'), h('dd', { class: 'mono' }, branch.repository),
       h('dt', {}, '落地分支'), h('dd', { class: 'mono' }, d.targetRef || '—'),
       h('dt', {}, '队列认可的头'), h('dd', {}, branch.landed ? copyable(branch.landed, short(branch.landed, 12)) : h('span', { class: 'faint' }, '还没有落地过')),
       h('dt', {}, '当前列车'), h('dd', {}, train ? [chip('run', STEP[train.step] || train.step, { pulse: true }), ` 本班 ${train.riders.length} 笔 · `, tick('for', train.since, '开出 '), train.base ? [' · 叠在 ', h('span', { class: 'mono' }, short(train.base, 10)), ' 上'] : null]
-        : now ? (now.halted ? chip('warn', '等分支处理') : now.waiting.length ? chip('warn', '等待开出') : chip('mute', '空闲')) : h('span', { class: 'faint' }, '未知')),
+        : now ? (now.halted ? chip('warn', '等分支处理') : held && held.use !== 'train' ? [chip('warn', now.waiting.length ? '等工作树' : '工作树在用', { pulse: true }), ` ${USE[held.use] || held.use} · `, tick('for', held.since, '已 ')]
+          : now.waiting.length ? chip('warn', '等待开出') : chip('mute', '空闲')) : h('span', { class: 'faint' }, '未知')),
+      held && (held.use !== 'train' || behind.length) ? [h('dt', {}, '列车工作树'), h('dd', {}, held.use === 'train' ? '列车在用' : [`${USE[held.use] || held.use}，跑完后列车自动开出，队列里的提交不会丢；不要重发同样的 configure_landing`,
+        held.detail ? h('div', { class: 'mono faint' }, held.detail) : null], behind.length ? h('div', {}, `其后排着：${held.next.map(use => USE[use] || use).join('、')}`) : null)] : null,
       train ? [h('dt', {}, '本班的检查'), h('dd', {}, probes(train.checks, train.checking), h('span', { class: 'faint' }, '　数字是被检查的那一叠里有前几笔提交；全叠不过时逐次对半找出第一笔坏的'))] : null)),
       train ? riderTable('riders:' + name, riderColumns(true), train.riders) : null));
     if (now) blocks.push(card('等下一班 · ' + name, `${now.waiting.length} 笔` + (d.batch ? ` · 每班最多 ${d.batch} 笔` : ''), riderTable('waiting:' + name, riderColumns(false), now.waiting, '没有等待的提交。')));

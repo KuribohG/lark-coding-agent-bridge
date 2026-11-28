@@ -476,9 +476,12 @@ export interface WorkClaim {
    * The member handed the commits for this item to the landing queue and went on to other work. The engine holds the
    * claim from then on: it is not the item the member is at work on, does not end with the member's turn, and cannot
    * be used by the member. It completes the item when the commits land and returns the item to the member when the
-   * queue turns them back.
+   * queue turns them back. The rest is what a restart hands the commits to the queue again with, since the queue
+   * itself is held in memory: the worktree they were submitted from, the result the item is completed with when the
+   * member gave one, and who put them at the head of the queue (expedite_work), why and when.
    */
-  landing?: { since: number; targetCommit: string; headCommit: string; commits: number };
+  landing?: { since: number; targetCommit: string; headCommit: string; commits: number;
+    workspace?: string; result?: unknown; front?: { reason: string; at: number } };
   /**
    * A host restart cut short the turn that holds this claim. Until its member's next attempt adopts the claim, or
    * this time passes, the claim keeps its item, cannot be used, and does not expire by lease.
@@ -863,6 +866,13 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   land?(state: WorkspaceStateView, input: { workspace: string; taskId: string;
     submitted?: (info: { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }) => { key?: string; member?: string } | void;
     noticed?: (notice: string, halted: boolean) => void }, signal: AbortSignal): Promise<unknown>;
+  /**
+   * Hands submissions to the landing queue again that were with it when the bridge stopped, each as the claim of its
+   * item kept it (LandResume, workspace-types.ts). Resolves to a promise for each, in the order given, that resolves
+   * to a LandReport as `land` does, and rejects for one the queue cannot take back.
+   */
+  reboard?(state: WorkspaceStateView, inputs: Array<{ workspace: string; targetCommit: string; headCommit: string; commits: number; since: number; key?: string; member?: string;
+    front?: { reason: string; at: number }; signal: AbortSignal; noticed?: (notice: string, halted: boolean) => void }>): Promise<Array<Promise<unknown>>>;
   /**
    * Puts the worktree of the task where the item it has just claimed starts: on the commits the landing queue turned
    * back for the item (`commits`, as `base..head`), or else at the tip of the landing branch. Resolves to a

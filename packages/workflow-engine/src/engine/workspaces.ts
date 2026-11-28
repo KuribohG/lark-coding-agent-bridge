@@ -4,13 +4,13 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { access, mkdir, realpath, rm, rmdir, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
-import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_HALT_POLL_MS, TRAIN_LEDGER_KEPT, TRAIN_RETRY_DELAYS_MS, TRAIN_SLOW_CHECK_EXTRA_MS, TRAIN_SLOW_CHECK_FACTOR, TRAIN_STALE_LOCK_MS, TRAIN_USUAL_CHECKS, TRAIN_USUAL_CHECKS_MIN, WORKSPACE_CHECKOUT_PROCESSES, WORKSPACE_CHECKOUT_SLOTS, WORKSPACE_LARGE_CHECKOUTS } from './limits';
+import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, TRAIN_HALT_POLL_MS, TRAIN_LEDGER_KEPT, TRAIN_RETRY_DELAYS_MS, TRAIN_SLOW_CHECK_EXTRA_MS, TRAIN_SLOW_CHECK_FACTOR, TRAIN_STALE_LOCK_MS, TRAIN_STALL_WAIT_MS, TRAIN_USUAL_CHECKS, TRAIN_USUAL_CHECKS_MIN, WORKSPACE_CHECKOUT_PROCESSES, WORKSPACE_CHECKOUT_SLOTS, WORKSPACE_LARGE_CHECKOUTS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { largeCheckout, writeCheckout, type CheckoutGit } from './workspace-checkout';
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import { WsfsMounts, type WsfsOwner } from './workspace-wsfs';
 import type { WorkflowProcesses } from './ports';
-import type { LandingChange, LandingHead, LandingLive, LandingOverride, LandingRefusal, LandingRider, LandingTrain, LandingView, LandExpedite, LandLabel, LandPosition, LandReport, LandSubmitted, LandWithdrawal, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandingChange, LandingHead, LandingLive, LandingOverride, LandingRefusal, LandingRider, LandingTrain, LandingUse, LandingView, LandingWorktree, LandExpedite, LandLabel, LandPosition, LandReport, LandResume, LandSubmitted, LandWithdrawal, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
@@ -137,6 +137,8 @@ interface Train { queue: Candidate[]; running: boolean; trouble?: TrainTrouble; 
   halted?: string;
   /** Ends the wait the train is in, when something it waits for may have changed. */
   wake?: () => void }
+/** One use of a train's worktree (see `LandingUse`): `began` once its turn has come, `detail` what it runs there. */
+interface TrainUse { use: LandingUse; began?: number; detail?: string }
 /**
  * What a task is doing in its worktree to submit its commits: the rebase, the screening and the precheck, until the
  * commits have joined the queue. A repeated call joins it; `detach` ends it, so the task can submit again there.
@@ -167,7 +169,7 @@ export interface WorkspacePlaces {
   /** The directory wsfs workspaces keep what they change in, asked for when a workflow's first one in a repository is made. */
   wsfsStateRoot?: () => string | undefined;
 }
-export interface TrainTiming { retryDelaysMs: readonly number[]; staleLockMs: number; haltPollMs: number; slowCheckFactor: number; slowCheckExtraMs: number }
+export interface TrainTiming { retryDelaysMs: readonly number[]; staleLockMs: number; haltPollMs: number; slowCheckFactor: number; slowCheckExtraMs: number; stallWaitMs: number }
 /** What Git says when the index of a worktree cannot be read at all. */
 const INDEX_UNREADABLE = /index file smaller than expected|index file corrupt|bad index file sha1 signature|bad signature 0x|bad index version/;
 type CheckFailure = { commands: WorkspaceChecks['commands']; reason?: string };
@@ -199,6 +201,11 @@ export class WorkflowWorkspaces {
   private readonly stopping = new AbortController();
   /** The last piece of work that uses each train's worktree; a train and a trial of new checks take turns there. */
   private readonly tracks = new Map<string, Promise<unknown>>();
+  /**
+   * What takes those turns, in their order: the first has the worktree since `began`, the others wait for it. The
+   * main agent and the dashboard are shown it, so that a train that waits its turn is not taken for one that stopped.
+   */
+  private readonly uses = new Map<string, TrainUse[]>();
   /** What the main agent has yet to hear about each train's branch; it travels with the next reports. */
   private readonly unsaid = new Map<string, string>();
   /** The landing in progress in each worktree and when it began; a repeated submission joins it. */
@@ -232,7 +239,7 @@ export class WorkflowWorkspaces {
 
   constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses, timing: Partial<TrainTiming> = {}, private readonly places: WorkspacePlaces = {}) {
     this.timing = { retryDelaysMs: TRAIN_RETRY_DELAYS_MS, staleLockMs: TRAIN_STALE_LOCK_MS, haltPollMs: TRAIN_HALT_POLL_MS,
-      slowCheckFactor: TRAIN_SLOW_CHECK_FACTOR, slowCheckExtraMs: TRAIN_SLOW_CHECK_EXTRA_MS, ...timing };
+      slowCheckFactor: TRAIN_SLOW_CHECK_FACTOR, slowCheckExtraMs: TRAIN_SLOW_CHECK_EXTRA_MS, stallWaitMs: TRAIN_STALL_WAIT_MS, ...timing };
     this.mounts = new WsfsMounts(directory, processes, () => this.places.wsfsStateRoot?.());
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
@@ -1166,7 +1173,7 @@ export class WorkflowWorkspaces {
     let branch = await this.refHead(ws.repository, targetRef, signal);
     // A branch the queue does not vouch for is looked at before the member's commits are rebased onto it.
     if ((this.vouched(ws, targetRef, branch)?.head ?? branch) !== branch) {
-      const verdict = await this.exclusive(this.trainKey(ws), () => this.inspect(landing, ws, ctx.state.deadlineAt));
+      const verdict = await this.exclusive(this.trainKey(ws), 'outside commits', () => this.inspect(landing, ws, ctx.state.deadlineAt));
       if (verdict.halt) return this.halted(targetRef, verdict);
       branch = verdict.head;
     }
@@ -1274,8 +1281,65 @@ export class WorkflowWorkspaces {
     return (await this.git(path, ['config', 'user.email'], signal, true)).stdout.trim() ? [] : ['-c', 'user.name=Bridge workflow', '-c', 'user.email=workflow@localhost'];
   }
 
+  /**
+   * Takes back the submissions of a workflow that were with the queue when its service stopped (see `LandResume`). The
+   * queue is held in memory, so a restart empties it; the commits of each submission are still under the ref they
+   * joined it by, and the workflow kept with each claim what the queue needs to carry them again. They join in the
+   * order they had, the ones that were at the head of the queue first, without the rebase, the screening and the
+   * precheck they went through before: a train stacks them on the branch as it is now and checks them like any other.
+   * One whose commits landed before the stop is answered `landed` with nothing new, since stacking it changes nothing.
+   * Returns a promise for each submission, in the order given, that settles as `land` does. It rejects for one whose
+   * commits are not in the repository any more or whose worktree is not one of this workflow's.
+   */
+  reboard(state: WorkspaceContext['state'], inputs: LandResume[]): Array<Promise<LandReport>> {
+    if (this.closed) return inputs.map(() => Promise.reject(new Error('Workspace service is closed')));
+    const workflow = state.workflowId, digest = workflowDigest(state.root), { signal } = this.stopping;
+    const answers = inputs.map(() => { let settle!: { resolve(report: LandReport): void; reject(error: unknown): void }; return { promise: new Promise<LandReport>((resolve, reject) => { settle = { resolve, reject }; }), settle }; });
+    const taking = (async () => {
+      const found = inputs.map(input => {
+        try { const ws = this.value<WorkspaceBinding>(input.workspace, workflow, 'workspace'); return ws.kind === 'task' && ws.rootDigest === digest ? ws : undefined; }
+        catch { return undefined; }
+      });
+      // One listing per repository: a queue holds hundreds of submissions, and a command for each would take minutes.
+      const kept = new Map<string, Set<string>>();
+      for (const ws of found) {
+        if (!ws || kept.has(ws.repository)) continue;
+        const heads = new Set<string>();
+        await this.git(ws.repository, ['for-each-ref', '--format=%(objectname)', `refs/bridge-workflow/${workflow}/work/`], signal, false, undefined, { scan: records(line => { if (line.trim()) heads.add(line.trim()); }, '\n') });
+        kept.set(ws.repository, heads);
+      }
+      // A submission that was answered as the service stopped has lost its ref and not yet its claim. Its commits
+      // are in the repository until Git collects them: they are kept again, and a train says what became of them.
+      for (const [at, input] of inputs.entries()) {
+        const ws = found[at];
+        if (!ws || kept.get(ws.repository)!.has(input.headCommit) || !/^[0-9a-f]{40,64}$/.test(input.headCommit)) continue;
+        if ((await this.git(ws.repository, ['cat-file', '-e', `${input.headCommit}^{commit}`], signal, true)).code) continue;
+        await this.git(ws.repository, ['update-ref', this.workRef(ws, input.headCommit), input.headCommit], signal);
+        kept.get(ws.repository)!.add(input.headCommit);
+      }
+      const order = inputs.map((_, at) => at).sort((a, b) => inputs[a]!.since - inputs[b]!.since || a - b);
+      const turns = new Map(order.filter(at => inputs[at]!.front).sort((a, b) => inputs[a]!.front!.at - inputs[b]!.front!.at).map(at => [at, ++this.expedited]));
+      const trains = new Set<Train>();
+      // All of them board before a train takes its first batch, which it does once this has run.
+      for (const at of order) {
+        const input = inputs[at]!, ws = found[at], { settle } = answers[at]!;
+        if (!ws) { settle.reject(new Error(`Worktree ${input.workspace} is not a task worktree of this workflow any more`)); continue; }
+        if (!kept.get(ws.repository)!.has(input.headCommit)) { settle.reject(new Error(`The submitted commits ${input.targetCommit}..${input.headCommit} are not in ${ws.repository} any more`)); continue; }
+        if (input.signal.aborted) { settle.reject(input.signal.reason); continue; }
+        const label: LandLabel = { ...(input.key ? { key: input.key } : {}), ...(input.member ? { member: input.member } : {}) };
+        this.board({ ws, base: input.targetCommit, head: input.headCommit, commits: input.commits, ctx: { state, signal: AbortSignal.any([input.signal, signal]) },
+          ...(input.noticed ? { noticed: input.noticed } : {}), ...(label.key || label.member ? { label } : {}),
+          ...(input.front ? { front: { reason: input.front.reason, turn: turns.get(at)! } } : {}) }, input.since).then(settle.resolve, settle.reject);
+        trains.add(this.trains.get(this.trainKey(ws))!);
+      }
+      for (const train of trains) this.headFirst(train);
+    })().catch(error => { for (const { settle } of answers) settle.reject(error); });
+    this.pending.add(taking); void taking.finally(() => this.pending.delete(taking));
+    for (const { promise } of answers) void promise.catch(() => {});
+    return answers.map(answer => answer.promise);
+  }
   /** Queues a submission for the next train of its workflow and repository; settles when a train has dealt with it. */
-  private board(change: Omit<Candidate, 'resolve' | 'reject' | 'queued'>): Promise<LandReport> {
+  private board(change: Omit<Candidate, 'resolve' | 'reject' | 'queued'>, queued = Date.now()): Promise<LandReport> {
     const key = `${change.ws.workflowId}:${change.ws.commonDir}`, { signal } = change.ctx;
     const train: Train = this.trains.get(key) ?? { queue: [], running: false }, { queue } = train;
     this.trains.set(key, train);
@@ -1290,7 +1354,7 @@ export class WorkflowWorkspaces {
         const dropped = this.git(change.ws.repository, ['update-ref', '-d', this.workRef(change.ws, change.head)], new AbortController().signal, true).then(() => {}, () => {});
         this.pending.add(dropped); void dropped.finally(() => this.pending.delete(dropped));
       };
-      const candidate: Candidate = { ...change, queued: Date.now(), resolve: settled<LandReport>(resolve, report => report.status), reject: settled<unknown>(reject, () => 'failed') };
+      const candidate: Candidate = { ...change, queued, resolve: settled<LandReport>(resolve, report => report.status), reject: settled<unknown>(reject, () => 'failed') };
       signal.addEventListener('abort', leave, { once: true });
       queue.push(candidate);
       this.mirror(key);
@@ -1305,7 +1369,9 @@ export class WorkflowWorkspaces {
     while (train.queue.length && !this.closed) {
       let wait: number | undefined;
       // The landing is read once the worktree is free: a change the main agent made meanwhile applies to this train.
-      await this.exclusive(key, async () => {
+      const waited = this.stalled(key, train);
+      await this.exclusive(key, 'train', async () => {
+        waited();
         if (!train.queue.length) return;
         const landing = this.landing(train.queue[0]!.ws.workflowId);
         // The submissions that were put at the head of the queue ride without the others: nothing of theirs is then
@@ -1439,11 +1505,59 @@ export class WorkflowWorkspaces {
   }
 
   /** Runs `work` once everything queued before it for the same train's worktree has finished. */
-  private exclusive<T>(key: string, work: () => Promise<T>): Promise<T> {
-    const turn = (this.tracks.get(key) ?? Promise.resolve()).catch(() => undefined).then(work);
+  private exclusive<T>(key: string, use: LandingUse, work: () => Promise<T>, detail?: string): Promise<T> {
+    const entry: TrainUse = { use, ...(detail ? { detail } : {}) }, line = this.uses.get(key) ?? [];
+    line.push(entry); this.uses.set(key, line);
+    const turn = (this.tracks.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => { entry.began = Date.now(); this.mirror(key); return work(); });
     this.tracks.set(key, turn);
-    void turn.catch(() => undefined).finally(() => { if (this.tracks.get(key) === turn) this.tracks.delete(key); });
+    void turn.catch(() => undefined).finally(() => {
+      line.splice(line.indexOf(entry), 1);
+      if (!line.length && this.uses.get(key) === line) this.uses.delete(key);
+      if (this.tracks.get(key) === turn) this.tracks.delete(key);
+      this.mirror(key);
+    });
     return turn;
+  }
+
+  /** What has a train's worktree and what waits for it, for whoever is shown the queue; nothing while it is free. */
+  private worktreeUse(key: string): LandingWorktree | undefined {
+    const line = this.uses.get(key), holder = line?.[0];
+    return holder?.began === undefined ? undefined
+      : { use: holder.use, since: holder.began, ...(holder.detail ? { detail: holder.detail } : {}), next: line!.slice(1).map(entry => entry.use) };
+  }
+  /**
+   * Watches a train that waits for its worktree, and tells the main agent what has the worktree once the wait has
+   * lasted far longer than a run of the checks usually takes. A train that waits its turn shows no run, no halt and
+   * no retry, which reads as a train that died; whoever takes it for that sends the change of the checks again, which
+   * queues another trial of them, or restarts the bridge. Returns what ends the watch.
+   */
+  private stalled(key: string, train: Train): () => void {
+    const first = train.queue[0];
+    if (!first) return () => {};
+    let usual: number | undefined;
+    // Like the ledger it reads, the watch is no part of the landing: a train runs whether or not it can be set.
+    try { const landing = this.landing(first.ws.workflowId); usual = landing && this.usualCheckMs(first.ws, landing.commands); } catch { /* nothing to measure by */ }
+    const after = usual === undefined ? this.timing.stallWaitMs : Math.max(usual * this.timing.slowCheckFactor, usual + this.timing.slowCheckExtraMs);
+    const began = Date.now();
+    const timer = setTimeout(() => {
+      const held = this.worktreeUse(key);
+      if (!held || !train.queue.length) return;
+      const span = (ms: number) => ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} 秒` : `${Math.round(ms / 60_000)} 分钟`;
+      const named: Record<LandingUse, string> = { train: '列车', 'new checks': 'configure_landing 在分支头上试跑新的检查命令', 'outside commits': '核对分支上来自队列外的提交', branch: 'configure_landing 在恢复或接受分支' };
+      // The uses take turns in the order they asked: what asked before this train runs first, the rest after its next run.
+      const turn = held.next.indexOf('train'), ahead = turn < 0 ? held.next : held.next.slice(0, turn), later = turn < 0 ? [] : held.next.slice(turn + 1);
+      const notice = `落地列车（${first.ws.repository}）已经等了 ${span(Date.now() - began)} 没有开出，队列里有 ${train.queue.length} 笔提交。列车没有停：它的工作树正被占用（${named[held.use]}，已 ${span(Date.now() - held.since)}`
+        + (held.detail ? `，命令：${held.detail}` : '') + '）'
+        + (ahead.length ? `，在列车前面还排着 ${ahead.length} 项（${ahead.map(use => named[use]).join('、')}）` : '')
+        + (later.length ? `，列车开出一班之后还排着 ${later.length} 项（${later.map(use => named[use]).join('、')}）` : '')
+        + '。占用结束后列车自动开出，队列里的提交不会丢。'
+        + '不要再发一次同样的 configure_landing：每次改 checks 或 precheck 的调用都会再排一轮完整的试跑，和列车轮流用工作树，结束调用它的命令也不会取消已经排上的试跑。也不要为此重启 bridge。'
+        + 'configure_landing({}) 的 branches[].worktree 给出此刻占用工作树的是什么、占了多久、后面排着什么。';
+      const hears = train.queue.find(candidate => candidate.noticed);
+      if (hears) hears.noticed!(notice, false); else this.say(key, notice);
+    }, after);
+    timer.unref();
+    return () => clearTimeout(timer);
   }
   private trainKey(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>): string { return `${ws.workflowId}:${ws.commonDir}`; }
   private headKey(commonDir: string): string { return `@landing-head/${workflowDigest(commonDir).slice(0, 16)}`; }
@@ -1744,7 +1858,7 @@ export class WorkflowWorkspaces {
    */
   private mirror(key: string): void {
     try {
-      const train = this.trains.get(key), known = this.lives.get(key), run = train?.current;
+      const train = this.trains.get(key), known = this.lives.get(key), run = train?.current, held = this.worktreeUse(key);
       const any = (run?.batch[0] ?? train?.queue[0])?.ws;
       const workflow = any?.workflowId ?? known?.workflow, repository = any?.repository ?? known?.repository;
       if (!workflow || !repository) return;
@@ -1755,7 +1869,7 @@ export class WorkflowWorkspaces {
           riders: run.batch.map(candidate => ({ ...rider(candidate), state: candidate.settled ? candidate.outcome ?? 'failed' : run.stack.includes(candidate) || run.held.has(candidate) ? 'stacked' : 'taken' })),
           checks: run.probes, ...(run.checking ? { checking: run.checking } : {}) } } : {}),
         ...(train?.trouble ? { retrying: { failures: train.trouble.failures, since: train.trouble.since, reason: train.trouble.reason } } : {}),
-        ...(train?.halted ? { halted: train.halted.slice(0, 2000) } : {}) };
+        ...(train?.halted ? { halted: train.halted.slice(0, 2000) } : {}), ...(held ? { worktree: held } : {}) };
       const data = JSON.stringify(live);
       if (known?.data === data) return;
       this.lives.set(key, { workflow, repository, data });
@@ -1943,7 +2057,7 @@ export class WorkflowWorkspaces {
     const repos = this.landingRepositories(workflow, ctx.state.root);
     const settled: NonNullable<LandingChange['settled']> = [];
     if (input.branch) for (const ws of repos) {
-      const outcome = await this.exclusive(this.trainKey(ws), () => this.settle(ws, base.targetRef, input.branch as 'restore' | 'adopt', signal));
+      const outcome = await this.exclusive(this.trainKey(ws), 'branch', () => this.settle(ws, base.targetRef, input.branch as 'restore' | 'adopt', signal));
       if (outcome) settled.push(outcome);
     }
     // A train that waits for the branch to be settled looks at it again now.
@@ -1957,7 +2071,8 @@ export class WorkflowWorkspaces {
     const apply = (index: number): Promise<LandingRefusal | undefined> => {
       if (index === repos.length) { if (changed) this.put(workflow, LANDING_OVERRIDE, 'landing-override', next); return Promise.resolve(undefined); }
       if (!fresh.length) return apply(index + 1);
-      return this.exclusive(this.trainKey(repos[index]!), async () => await this.tryOn(repos[index]!, base.targetRef, fresh, ctx.state.deadlineAt, signal) ?? apply(index + 1));
+      return this.exclusive(this.trainKey(repos[index]!), 'new checks', async () => await this.tryOn(repos[index]!, base.targetRef, fresh, ctx.state.deadlineAt, signal) ?? apply(index + 1),
+        fresh.map(command => command.argv.join(' ').slice(0, 160)).join('；').slice(0, 480));
     };
     const refused = changed ? await apply(0) : undefined;
     return { changed: changed && !refused, ...(refused ? { refused } : {}), ...(settled.length ? { settled } : {}),
@@ -2009,7 +2124,7 @@ export class WorkflowWorkspaces {
     for (const ws of repos) {
       const head = await this.refHead(ws.repository, landing.targetRef, signal);
       const known = this.vouched(ws, landing.targetRef, head);
-      const train = this.trains.get(this.trainKey(ws));
+      const train = this.trains.get(this.trainKey(ws)), held = this.worktreeUse(this.trainKey(ws));
       const usual = this.usualCheckMs(ws, landing.commands, train?.current), seconds = (ms: number) => Math.round(ms / 1000);
       const recent = this.ledger(ws.workflowId, 5, ws.repository).map(past => {
         const back = past.submissions.filter(entry => !['landed', 'next'].includes(entry.outcome));
@@ -2022,6 +2137,7 @@ export class WorkflowWorkspaces {
         ...(train?.current ? { train: { submissions: train.current.batch.length, step: train.current.step, checks: train.current.checks, since: train.current.since,
           ...(train.current.batch.some(candidate => candidate.front !== undefined) ? { front: true as const } : {}) } } : {}),
         ...(train?.trouble ? { retrying: { failures: train.trouble.failures, since: train.trouble.since, reason: train.trouble.reason } } : {}),
+        ...(held ? { worktree: { ...held, seconds: seconds(Date.now() - held.since) } } : {}),
         ...(usual === undefined ? {} : { usualCheckSeconds: seconds(usual) }), ...(recent.length ? { recent } : {}) });
     }
     const names: Record<keyof LandingOverride, string> = { commands: 'checks', precheck: 'precheck', protect: 'protect', batch: 'batch' };

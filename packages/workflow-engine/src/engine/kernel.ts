@@ -10,6 +10,7 @@ import { settleEventWaits } from './event-waits';
 import { BUSY } from './kernel-state';
 import { scratchSlots } from './scratch';
 import { WorkflowStore } from './kernel-store';
+import { resumeSubmissions } from './tools/work-queue';
 import type { NativeIdKind, WorkflowCaller, WorkflowEvent, WorkflowHost, WorkflowLogger, WorkflowState, WorkflowView } from './types';
 import { WorkerHosts, type WorkerHostRecord } from './worker-hosts';
 
@@ -220,9 +221,24 @@ export class WorkflowKernel {
     return this.ctx.scripts.plan(scopeId, workflowId);
   }
 
-  /** Replays root scripts that a restart interrupted mid-run; anything else still waits for an explicit replay. */
-  resumeAfterRestart(): Promise<Array<{ state: WorkflowState; resumed: boolean; reason?: string }>> {
-    return this.ctx.recovery.resumeAfterRestart();
+  /**
+   * Replays root scripts that a restart interrupted mid-run; anything else still waits for an explicit replay. The
+   * landing queue of a workflow that is replayed is handed what it held when the bridge stopped: `requeued` is how
+   * many submissions.
+   */
+  async resumeAfterRestart(): Promise<Array<{ state: WorkflowState; resumed: boolean; reason?: string; requeued?: number }>> {
+    const outcomes: Array<{ state: WorkflowState; resumed: boolean; reason?: string; requeued?: number }> = [];
+    for (const outcome of await this.ctx.recovery.resumeAfterRestart()) {
+      let requeued = 0;
+      const root = outcome.resumed ? this.ctx.store.state(outcome.state.root.scopeId, outcome.state.workflowId) : undefined;
+      for (const member of root ? this.ctx.store.tree(root).map(member => ({ scopeId: member.root.scopeId, workflowId: member.workflowId })) : []) {
+        // A queue that cannot be handed its submissions leaves them to their leases, which return them to the members.
+        requeued += await resumeSubmissions(this.ctx, member.scopeId, member.workflowId)
+          .catch(error => { this.ctx.log.warn('workflow.landing.resume_failed', { workflowId: member.workflowId, error: error instanceof Error ? error.message : String(error) }); return 0; });
+      }
+      outcomes.push({ ...outcome, ...(requeued ? { requeued } : {}) });
+    }
+    return outcomes;
   }
 
   hasWake(scopeId: string): boolean {

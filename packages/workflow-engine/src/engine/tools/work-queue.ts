@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { CONTROL_ARGS } from './control-args';
 import { LANDING_HALTED, pushEvent, requireState } from '../kernel-state';
-import { assigned, closeWorkQueue, completeSubmission, enqueueFromMember, enqueueWork, heldWork, holdClaim, holdSubmission, mutateWork, returnSubmission, submitClaim, submittedCommits, trackSubmission, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
+import { assigned, closeWorkQueue, completeSubmission, enqueueFromMember, enqueueWork, frontSubmission, heldWork, holdClaim, holdSubmission, keptSubmissions, mutateWork, returnSubmission, submitClaim, submittedCommits, trackSubmission, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
 import { taskAgent } from '../durable-agents';
 import { queueName } from '../work-routing';
 import { boundedInteger, scriptText } from '../script-contract';
@@ -182,9 +182,11 @@ const submitWork: WorkflowTool = {
         // is answered. When it cannot (the claim ended meanwhile) this throws, and the commits stay in the worktree.
         const submitted = (info: { targetCommit: string; headCommit: string; commits: number; worktree: string }) => {
           const landing = { targetCommit: info.targetCommit, headCommit: info.headCommit, commits: info.commits };
+          // What a restart hands the commits to the queue again with (see `resumeSubmissions`).
+          const kept = { workspace: start.workspace, ...(args.result === undefined ? {} : { result: args.result }) };
           const taken = bound((state, task) => ({ member: taskAgent(state, task)?.key,
-            ...(claim ? submitClaim(state, task, caller.attemptId, { operationId, ...claim }, ctx.now(), landing, info.worktree)
-              : trackSubmission(state, task, caller.attemptId, operationId, ctx.now(), landing, info.worktree)) }));
+            ...(claim ? submitClaim(state, task, caller.attemptId, { operationId, ...claim }, ctx.now(), landing, info.worktree, kept)
+              : trackSubmission(state, task, caller.attemptId, operationId, ctx.now(), landing, info.worktree, kept)) }));
           engine = taken.claim;
           answerWith(taken.response);
           // What the queue calls these commits in its ledger and when it tells the main agent of them.
@@ -272,12 +274,83 @@ async function expediteWork<Task>(ctx: KernelContext, args: ToolArgs, by: string
   const { itemId, key } = commits;
   if (!('headCommit' in commits)) return { ...commits, status: 'absent', item: commits.status, note: 'The landing queue holds no commits of this item. Commits are put first once submit_work has answered `submitted` for them; work_status shows how the item stands.' };
   if (!ctx.host.expedite) throw new Error('Landing is unavailable in this workflow');
-  const outcome = await ctx.host.expedite(view, { headCommit: commits.headCommit, reason: `Put first by ${by}: ${reason}` });
+  const why = `Put first by ${by}: ${reason}`;
+  const outcome = await ctx.host.expedite(view, { headCommit: commits.headCommit, reason: why });
+  // The claim keeps it: a restart empties the queue, and what is handed to it again goes where it was.
+  if (outcome === 'expedited') try { read(state => frontSubmission(state, itemId, why, ctx.now())); } catch { /* the queue answered the commits meanwhile */ }
   if (outcome === 'landing') return { status: 'landing', itemId, key, note: 'The train that carries these commits has passed the checks and is moving the branch: they land without waiting any further.' };
   if (outcome === 'absent') return { status: 'absent', itemId, key, note: 'The landing queue no longer holds these commits: it has answered them meanwhile, or lost them in a restart. work_status shows how the item stands.' };
   return { status: 'expedited', itemId, key, ...(commits.member ? { member: commits.member } : {}), commits: `${commits.targetCommit}..${commits.headCommit}` };
 }
 
+/**
+ * Hands the submissions of a workflow to the landing queue again after a restart that emptied it. The queue is held
+ * in memory; what it was holding is kept with the claims (`keepSubmissions`) and under the refs the commits joined it
+ * by. Called once the restart has replayed the workflow's script, it does for each submission what submit_work did
+ * from the moment the commits joined the queue: it renews the lease while the queue has them, completes the item
+ * when they land and returns it to its member when they are turned back. One the queue cannot take back is returned
+ * as lost. Resolves to how many the queue was handed.
+ */
+export async function resumeSubmissions(ctx: KernelContext, scopeId: string, workflowId: string): Promise<number> {
+  const inState = <T>(change: (state: WorkflowView) => T): T => ctx.store.transact(() => change(requireState(ctx.store.state(scopeId, workflowId))), 'landing:resume');
+  const start = inState(state => ({ view: ctx.store.workspaceView(state), kept: keptSubmissions(state) }));
+  if (!start.kept.length) return 0;
+  const lose = (claim: Record<string, unknown>, reason: string, status = 'lost') => {
+    try { inState(current => returnSubmission(current, claim, ctx.now(), { status, reason })); } catch { /* ended meanwhile */ }
+  };
+  const lost = 'The bridge restarted and the landing queue could not take this submission back';
+  const takable = ctx.host.reboard ? start.kept.filter(kept => kept.workspace) : [];
+  for (const kept of start.kept) if (!takable.includes(kept)) lose(kept.claim, `${lost}. The commits are untouched: claim_work puts them back into your worktree; submit them again.`);
+  if (!takable.length) return 0;
+  // What takes each out of the queue once nobody answers for it, and the ones the queue has yet to answer.
+  const stops = new Map(takable.map(kept => [kept, new AbortController()])), open = new Set(takable);
+  // The script the restart replayed is queued before it runs; the queue keeps the commits through that as well.
+  const hold = () => {
+    try {
+      inState(current => {
+        if (current.status !== 'active' || !['queued', 'running'].includes(current.script?.status ?? '') || ctx.now() >= current.deadlineAt) throw new Error('Workflow is inactive');
+        for (const kept of open) try { holdSubmission(current, kept.claim, ctx.now()); } catch (error) { stops.get(kept)!.abort(error); open.delete(kept); }
+      });
+    } catch (error) { for (const kept of open) stops.get(kept)!.abort(error); open.clear(); }
+    if (!open.size) clearInterval(timer);
+  };
+  const timer = setInterval(hold, LAND_LEASE_MS / 4);
+  timer.unref();
+  const raise = (notice: string, halted: boolean) => {
+    try {
+      inState(state => {
+        if (!state.events.some(event => event.kind === 'landing_attention' && !event.acknowledged && event.summary === notice)) pushEvent(state, { kind: 'landing_attention', summary: notice, ...(halted ? { subject: LANDING_HALTED } : {}) }, ctx.now);
+      });
+    } catch { /* nobody is left to say it through */ }
+  };
+  let reports: Array<Promise<unknown>>;
+  try {
+    hold();
+    reports = await ctx.host.reboard!(start.view, takable.map(kept => ({ workspace: kept.workspace!, targetCommit: kept.landing.targetCommit, headCommit: kept.landing.headCommit, commits: kept.landing.commits, since: kept.landing.since,
+      key: kept.key, ...(kept.member ? { member: kept.member } : {}), ...(kept.landing.front ? { front: kept.landing.front } : {}), signal: stops.get(kept)!.signal, noticed: raise })));
+  } catch (error) {
+    clearInterval(timer);
+    if (!ctx.closed) for (const kept of takable) lose(kept.claim, `${lost}: ${error instanceof Error ? error.message : String(error)}`);
+    return 0;
+  }
+  takable.forEach((kept, at) => void (async () => {
+    let report;
+    try { report = await (reports[at] ?? Promise.reject(new Error(lost))) as { status: string; headCommit?: string; commits?: number; reason?: string; notice?: string }; }
+    catch (error) {
+      // The queue gave the commits up or could not take them. A service that is closing leaves them to the next restart.
+      if (!ctx.closed) lose(kept.claim, error instanceof Error ? error.message : String(error), 'failed');
+      return;
+    }
+    finally { open.delete(kept); if (!open.size) clearInterval(timer); }
+    const { notice, ...rest } = report;
+    if (notice) raise(notice, rest.status === 'halted');
+    try {
+      if (rest.status === 'landed') inState(current => completeSubmission(current, kept.claim, kept.landing.result ?? { headCommit: rest.headCommit, commits: rest.commits }, ctx.now()));
+      else inState(current => returnSubmission(current, kept.claim, ctx.now(), { status: rest.status, reason: rest.reason, report: rest }));
+    } catch (error) { ctx.log.warn('workflow.landing.submission_unsettled', { workflowId, status: rest.status, error: error instanceof Error ? error.message : String(error) }); }
+  })());
+  return takable.length;
+}
 type ReadQueued<Task> = <T>(apply: (state: WorkflowView, task: Task) => T) => T;
 type FindQueued<Task> = (state: WorkflowView, named: ToolArgs, task: Task) => ReturnType<typeof submittedCommits>;
 

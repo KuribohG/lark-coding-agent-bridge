@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { freezeWorkClaims, holdWorkClaims, releaseWorkClaims, returnSubmissions } from './work-queue';
+import { freezeWorkClaims, holdWorkClaims, keepSubmissions, releaseWorkClaims, returnSubmissions } from './work-queue';
 import { workerSelection } from './execution';
 import { scriptArgs, scriptText, SCRIPT_MAX_REVISIONS } from './script-contract';
 import { acknowledge, addArtifact, BUSY, sameRoot } from './kernel-state';
@@ -34,8 +34,10 @@ export class RestartRecovery {
         emit(state, { type: 'workflow_interrupted', ...(state.status !== 'interrupted'
           ? { restart: { since, resume: !state.parent && resumable(state) } } : {}) });
       }
-      // The landing queue did not survive the restart: what members had handed to it goes back to them.
-      if (!['completed', 'cancelled'].includes(state.status)) returnSubmissions(state, this.ctx.now());
+      // The landing queue did not survive the restart. Where the workflow is replayed by itself the queue is handed
+      // what it held once that has happened (`resumeSubmissions`); elsewhere it goes back to the members.
+      if (keep && this.ctx.host.reboard) keepSubmissions(state, this.ctx.now() + CLAIM_ADOPTION_MS);
+      else if (!['completed', 'cancelled'].includes(state.status)) returnSubmissions(state, this.ctx.now());
       if (governed) freezeWorkClaims(state, 'Host restart; execution settlement requires reconciliation');
       else if (keep) holdWorkClaims(state, this.ctx.now() + CLAIM_ADOPTION_MS);
       else this.dropClaims(state);
@@ -89,8 +91,8 @@ export class RestartRecovery {
       const current = store.state(scopeId, workflowId)!;
       store.transact(() => {
         emit(current, { type: 'restart_resume_disabled' });
-        // The claims were kept for a replay that is not coming.
-        if (!this.ctx.host.executionLedger) for (const member of store.tree(current)) this.dropClaims(member);
+        // The claims were kept for a replay that is not coming, and so was what the landing queue held.
+        if (!this.ctx.host.executionLedger) for (const member of store.tree(current)) { returnSubmissions(member, this.ctx.now()); this.dropClaims(member); }
       }, 'restart');
       outcomes.push({ state: store.public(current), resumed: false, reason });
     }

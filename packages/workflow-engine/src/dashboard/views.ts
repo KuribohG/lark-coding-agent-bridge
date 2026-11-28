@@ -873,7 +873,7 @@ export function landing(state: WorkflowState, record: LandingRecord): LandingPan
       return {
         repository, ...(head ? { landed: head.head } : {}), ...(head?.halt ? { halted: { head: head.halt.head, reason: compact(head.halt.reason, 1200) } } : {}),
         ...(live ? { live: { at: live.at, waiting: live.waiting.map(rider), ...(live.train ? { train: { ...live.train, riders: live.train.riders.map(rider) } } : {}),
-          ...(live.retrying ? { retrying: live.retrying } : {}), ...(live.halted ? { halted: live.halted } : {}) } } : {}),
+          ...(live.retrying ? { retrying: live.retrying } : {}), ...(live.halted ? { halted: live.halted } : {}), ...(live.worktree ? { worktree: live.worktree } : {}) } } : {}),
         ...(passed.length >= 3 ? { usualCheckMs: passed[Math.floor(passed.length / 2)]! } : {}),
         totals: { trains: trains.length, checks: trains.reduce((sum, train) => sum + train.checks.length, 0), checkMs: trains.reduce((sum, train) => sum + train.checks.reduce((ms, check) => ms + check.ms, 0), 0),
           landed: trains.reduce((sum, train) => sum + train.landed, 0), turnedBack: trains.reduce((sum, train) => sum + train.turnedBack.length, 0) },
