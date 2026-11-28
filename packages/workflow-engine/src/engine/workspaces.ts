@@ -190,6 +190,8 @@ export class WorkflowWorkspaces {
   private readonly supported = new Map<string, Promise<void>>();
   /** The look at a source checkout for uncommitted changes that is under way; see `uncommitted`. */
   private readonly looking = new Map<string, Promise<{ count: number; first: string[] }>>();
+  /** The repositories known to let a worktree override the shared config, asked once for each; see `sharedWorktreeConfig`. */
+  private readonly worktreeConfig = new Map<string, Promise<void>>();
   /** The worktrees whose files are being written and how to stop each; `unwatched` when no creation waits for it. */
   private readonly making = new Map<string, { workflow: string; done: Promise<WorkspaceBinding>; stop: AbortController; unwatched: boolean }>();
   /** Why the files of a worktree no creation waited for could not be written, until whoever is bound to it is told. */
@@ -377,7 +379,7 @@ export class WorkflowWorkspaces {
     if (!isAbsolute(start)) throw new Error('repo must be an absolute path');
     // Git's own refusal names neither the directory it looked in nor the option that says where to look instead.
     const top = await this.git(start, ['rev-parse', '--show-toplevel'], signal, true);
-    if (top.code) throw new Error(repo === undefined
+    if (top.code) throw await this.bareFault(start, signal) ?? new Error(repo === undefined
       ? `The directory of this workflow is not a Git checkout (${start}): name the checkout to work in with the repo option, an absolute path to its root`
       : `repo is not a Git checkout: ${start}`);
     const repository = await realpath(top.stdout.trim());
@@ -409,11 +411,67 @@ export class WorkflowWorkspaces {
   private async located(ws: WorkspaceBinding, signal: AbortSignal): Promise<WorkspaceBinding> {
     // The daemon that serves the workspace may have died since it was last used; whoever is bound to it finds it served.
     if (ws.isolation === 'wsfs') await this.mounts.serve(ws);
-    const top = await realpath((await this.git(ws.path, ['rev-parse', '--show-toplevel'], signal)).stdout.trim());
+    let top = await this.git(ws.path, ['rev-parse', '--show-toplevel'], signal, true);
+    if (top.code) {
+      // The one cause this service knows and can mend: a worktree made before the pin was written, in a repository whose
+      // shared config has since been made bare (see `pinWorktree`). Every other cause fails again here.
+      const fault = ws.isolation === 'clone' ? undefined : await this.bareFault(ws.path, signal);
+      if (fault) {
+        await this.pinWorktree(ws, ws.path, signal).catch(() => undefined);
+        top = await this.git(ws.path, ['rev-parse', '--show-toplevel'], signal, true);
+      }
+      if (top.code) throw fault ?? new GitFailure(`Git rev-parse failed: ${(top.stderr || top.stdout).slice(0, 1600)}`);
+    }
+    const where = await realpath(top.stdout.trim());
     const common = await realpath(resolve(ws.path, (await this.git(ws.path, ['rev-parse', '--git-common-dir'], signal)).stdout.trim()));
-    if (top !== await realpath(ws.path) || common !== (ws.isolation === 'clone' ? join(top, '.git') : ws.commonDir)
-      || top !== this.home(ws, await realpath(this.directory))) throw new Error('Workspace path or repository identity changed');
+    if (where !== await realpath(ws.path) || common !== (ws.isolation === 'clone' ? join(where, '.git') : ws.commonDir)
+      || where !== this.home(ws, await realpath(this.directory))) throw new Error('Workspace path or repository identity changed');
     return ws;
+  }
+
+  /**
+   * Makes the shared repository read a worktree's own configuration, which Git does only when it says
+   * `extensions.worktreeConfig` is true. Asked once for each repository; a failed answer is asked again next time.
+   */
+  private sharedWorktreeConfig(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir'>, signal: AbortSignal): Promise<void> {
+    const known = this.worktreeConfig.get(ws.commonDir);
+    if (known) return known;
+    const done = (async () => {
+      const current = await this.git(ws.repository, ['config', '--get', 'extensions.worktreeConfig'], signal, true);
+      if (current.code || current.stdout.trim() !== 'true') await this.git(ws.repository, ['config', 'extensions.worktreeConfig', 'true'], signal);
+    })();
+    this.worktreeConfig.set(ws.commonDir, done);
+    void done.catch(() => { if (this.worktreeConfig.get(ws.commonDir) === done) this.worktreeConfig.delete(ws.commonDir); });
+    return done;
+  }
+  /**
+   * Pins `core.bare = false` in the worktree's own configuration, so that the worktree stays a worktree whatever the
+   * shared config says. A `core.bare = true` written there — a stray `git init` or `git config` run in a directory that
+   * is not a repository of its own, walking up to this one — turns every linked worktree bare: `git status`,
+   * `git commit` and `git rev-parse --show-toplevel` then refuse to run while `git log` and `git rev-parse HEAD` still
+   * work, and every member of the workflow fails at once. The pin is what the member's own Git commands read too.
+   */
+  private async pinWorktree(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir' | 'isolation'>, path: string, signal: AbortSignal): Promise<void> {
+    if (ws.isolation === 'clone') return;
+    await this.sharedWorktreeConfig(ws, signal);
+    const gitDir = (await this.git(path, ['rev-parse', '--absolute-git-dir'], signal)).stdout.trim();
+    const file = join(gitDir, 'config.worktree');
+    const current = await this.git(path, ['config', '--file', file, '--get', 'core.bare'], signal, true);
+    if (!current.code && current.stdout.trim() === 'false') return;
+    await this.git(path, ['config', '--file', file, 'core.bare', 'false'], signal);
+  }
+  /**
+   * What Git's refusal to find a work tree in `cwd` means when the repository's shared config says it is bare: the
+   * sentence that names the repository and the one command that repairs it. Nothing else is a `bare` fault.
+   */
+  private async bareFault(cwd: string, signal: AbortSignal): Promise<GitFailure | undefined> {
+    const bare = await this.git(cwd, ['config', '--get', 'core.bare'], signal, true);
+    if (bare.code || bare.stdout.trim() !== 'true') return undefined;
+    const common = await this.git(cwd, ['rev-parse', '--git-common-dir'], signal, true);
+    // The checkout the member knows, not its `.git`: an absolute common dir ends in `.git` for a repository with a work tree.
+    const shared = common.code ? cwd : await realpath(resolve(cwd, common.stdout.trim()));
+    const repository = basename(shared) === '.git' ? dirname(shared) : shared;
+    return new GitFailure(`Git will not work in ${cwd}: ${repository} has core.bare = true in its shared config, so every linked worktree of it is treated as bare (git status, git commit and git rev-parse --show-toplevel refuse to run; git log still works). Fix: git -C ${repository} config --unset core.bare`);
   }
 
   /** Has `listener` called when a worktree no creation waited for is ready or has failed. */
@@ -603,8 +661,12 @@ export class WorkflowWorkspaces {
           // Only registration races with other Git commands; leave `worktree add` cheap and write the files separately.
           if (!whole) await this.worktree(ws, ['add', '--force', '--force', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ends, false, rank);
         }
+        // Before anything else writes this checkout: a shared `core.bare = true`, which any stray `git config` can write,
+        // would make `read-tree -u` refuse to write its files as well as turn the worktree bare (see `pinWorktree`).
+        if (ws.isolation !== 'clone') await this.pinWorktree(ws, ws.path, ends);
         written = await this.writeTree(ws.path, checkout, ends, rank);
       }
+      if (ws.isolation === 'wsfs') await this.pinWorktree(ws, ws.path, ends);
       // Ready is what lets a member start in it, so it is said only of a checkout that was found to be the planned one.
       // One that many processes wrote was found so as they wrote it. Reading the status of every file again takes a
       // process of its own longer than writing them took all of those, with the next checkouts being written beside it.
@@ -1769,6 +1831,7 @@ export class WorkflowWorkspaces {
       // Forced twice: a worktree whose directory is gone leaves a locked record of itself, and this one takes its place.
       await this.worktree(ws, ['add', '--force', '--force', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
     }
+    if (ws.isolation !== 'clone') await this.pinWorktree(ws, path, signal);
     return path;
   }
   /** Removes the train's worktree, of either kind, once the last member worktree of its repository is gone. */

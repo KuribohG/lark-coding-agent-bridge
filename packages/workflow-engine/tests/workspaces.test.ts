@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { access, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -145,6 +145,34 @@ describe('managed workflow worktrees with real Git', () => {
       expect(await readFile(join(ws.path, 'shared.txt'), 'utf8')).toBe('baseline\n');
     }
   }, 60_000);
+
+  it('keeps a worktree a worktree when the shared repository is made bare, and mends one made before the mark', async () => {
+    const h = await fixture(), ws = await h.create('a');
+    const gitDir = await git(ws.path, 'rev-parse', '--absolute-git-dir');
+    // What a stray `git config` or `git init` run in a directory that is not a repository of its own can write: every
+    // linked worktree would be treated as bare, and every member of the workflow would fail at once.
+    await git(h.repo, 'config', 'core.bare', 'true');
+    expect(await git(ws.path, 'rev-parse', '--is-inside-work-tree')).toBe('true');
+    await h.commit(ws, 'after.txt', 'after\n');
+    expect((await h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).id).toBe(ws.id);
+    // A worktree made before this mark existed has none, and is given one the first time it is found bare.
+    await rm(join(gitDir, 'config.worktree'));
+    await expect(h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).resolves.toMatchObject({ id: ws.id });
+    expect(await git(ws.path, 'rev-parse', '--is-inside-work-tree')).toBe('true');
+    await h.commit(ws, 'mended.txt', 'mended\n');
+  }, 30_000);
+
+  it('names the shared repository and its repair when a worktree cannot be mended', async () => {
+    const h = await fixture(), ws = await h.create('a');
+    const gitDir = await git(ws.path, 'rev-parse', '--absolute-git-dir');
+    await rm(join(gitDir, 'config.worktree'));
+    await git(h.repo, 'config', 'core.bare', 'true');
+    // The mark cannot be written: Git keeps refusing, and the refusal names what to run rather than the failed command.
+    await chmod(gitDir, 0o500);
+    try {
+      await expect(h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).rejects.toThrow(new RegExp(`core\\.bare = true in its shared config.*git -C ${h.repo} config --unset core\\.bare`));
+    } finally { await chmod(gitDir, 0o700); }
+  }, 30_000);
 
   it('writes the files of a worktree registered before an interrupted create', async () => {
     const h = await fixture(), ws = await h.create('a');
