@@ -22,7 +22,8 @@ async function git(cwd: string, ...argv: string[]) {
 /** What a file of a worktree holds, once the worktree has been written: a member is added before its worktree is. */
 const written = (path: string) => vi.waitFor(() => readFile(path, 'utf8'), { timeout: 20_000, interval: 30 });
 /** `chat` runs the workflow in a directory that is no checkout, as a bridge does from a chat workspace; the repository is then named to the script. */
-async function harness(perform?: (opts: AgentRunOptions, index: number) => Promise<string>, where: 'repo' | 'chat' = 'repo') {
+async function harness(perform?: (opts: AgentRunOptions, index: number) => Promise<string>, where: 'repo' | 'chat' = 'repo',
+  host: Partial<Parameters<typeof createBridgeWorkflowRuntime>[0]> = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'workspace-runtime-'));
   closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const repo = join(dir, 'repo'); await mkdir(repo); await git(repo, 'init', '-b', 'main');
@@ -46,7 +47,7 @@ async function harness(perform?: (opts: AgentRunOptions, index: number) => Promi
   };
   const runtime = createBridgeWorkflowRuntime({ path: join(dir, 'workflow.sqlite'), workspaceRoot: join(dir, 'worktrees'),
     executor: new RunExecutor({ resolveAgent: () => adapter, pool: new ProcessPool(() => 4), activeRuns: new ActiveRuns() }),
-    resolve: async () => ({ root, policy }), wakeMain: async () => {} });
+    resolve: async () => ({ root, policy }), wakeMain: async () => {}, ...host });
   await runtime.start();
   closes.push(() => runtime.close());
   const state = () => runtime.kernel.state('test')!;
@@ -157,6 +158,38 @@ describe('workspace script runtime', () => {
       // w0 keeps the root checkout; w1 runs inside the worktree made for it.
       expect(seen.filter(run => run.model === 'worker' && run.cwd === h.repo)).toHaveLength(1);
       expect(seen.filter(run => run.model === 'worker' && run.cwd?.includes(id))).toHaveLength(1);
+    } finally { release(); }
+  }, 60_000);
+
+  it('runs the leads as the main agent is run, and confines the other members to what they are to write', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const seen: AgentRunOptions[] = [];
+    const h = await harness(async opts => { seen.push(opts); await gate; return 'done'; }, 'repo', {
+      signalCell: sessionKey => ({ id: sessionKey }),
+      workerSandbox: () => ({ enabled: true, requireLandlock: true, allowTcp: true, readWrite: ['/shared/pool'], readOnly: [] }) });
+    try {
+      await h.call('run_script', { script: `const a=await createWorkspace({key:'a'}), q=await createWorkspace({key:'q'});
+        await enqueueWork({key:'i',title:'I',input:1,queue:'core'});
+        return await swarm('Write in parallel',{key:'crew',lead:{name:'boss',harness:'codex',model:'lead'},members:[
+          {name:'planner',harness:'codex',model:'planner',leads:['core'],workspace:q.id},
+          {name:'w0',harness:'codex',model:'worker',queue:'core',workspace:a.id}]});` });
+      await vi.waitFor(async () => { await h.runtime.tick(); expect([...new Set(seen.map(run => run.model))].sort()).toEqual(['lead', 'planner', 'worker']); }, { timeout: 20_000, interval: 30 });
+      const of = (model: string) => seen.find(run => run.model === model)!;
+      // The lead of the swarm and the lead of a queue: no cell, the sandbox of their profile (none here), and no word of either.
+      for (const lead of [of('lead'), of('planner')]) {
+        expect(lead.signalCell).toBeUndefined();
+        expect(lead.execSandbox).toBeUndefined();
+        expect(lead.systemPrompt).not.toMatch(/Signals:|Writes:/);
+      }
+      // A member that does the work: a cell of its own, and a sandbox that is opened for what a commit in its worktree
+      // writes outside it, which is its own Git directory and the objects of the repository.
+      const worker = of('worker');
+      expect(worker.signalCell?.id).toBe(`workflow:${h.state().workflowId}:${h.state().sessions.find(session => session.workspaceId && worker.cwd!.includes(session.workspaceId))!.sessionRef}`);
+      expect(worker.execSandbox).toMatchObject({ enabled: true, requireLandlock: true, allowTcp: true, readOnly: [] });
+      expect(worker.execSandbox!.readWrite).toEqual(['/shared/pool', await git(worker.cwd!, 'rev-parse', '--absolute-git-dir'),
+        join(await git(h.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'), 'objects')]);
+      expect(worker.systemPrompt).toContain('`Permission denied` anywhere else is the sandbox you run in');
+      expect(worker.systemPrompt).toContain('`Operation not permitted` from kill or pkill means');
     } finally { release(); }
   }, 60_000);
 

@@ -12,6 +12,18 @@ describe('the [workflow] table', () => {
     expect(() => parseWorkflowTable({ signal_isolation: 1 })).toThrow('workflow.signal_isolation: expected boolean');
     expect(() => parseWorkflowTable({ isolate_signals: true })).toThrow('workflow.isolate_signals: unknown setting');
   });
+
+  it('reads the sandbox of the workers as a profile\'s is read', () => {
+    const table = { worker_sandbox: { enabled: true, require_landlock: true, allow_tcp: true, read_write: ['/shared/pool', '~/cache'], read_only: [] } };
+    const settings = parseWorkflowTable(table);
+    expect(settings.workerSandbox).toEqual({ enabled: true, requireLandlock: true, allowTcp: true, readWrite: ['/shared/pool', '~/cache'], readOnly: [] });
+    expect(workflowTable(settings)).toEqual(table);
+    // What is left out is what a profile's table leaves out: off, TCP open, nothing more to write.
+    expect(parseWorkflowTable({ worker_sandbox: {} }).workerSandbox).toEqual({ enabled: false, requireLandlock: false, allowTcp: true, readWrite: [], readOnly: [] });
+    expect(() => parseWorkflowTable({ worker_sandbox: true })).toThrow('workflow.worker_sandbox: expected a table');
+    expect(() => parseWorkflowTable({ worker_sandbox: { enable: true } })).toThrow('workflow.worker_sandbox.enable: unknown setting');
+    expect(() => parseWorkflowTable({ worker_sandbox: { read_write: ['relative'] } })).toThrow(/^workflow\.worker_sandbox: .*read_write: expected an absolute or ~\/ path/);
+  });
 });
 
 describe('workerSignalCell', () => {

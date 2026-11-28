@@ -223,6 +223,11 @@ Edits are picked up on reload; in-flight permits keep their old limits. See
 # train_directory = "/tmp/lark-wf-trains"      # default: beside the members' worktrees
 # wsfs_state_directory = "/local/wsfs-state"   # default: beside each wsfs mount
 # signal_isolation = false                     # default: true
+
+# [workflow.worker_sandbox]                    # default: workers keep their profile's exec_sandbox
+# enabled = true
+# require_landlock = true
+# read_write = ["/shared/pool"]
 ```
 
 What workflows are told about the machine the bridge runs on, so the table is bridge-wide and every profile shares it. The two directories, absolute or under `~/`, are where workflows put what need not be beside the members' worktrees. Use them when the worktrees are on a network filesystem and the machine has a local disk.
@@ -230,7 +235,8 @@ What workflows are told about the machine the bridge runs on, so the table is br
 - `train_directory`: the landing queue's own worktree, where the `checks` of a landing run, is made at `<train_directory>/<workflow-id>/train-<repository>` as a plain Git worktree, whatever kind the members' workspaces are. The checks then build at the speed of that disk. Nothing in it has to survive: when the directory is gone, as after the machine was replaced, the next train checks the commit out again. See [Claim, fix and land](workflows.md#claim-fix-and-land).
 - `wsfs_state_directory`: what `wsfs` workspaces change is kept at `<wsfs_state_directory>/<workflow-id>/wsfs-<repository>/`. Members' uncommitted work is there, so a directory that does not survive the machine loses it. See [wsfs workspaces](workflow-worktrees.md).
 
-- `signal_isolation`: on Linux each worker runs in a cell of its own, where its processes can signal each other and nothing else, so a member's `pkill` cannot reach another member's build. `false` starts workers as plain processes; do that for workers that must run setuid programs such as `sudo` or `fusermount3`. See [Signal isolation](signal-isolation.md).
+- `signal_isolation`: on Linux each worker that is not a lead runs in a cell of its own, where its processes can signal each other and nothing else, so a member's `pkill` cannot reach another member's build. `false` starts workers as plain processes; do that for workers that must run setuid programs such as `sudo` or `fusermount3`. See [Signal isolation](signal-isolation.md).
+- `worker_sandbox`: the [exec sandbox](exec-sandbox.md#workflow-workers) of the workers that are not leads, with the keys of a profile's `exec_sandbox`. It takes the place of the profile's for those workers only, so workers can be confined while the main agent and the leads are not. A worker may then write in its worktree, its scratch directory and the tool caches, and commit; `read_write` names what else the members of your workflows must write, such as a shared pool or cache directory outside the repository.
 
 Edits are picked up on reload. A train made before the edit stays where it is until its workflow is cleaned up and the next train is made in the new place; a wsfs mount keeps the place it recorded when its first workspace was made; a worker process that is already running keeps the confinement it started with.
 

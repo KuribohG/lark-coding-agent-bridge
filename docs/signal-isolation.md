@@ -8,7 +8,7 @@ builds, test runs and servers of every other member, and of the bridge itself.
 Signal isolation puts each worker in a **cell**: its processes can signal each
 other, and nothing else on the machine. It needs no root, no container runtime,
 no user namespaces and no writable cgroups, so it works inside an unprivileged
-container. It is on by default for workflow workers on Linux.
+container. It is on by default for workflow workers on Linux, except the leads.
 
 It guards against accidents, not against a process that sets out to get around
 it (see [Limits](#limits)).
@@ -26,8 +26,12 @@ it (see [Limits](#limits)).
 | `sudo`, `fusermount3` and other setuid programs | No longer gain privileges (see [Limits](#limits)). |
 
 The main agent of a conversation is not in a cell and can still stop a worker's
-processes. What the bridge itself starts for a workflow, such as landing checks,
-is outside every cell, so no member can kill it.
+processes. Neither is a member that leads, the lead of a swarm or of queues of
+one: it plans for the others and has to be able to stop what one of them left
+running, so it is started as the main agent is. No other member can signal a
+lead's processes, which are outside every cell. What the bridge itself starts
+for a workflow, such as landing checks, is outside every cell too, so no member
+can kill it.
 
 Each signal that was refused is listed in `signal-cell.log` in the profile's
 state directory, beside `workflows.sqlite`:
@@ -138,8 +142,8 @@ about 13 µs instead of under 1 µs.
   leaves behind are adopted by init, later turns no longer recognise them as
   the worker's own, and their own signal syscalls fail with `ENOSYS`. Nothing
   inside a cell can signal a supervisor; only an outside `kill -9` does this.
-- **What is not covered.** Ordinary conversation turns are not put in cells.
-  Neither are agents that do not run as a process of their own on this machine:
+- **What is not covered.** Ordinary conversation turns and the leads of a swarm
+  are not put in cells. Neither are agents that do not run as a process of their own on this machine:
   Pi with `transport = "sdk"` (one host serves every session), a
   [workcell or remote host](configuration.md), and Codex in daemon mode, where
   the run's process is only a proxy to the shared `codex app-server`.

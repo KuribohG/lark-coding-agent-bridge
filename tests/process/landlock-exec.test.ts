@@ -1,9 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { buildExecSandboxCommand } from '../../src/platform/exec-sandbox';
+import { gitWritePaths } from '../../src/workflows/bridge/runtime';
 
 const launcher = fileURLToPath(new URL('../../bin/landlock-exec', import.meta.url));
 const buildScript = fileURLToPath(new URL('../../native/build.mjs', import.meta.url));
@@ -86,6 +88,38 @@ describe.skipIf(process.platform !== 'linux')('landlock-exec', () => {
   it.skipIf(abi < 1)('skips rules for paths that do not exist', () => {
     const result = run(['--ro', '/', '--ro', '/nonexistent-rule', '--rw', '/dev'], ['/bin/true']);
     expect(result.status).toBe(0);
+  });
+
+  it.skipIf(abi < 1)('lets a confined workflow worker commit in its linked worktree, and write nowhere else of the repository', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'll-git-'));
+    try {
+      const repo = join(dir, 'repo'), tree = join(dir, 'tree'), other = join(dir, 'other'), scratch = join(dir, 'scratch');
+      const identity = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@localhost', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@localhost' };
+      const git = (cwd: string, ...argv: string[]) => execFileSync('git', argv, { cwd, encoding: 'utf8', env: { ...process.env, ...identity } }).trim();
+      mkdirSync(repo); mkdirSync(scratch);
+      git(repo, 'init', '-b', 'main'); writeFileSync(join(repo, 'file'), 'base\n'); git(repo, 'add', '.'); git(repo, 'commit', '-m', 'base');
+      git(repo, 'worktree', 'add', '--detach', tree); git(repo, 'worktree', 'add', '--detach', other);
+      // What the bridge gives a worker that is not a lead: its worktree, its scratch directory, and what a commit writes.
+      const settings = { enabled: true, requireLandlock: true, allowTcp: true, readWrite: await gitWritePaths(tree), readOnly: [] };
+      const env = { ...process.env, ...identity, TMPDIR: scratch };
+      const inside = (script: string) => {
+        const wrapped = buildExecSandboxCommand('/bin/sh', ['-c', script], { settings, cwd: tree, env, home: join(dir, 'home'), launcher });
+        expect(wrapped.sandboxed).toBe(true);
+        return spawnSync(wrapped.command, wrapped.args, { cwd: tree, env, encoding: 'utf8' });
+      };
+      expect(inside('echo changed > file && git commit -q -am change && mkdir build && echo o > "$TMPDIR/note"').status).toBe(0);
+      expect(git(tree, 'log', '--format=%s', '-1')).toBe('change');
+      // The shared config, the refs, the main checkout and another member's worktree stay as they are.
+      for (const script of ['git config core.bare true', 'git switch -q -c topic', `echo x > ${repo}/file`, `echo x > ${other}/file`,
+        `git -C ${other} commit -q --allow-empty -m theirs`, `echo x > ${dir}/elsewhere`]) {
+        expect(inside(script).status, script).not.toBe(0);
+      }
+      expect(git(repo, 'config', '--get', 'core.bare')).toBe('false');
+      expect(readFileSync(join(other, 'file'), 'utf8')).toBe('base\n');
+      expect(git(other, 'log', '--format=%s', '-1')).toBe('base');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('fails with 125 when --require is set and the kernel has no Landlock', () => {

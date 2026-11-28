@@ -801,7 +801,11 @@ A scratch directory is private and temporary: a worker must put anything another
 
 ### Signals
 
-On Linux a worker can signal only the processes it started, in this turn or an earlier one: `kill` or `pkill` aimed at another worker's process, or at anything else on the machine, fails with `Operation not permitted`, and the attempt is listed in `signal-cell.log`. See [Signal isolation](signal-isolation.md) for what is confined, what is not, and how to turn it off.
+On Linux a worker can signal only the processes it started, in this turn or an earlier one: `kill` or `pkill` aimed at another worker's process, or at anything else on the machine, fails with `Operation not permitted`, and the attempt is listed in `signal-cell.log`. A member that leads, the lead of a swarm or of queues of one, is not confined: like the main agent it can stop what a member left running. See [Signal isolation](signal-isolation.md) for what is confined, what is not, and how to turn it off.
+
+### Writes
+
+With `[workflow.worker_sandbox]` enabled in the bridge configuration, a worker that is not a lead can write only in its working directory, its scratch directory and the tool caches under the home directory, and can commit in its working directory; everything else, the main checkout and the other members' worktrees included, is read-only to it. Leads and the main agent keep what their profile allows. See [the exec sandbox for workflow workers](exec-sandbox.md#workflow-workers) for what that means for a script.
 
 ### Interpreter and execution boundaries
 

@@ -31,6 +31,11 @@ export interface WorkerRunSpec {
   taskId?: string;
   scriptKey?: string;
   memberKey?: string;
+  /**
+   * The member plans work for others: the lead of a swarm, or of queues of one. The host runs such a member as it
+   * runs the main agent, without what confines the others.
+   */
+  lead?: boolean;
   roleLabel?: string;
   readOnly?: boolean;
   scriptOutput?: 'text' | 'json';

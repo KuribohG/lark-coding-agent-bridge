@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { normalizeExecSandbox, type ExecSandboxSettings } from '../platform/exec-sandbox';
 import { signalCellsAvailable, type SignalCell } from '../platform/signal-cell';
 
 /**
@@ -13,9 +14,15 @@ export interface WorkflowMachineSettings {
   wsfsStateDirectory?: string;
   /** false starts workers without a signal cell (see platform/signal-cell); they are confined when absent. */
   signalIsolation?: boolean;
+  /**
+   * The exec sandbox of the workers that are not leads, in place of the one their profile gives every run (see
+   * platform/exec-sandbox). They keep the profile's when absent.
+   */
+  workerSandbox?: ExecSandboxSettings;
 }
 
 const DIRECTORIES = { train_directory: 'trainDirectory', wsfs_state_directory: 'wsfsStateDirectory' } as const;
+const SANDBOX_KEYS = ['enabled', 'require_landlock', 'allow_tcp', 'read_write', 'read_only'];
 
 /** Validates the TOML `[workflow]` table and converts it to settings. */
 export function parseWorkflowTable(input: unknown): WorkflowMachineSettings {
@@ -25,6 +32,15 @@ export function parseWorkflowTable(input: unknown): WorkflowMachineSettings {
     if (key === 'signal_isolation') {
       if (typeof value !== 'boolean') throw new Error('workflow.signal_isolation: expected boolean');
       out.signalIsolation = value;
+      continue;
+    }
+    if (key === 'worker_sandbox') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('workflow.worker_sandbox: expected a table');
+      const unknown = Object.keys(value).find(name => !SANDBOX_KEYS.includes(name));
+      if (unknown) throw new Error(`workflow.worker_sandbox.${unknown}: unknown setting`);
+      try { out.workerSandbox = normalizeExecSandbox(value); } catch (error) {
+        throw new Error(`workflow.worker_sandbox: ${(error as Error).message.replace(/^exec_sandbox\.?:? ?/, '')}`);
+      }
       continue;
     }
     if (!Object.hasOwn(DIRECTORIES, key)) throw new Error(`workflow.${key}: unknown setting`);
@@ -40,6 +56,10 @@ export function workflowTable(settings: WorkflowMachineSettings): Record<string,
     ...(settings.trainDirectory ? { train_directory: settings.trainDirectory } : {}),
     ...(settings.wsfsStateDirectory ? { wsfs_state_directory: settings.wsfsStateDirectory } : {}),
     ...(settings.signalIsolation !== undefined ? { signal_isolation: settings.signalIsolation } : {}),
+    ...(settings.workerSandbox ? { worker_sandbox: {
+      enabled: settings.workerSandbox.enabled, require_landlock: settings.workerSandbox.requireLandlock, allow_tcp: settings.workerSandbox.allowTcp,
+      read_write: [...settings.workerSandbox.readWrite], read_only: [...settings.workerSandbox.readOnly],
+    } } : {}),
   };
 }
 

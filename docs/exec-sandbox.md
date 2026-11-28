@@ -57,6 +57,58 @@ Reads are not restricted at all — `/` is granted read and execute. Secrets are
 still readable by any agent that can read them today; the sandbox only stops
 writes.
 
+## Workflow workers
+
+A profile's table confines every run of the profile: the conversations of the
+main agent and every workflow worker alike, each to its own `cwd`. To confine
+the workers and leave the main agent free, give the workers a table of their
+own in the bridge-wide `[workflow]` table instead:
+
+```toml
+[workflow.worker_sandbox]
+enabled = true
+require_landlock = true
+# What the members of your workflows must write outside their worktrees.
+read_write = ["/shared/pool"]
+```
+
+It has the keys of a profile's table and takes its place for the workers that
+are not leads; edits apply to worker processes started after them. A member
+that leads, the lead of a swarm or of queues of one, is run as the main agent
+is: with the profile's table, which may be none, and outside the
+[signal cells](signal-isolation.md).
+
+A confined worker can write
+
+- its working directory: the worktree, clone or wsfs workspace it was given,
+  or the directory of the workflow when it has none;
+- its [scratch directory](workflows.md#scratch-directories), which is its
+  `TMPDIR`; the machine's shared `/tmp` is closed to it;
+- the tool caches and harness state of the [defaults](#what-a-run-can-write);
+- what a commit in its working directory writes outside it: the checkout's own
+  Git directory (`<repository>/.git/worktrees/<name>`, which holds its index and
+  `HEAD`) and the repository's object store. The bridge adds these for each
+  worker;
+- `read_write`.
+
+So a member can build, test and commit in its worktree, and
+`submit_work` lands what it committed, because the bridge does the landing. It
+cannot write the main checkout, another member's worktree, or the repository's
+shared `config`, `HEAD` and refs: `git switch -c`, `git branch` and `git tag`
+fail with `Permission denied`, and a member works on the detached `HEAD` its
+worktree starts with. A `"clone"` workspace keeps its own refs and config
+inside the working directory, so branches work there. The object store is
+shared and writable, as it has to be for a commit: this guards against a wrong
+path, not against a member that sets out to damage the repository.
+
+For a script this means: members must keep what they produce inside their
+worktree or name it in `read_write`; a script or tool that writes `/tmp/...`
+by name fails, and should use `$TMPDIR`; whatever members share outside the
+repository (a container pool's lease files, a shared build cache) must be
+listed. Workers are told in their instructions that a refused write is the
+sandbox. What the bridge runs itself, the landing `checks` among it, is not
+confined.
+
 ## Shared runtimes: pi with `transport = "sdk"`
 
 `pi.transport = "sdk"` serves every session of a profile from one long-lived
@@ -153,7 +205,8 @@ read_write = [
 ```
 
 Git reports the missing grant as `fatal: Unable to create '.../index.lock':
-Permission denied`.
+Permission denied`. [Workflow workers](#workflow-workers) confined by
+`[workflow.worker_sandbox]` are given both for their own worktree.
 
 ## Iterating on a profile
 

@@ -473,6 +473,7 @@ export class WorkflowRuntime {
           taskId: task.taskId,
           ...(task.scriptKey ? { scriptKey: task.scriptKey } : {}),
           ...(memberKey ? { memberKey } : {}),
+          ...(request.plans ? { lead: true } : {}),
           ...(task.roleLabel ? { roleLabel: task.roleLabel } : {}),
           readOnly: Boolean(workflow.readOnly || task.readOnly),
           ...(task.scriptOutput ? { scriptOutput: task.scriptOutput } : {}),

@@ -1,8 +1,11 @@
+import { execFile } from 'node:child_process';
+import { join } from 'node:path';
 import type { ModelSettings } from '../../agent/model-settings';
 import { sendRunInput } from '../../agent/execution';
 import type { RunStopReason } from '../../agent/types';
 import { newRunHostKey, probeRunHost, runHostAgent, runHostsSupported, terminateRunHost } from '../../agent/run-host';
 import { log } from '../../core/logger';
+import type { ExecSandboxSettings } from '../../platform/exec-sandbox';
 import type { SignalCell } from '../../platform/signal-cell';
 import { spawnProcess } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
@@ -34,9 +37,14 @@ export interface BridgeWorkflowRuntimeDeps extends Pick<WorkflowRuntimeDeps,
   /**
    * The signal cell for the runs of one worker session, keyed like its scratch directory, so that a worker can stop
    * what its own earlier turns started and nothing of anyone else's. Workers run unconfined when this is omitted or
-   * returns undefined.
+   * returns undefined. A lead is given none: it is run as the main agent is.
    */
   signalCell?(sessionKey: string): SignalCell | undefined;
+  /**
+   * The exec sandbox of a worker that is not a lead, in place of the one its profile gives every run. Such a worker
+   * keeps the profile's when this is omitted or returns undefined, as a lead always does.
+   */
+  workerSandbox?(): ExecSandboxSettings | undefined;
 }
 
 // The engine and the bridge share one stop vocabulary; keep them aligned.
@@ -55,6 +63,28 @@ const TOOL_OVERDUE_GRACE_MS = 2 * 60_000;
  */
 const SIGNAL_CELL_NOTE = '\nSignals: `Operation not permitted` from kill or pkill means the target is not a process you started, '
   + 'in this turn or an earlier one, but another worker\'s or the system\'s. Leave it running, and say so in your result if it blocks your task.';
+
+/**
+ * What a worker whose writes are confined is told, so that a refused write is read as the sandbox and not as a fault
+ * to work around with another path or another tool.
+ */
+const WORKER_SANDBOX_NOTE = '\nWrites: you can write in your working directory, in your scratch directory ($TMPDIR) and in tool caches under '
+  + 'your home directory, and commit in your working directory. `Permission denied` anywhere else is the sandbox you run in. '
+  + 'Do not look for a way around it: keep what you produce in your working directory, and say so in your result if a path you need is closed.';
+
+/**
+ * The directories outside a checkout that Git writes when a commit is made in it: the checkout's own Git directory,
+ * which holds its index and HEAD, and the object store it shares with its repository. Refs and the shared config are
+ * left closed, so a confined worker commits on a detached HEAD and cannot change what other checkouts read.
+ */
+export function gitWritePaths(cwd: string): Promise<string[]> {
+  return new Promise(resolve => {
+    execFile('git', ['rev-parse', '--absolute-git-dir', '--path-format=absolute', '--git-common-dir'], { cwd, timeout: 60_000 }, (error, stdout) => {
+      const [gitDir, common] = error ? [] : String(stdout).trim().split(/\r?\n/);
+      resolve(gitDir && common ? [gitDir, join(common, 'objects')] : []);
+    });
+  });
+}
 
 /** Workers run under bin/run-host.mjs like conversation turns, so a bridge restart reattaches instead of rerunning them. */
 const runHosting: WorkerHosting = {
@@ -96,19 +126,26 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
       const forward = () => controller.abort(new RunStopped(stopReasonOf(spec.signal)));
       spec.signal.addEventListener('abort', forward, { once: true });
       if (spec.signal.aborted) forward();
-      const cell = deps.signalCell?.(spec.sessionKey);
+      // A lead is run as the main agent is, so that it can stop and mend what the members it plans for cannot.
+      const cell = spec.lead ? undefined : deps.signalCell?.(spec.sessionKey);
+      const sandbox = spec.lead ? undefined : deps.workerSandbox?.();
+      const execSandbox = sandbox?.enabled
+        ? { ...sandbox, readWrite: [...sandbox.readWrite, ...await gitWritePaths(workspace?.path ?? current.policy.cwdRealpath)] }
+        : sandbox;
       let submitted;
       try {
         submitted = await deps.executor.submit({
           scopeId: spec.sessionKey, agentScopeId: root.scopeId, agentKind, requireFinalAnswer: true,
-          priority: 'background', env: spec.env, systemPrompt: cell ? spec.systemPrompt + SIGNAL_CELL_NOTE : spec.systemPrompt,
+          priority: 'background', env: spec.env,
+          systemPrompt: spec.systemPrompt + (cell ? SIGNAL_CELL_NOTE : '') + (execSandbox?.enabled ? WORKER_SANDBOX_NOTE : ''),
           validateBeforeRun: async () => {
             const admitted = await workerGrant(root, execution);
             if (workflowDigest(admitted.execution) !== workflowDigest(execution)) throw new Error('Worker binding changed while queued');
             await spec.validateBeforeRun();
           },
           policy: { ...current.policy, ...(workspace ? { requestedCwd: workspace.path, cwdRealpath: workspace.path,
-            policyFingerprint: workflowDigest({ policy: current.policy.policyFingerprint, workspace: workspace.id, root: workspace.rootDigest }) } : {}), prompt: spec.prompt },
+            policyFingerprint: workflowDigest({ policy: current.policy.policyFingerprint, workspace: workspace.id, root: workspace.rootDigest }) } : {}),
+            ...(execSandbox ? { execSandbox } : {}), prompt: spec.prompt },
           ...(spec.resume ? { [spec.resume.kind]: spec.resume.id } : {}),
           ...(spec.host ? { host: spec.host } : {}),
           ...(cell ? { signalCell: cell } : {}),

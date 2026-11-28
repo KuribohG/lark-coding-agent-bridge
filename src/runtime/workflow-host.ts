@@ -201,6 +201,7 @@ export class WorkflowHost<M> {
       trainRoot: () => placementDirectory(settings.machine()?.trainDirectory),
       wsfsStateRoot: () => placementDirectory(settings.machine()?.wsfsStateDirectory),
       signalCell: sessionKey => workerSignalCell(settings.machine(), sessionKey, stateDir),
+      workerSandbox: () => settings.machine()?.workerSandbox,
       getTimeoutMinutes: root => getWorkflowTimeoutMinutes(settings.profileFor(bridgeAgentKind(root.agentKind), root.scopeId)),
       // A silent worker is stopped and retried; the conversation idle timeout is the natural knob for it.
       stallMs: settings.stallMs() ?? DEFAULT_STALL_MS,

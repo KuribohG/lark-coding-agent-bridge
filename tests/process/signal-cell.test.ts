@@ -1,13 +1,18 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnWithDeadline } from '../../src/agent/deadline';
+import { gitWritePaths } from '../../src/workflows/bridge/runtime';
 import { signalCellLauncher as launcher, signalCellSupport } from '../helpers/signal-cells';
 
 const supported = signalCellSupport();
+/** Built with the cell's launcher; a kernel without Landlock answers 0. */
+const landlock = fileURLToPath(new URL('../../bin/landlock-exec', import.meta.url));
+const landlocked = supported === 'ok' && existsSync(landlock) && Number(spawnSync(landlock, ['--print-abi'], { encoding: 'utf8' }).stdout) >= 1;
 let serial = 0;
 const cellId = (label: string) => `test:${process.pid}:${label}:${++serial}`;
 
@@ -189,6 +194,37 @@ describe.skipIf(supported !== 'ok')('signal-cell', () => {
       expect(alive(victim)).toBe(true);
     } finally {
       child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!landlocked)('holds a worker whose writes are confined too, which still commits in its worktree', async () => {
+    const victim = bystander();
+    const dir = mkdtempSync(join(tmpdir(), 'signal-cell-'));
+    try {
+      const repo = join(dir, 'repo'), tree = join(dir, 'tree'), scratch = join(dir, 'scratch');
+      const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@localhost', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@localhost', TMPDIR: scratch };
+      const git = (cwd: string, ...argv: string[]) => expect(spawnSync('git', argv, { cwd, env, encoding: 'utf8' }).status, argv.join(' ')).toBe(0);
+      mkdirSync(repo); mkdirSync(scratch);
+      git(repo, 'init', '-b', 'main'); git(repo, 'commit', '--allow-empty', '-m', 'base'); git(repo, 'worktree', 'add', '--detach', tree);
+      // A member of a swarm as the bridge starts it: sandbox, watchdog and cell around the agent, in its worktree.
+      const agent = `
+        echo work > file && git add file && git commit -q -m work && echo commit=done
+        sleep 300 & kill $!; wait $!; echo own=$?
+        kill -9 ${victim} 2>/dev/null || echo signal=refused
+        { echo x > ${repo}/intruder; } 2>/dev/null || echo write=refused
+        git config core.bare true 2>/dev/null || echo config=refused
+        echo note > "$TMPDIR/note" && echo scratch=written`;
+      const child = spawnWithDeadline('bash', ['-c', agent], { cwd: tree, env, stdio: ['ignore', 'pipe', 'ignore'] }, Date.now() + 60_000, {
+        execSandbox: { enabled: true, requireLandlock: true, allowTcp: true, readWrite: await gitWritePaths(tree), readOnly: [] },
+        signalCell: { id: cellId('sandboxed') } });
+      let output = '';
+      child.stdout!.on('data', chunk => { output += String(chunk); });
+      await once(child, 'close');
+      expect(output.trim().split('\n')).toEqual(['commit=done', 'own=143', 'signal=refused', 'write=refused', 'config=refused', 'scratch=written']);
+      expect(alive(victim)).toBe(true);
+      expect(spawnSync('git', ['log', '--format=%s', '-1'], { cwd: tree, encoding: 'utf8' }).stdout.trim()).toBe('work');
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
