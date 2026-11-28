@@ -119,7 +119,7 @@ export interface LandingView {
     waiting: number; halted?: string;
     /**
      * The train that runs now: how many submissions it carries, how many runs of the checks it has started, and since
-     * when. `front` says it carries the submissions that were put at the head of the queue, and nothing else.
+     * when. `front` says it carries the submissions that were put at the head of the queue (expedite_work), and nothing else.
      */
     train?: { submissions: number; step: 'stacking' | 'checking' | 'landing'; checks: number; since: number; front?: true };
     /** The train failed for a reason of its own (a Git command in its worktree) and runs again with its submissions kept. */
@@ -150,7 +150,7 @@ export interface LandingTrain {
   /**
    * The submissions the train took from the queue, in the order it stacked them. `outcome` is the status each was
    * answered with (`landed`, `check_failed`, `conflict`, `withdrawn`), `failed` when the train gave it up, or `next`
-   * when it went back to the queue for the next train. `front` is why one was put at the head of the queue.
+   * when it went back to the queue for the next train. `front` is who put one at the head of the queue and why.
    */
   submissions: Array<{ key?: string; member?: string; workspace: string; headCommit: string; commits: number; outcome: string; front?: string }>;
   /**
@@ -176,7 +176,7 @@ export interface LandingRider extends LandLabel {
   commits: number;
   /** When it joined the queue; one that rides another train keeps the time it first joined. */
   since: number;
-  /** Why it was put at the head of the queue (submit_work `front`); the others have none. */
+  /** Who put it at the head of the queue and why (expedite_work); the others have none. */
   front?: string;
 }
 
@@ -237,6 +237,14 @@ export interface LandLabel { key?: string; member?: string }
  * commits land. `absent`: the queue does not hold it, because it has been answered already.
  */
 export type LandWithdrawal = 'withdrawn' | 'landing' | 'absent';
+
+/**
+ * What became of a request to put a submission at the head of the landing queue. `expedited`: it boards ahead of the
+ * others, on a train of its own, and a train that carried it with others runs again after that one. `landing`: its
+ * train has passed the checks and is moving the branch, so the commits land as it is. `absent`: the queue does not
+ * hold it, because it has been answered already or was never submitted.
+ */
+export type LandExpedite = 'expedited' | 'landing' | 'absent';
 
 /**
  * Where claim_work left the worktree of the member that claimed an item. `commits`: on the commits the landing queue

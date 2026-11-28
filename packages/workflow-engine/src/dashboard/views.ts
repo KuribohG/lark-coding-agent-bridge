@@ -747,7 +747,7 @@ export interface RiderView {
   since: number;
   /** On a train: `taken`, `stacked`, or the status it was answered with. */
   state?: string;
-  /** Why a lead put it at the head of the queue. */
+  /** Who put it at the head of the queue and why. */
   front?: string;
 }
 
@@ -854,8 +854,7 @@ export function landing(state: WorkflowState, record: LandingRecord): LandingPan
     ...(base ? { targetRef: base.targetRef, checks: shown(over.commands ?? base.commands)!, batch: over.batch ?? base.batch } : {}),
     ...(precheck ? { precheck: shown(precheck)! } : {}), ...(protect.length ? { protect } : {}),
     overridden: [['commands', 'checks'], ['precheck', 'precheck'], ['protect', 'protect'], ['batch', 'batch']].flatMap(([key, shownAs]) => over[key as keyof typeof over] === undefined ? [] : [shownAs!]),
-    submitted: held.map(claim => rider({ ...byHead.get(claim.landing!.headCommit), workspace: '', headCommit: claim.landing!.headCommit, commits: claim.landing!.commits, since: claim.landing!.since,
-      ...(claim.landing!.front === undefined ? {} : { front: claim.landing!.front }) }))
+    submitted: held.map(claim => rider({ ...byHead.get(claim.landing!.headCommit), workspace: '', headCommit: claim.landing!.headCommit, commits: claim.landing!.commits, since: claim.landing!.since }))
       .sort((a, b) => a.since - b.since),
     returned: turnedBack(state).map(item => ({
       key: item.key, title: compact(item.title, 200), ...(item.assignee ? { member: item.assignee } : {}), status: item.landing!.status, at: item.landing!.at,

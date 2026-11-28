@@ -10,7 +10,7 @@ import { largeCheckout, writeCheckout, type CheckoutGit } from './workspace-chec
 import { nodeProcesses, records, workspaceCommand, type CommandOutput, type CommandResult } from './workspace-process';
 import { WsfsMounts, type WsfsOwner } from './workspace-wsfs';
 import type { WorkflowProcesses } from './ports';
-import type { LandingChange, LandingHead, LandingLive, LandingOverride, LandingRefusal, LandingRider, LandingTrain, LandingView, LandLabel, LandPosition, LandReport, LandSubmitted, LandWithdrawal, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandingChange, LandingHead, LandingLive, LandingOverride, LandingRefusal, LandingRider, LandingTrain, LandingView, LandExpedite, LandLabel, LandPosition, LandReport, LandSubmitted, LandWithdrawal, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
@@ -93,8 +93,11 @@ interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits:
   settled?: boolean; outcome?: string;
   /** What it is for and whose it is, for the ledger and for what the main agent is told. */
   label?: LandLabel;
-  /** Why it is for the head of the queue (see `LandInput`): it boards ahead of the ones that are not, on a train without them. */
-  front?: string }
+  /**
+   * It was put at the head of the queue (see `expedite`): it boards ahead of the ones that were not, on a train
+   * without them. `reason` is who asked and why; `turn` orders such submissions, the first that was put there first.
+   */
+  front?: { reason: string; turn: number } }
 /** A Git command that failed. In a train's worktree that is the train's trouble, not that of the submissions it carries. */
 class GitFailure extends Error {}
 /** The landing branch moved while a train's checks ran, so what they passed on is no longer what would land. */
@@ -103,14 +106,14 @@ class BranchMoved extends Error {}
 class LandingHalted extends Error { constructor(readonly notice: string) { super(notice); } }
 /** A submission was withdrawn from a train that had stacked it: the train stops and runs again without it. */
 class Restacked extends Error {}
-/** A submission arrived for the head of the queue: a train that carries none of those stops, and runs again after theirs. */
+/** A submission was put at the head of the queue: a train that carries others too stops, and runs again after the one that lands it. */
 class Preempted extends Error {}
 /** A train that failed for a reason of its own and runs again with the same submissions. */
 interface TrainTrouble { failures: number; since: number; reason: string; repeated: boolean; mended?: string }
 /**
  * The run a train is on: the submissions it took from the queue and how far it has come with them. `stack` holds the
  * ones whose commits are in what the checks run on; withdrawing one of those aborts `stop`, which ends the check that
- * runs, and so does a submission that arrives for the head of the queue (`Restacked`, `Preempted`). `held` are the
+ * runs, and so does putting a submission at the head of the queue (`Restacked`, `Preempted`). `held` are the
  * ones that put nothing on the stack, because the submissions below them hold all of their commits already, each with
  * how many are below it. Once the step is `landing` the branch is being moved and nothing can be taken back. `probes`
  * are the runs of the checks so far, for the ledger; `base` and `head` are where the branch was and where the train
@@ -141,13 +144,7 @@ interface LandInput { workspace: string; taskId: string;
   /** May answer with what the commits are for and whose they are (see `LandLabel`). */
   submitted?: (info: LandSubmitted) => LandLabel | void;
   /** `halted` says the notice is that the branch is halted, which stands until the main agent settles the branch. */
-  noticed?: (notice: string, halted: boolean) => void;
-  /**
-   * Why these commits cannot wait their turn (a repair the landing itself waits for). They join the queue at its head,
-   * behind the ones put there before them, and ride a train that carries nothing else, so that one run of the checks
-   * lands them; a train that runs without any of them stops for that. Whoever calls `land` decides who may ask this.
-   */
-  front?: string }
+  noticed?: (notice: string, halted: boolean) => void }
 
 /**
  * How long a train waits before it runs again or looks at a halted branch again, when a lock nobody releases counts as
@@ -189,6 +186,8 @@ export class WorkflowWorkspaces {
   private readonly activeKeys = new Set<string>();
   /** Submissions waiting to land, for each workflow and repository; one train at a time runs on each. */
   private readonly trains = new Map<string, Train>();
+  /** How many submissions have been put at the head of a landing queue: the turn of the latest of them. */
+  private expedited = 0;
   /** Stops the trains when the service closes. */
   private readonly stopping = new AbortController();
   /** The last piece of work that uses each train's worktree; a train and a trial of new checks take turns there. */
@@ -1222,8 +1221,7 @@ export class WorkflowWorkspaces {
       if (back) throw error;
       throw new Error(`${error instanceof Error ? error.message : String(error)}. The commits are ${targetCommit}..${head}, and the worktree was moved back to ${targetCommit}: git cherry-pick brings them back`);
     }
-    const boarded = this.board({ ws, base: targetCommit, head: head, commits, ctx, ...(input.noticed ? { noticed: input.noticed } : {}), ...(label ? { label } : {}),
-      ...(input.front === undefined ? {} : { front: input.front }) });
+    const boarded = this.board({ ws, base: targetCommit, head: head, commits, ctx, ...(input.noticed ? { noticed: input.noticed } : {}), ...(label ? { label } : {}) });
     // Whoever submitted may be gone when the queue answers.
     void boarded.catch(() => {});
     return boarded;
@@ -1287,15 +1285,7 @@ export class WorkflowWorkspaces {
       };
       const candidate: Candidate = { ...change, queued: Date.now(), resolve: settled<LandReport>(resolve, report => report.status), reject: settled<unknown>(reject, () => 'failed') };
       signal.addEventListener('abort', leave, { once: true });
-      if (candidate.front === undefined) queue.push(candidate);
-      else {
-        const behind = queue.findIndex(waiting => waiting.front === undefined);
-        queue.splice(behind < 0 ? queue.length : behind, 0, candidate);
-        // The train that runs makes way, unless it carries one of these itself or is moving the branch already: what
-        // it checks would have to be stacked and checked anew on top of this submission in any case.
-        const run = train.current;
-        if (run && run.step !== 'landing' && !run.batch.some(riding => riding.front !== undefined && !riding.settled)) run.stop.abort(new Preempted('A submission arrived for the head of the landing queue'));
-      }
+      queue.push(candidate);
       this.mirror(key);
       if (!train.running) {
         train.running = true;
@@ -1311,8 +1301,8 @@ export class WorkflowWorkspaces {
       await this.exclusive(key, async () => {
         if (!train.queue.length) return;
         const landing = this.landing(train.queue[0]!.ws.workflowId);
-        // The submissions for the head of the queue ride without the others: nothing of theirs is then searched for
-        // the one that breaks the checks, and a single run of them lands what cannot wait.
+        // The submissions that were put at the head of the queue ride without the others: nothing of theirs is then
+        // searched for the one that breaks the checks, and a single run of them lands what cannot wait.
         const others = train.queue.findIndex(candidate => candidate.front === undefined);
         const batch = train.queue.splice(0, Math.min(landing?.batch ?? train.queue.length, others > 0 ? others : train.queue.length));
         const run: TrainRun = train.current = { batch, since: Date.now(), step: 'stacking', checks: 0, stack: [], held: new Map(), stop: new AbortController(), probes: [] };
@@ -1332,7 +1322,7 @@ export class WorkflowWorkspaces {
           const left = batch.filter(candidate => !candidate.settled);
           if (run.stop.signal.aborted && !this.closed) {
             // A submission the train had stacked was withdrawn: the others go on at once, on a stack without it. Or
-            // one arrived for the head of the queue: they go on after its train, on what that landed.
+            // one was put at the head of the queue: they go on after its train, on what that landed.
             this.requeue(train, left);
             this.logTrain(run, run.stop.signal.reason instanceof Preempted ? 'preempted' : 'restacked');
             return;
@@ -1369,13 +1359,18 @@ export class WorkflowWorkspaces {
     this.mirror(key);
   }
   /**
-   * Puts submissions a train took back at the head of its queue, in the order they had. The ones that are for the
-   * head of the queue stay ahead of the others, whichever of them a train gives back.
+   * Puts submissions a train took back at the head of its queue, in the order they had. The ones that were put at
+   * the head of the queue stay ahead of the others, whichever of them a train gives back.
    */
   private requeue(train: Train, back: Candidate[]): void {
     train.queue.unshift(...back);
-    // In place, since whoever waits in the queue holds on to it; the sort keeps the order within each of the two.
-    if (train.queue.some(candidate => candidate.front !== undefined)) train.queue.sort((a, b) => Number(a.front === undefined) - Number(b.front === undefined));
+    this.headFirst(train);
+  }
+  /** Moves the submissions that were put at the head of the queue ahead of the others, the first that was put there first. */
+  private headFirst(train: Train): void {
+    const turn = (candidate: Candidate) => candidate.front?.turn ?? Number.MAX_SAFE_INTEGER;
+    // In place, since whoever waits in the queue holds on to it; the sort keeps the order the others have.
+    if (train.queue.some(candidate => candidate.front)) train.queue.sort((a, b) => turn(a) - turn(b));
   }
   /**
    * How long the train waits before it runs again with the same submissions, or nothing when they get the failure.
@@ -1532,7 +1527,7 @@ export class WorkflowWorkspaces {
    * A submission whose commits are all on the branch already has landed, and one whose commits the submissions below
    * it hold lands when they do: neither adds a commit, so neither is a place the search looks at.
    * A submission that was withdrawn meanwhile is left out; when its commits were already in the stack the train stops
-   * (`Restacked`) and runs again without them. It also stops when a submission arrives for the head of the queue
+   * (`Restacked`) and runs again without them. It also stops when a submission is put at the head of the queue
    * (`Preempted`), which the next train lands first. Returns the submissions to queue again.
    */
   private async round(landing: WorkspaceLanding, batch: Candidate[], trouble: TrainTrouble | undefined, run: TrainRun): Promise<Candidate[]> {
@@ -1578,7 +1573,7 @@ export class WorkflowWorkspaces {
       else candidate.resolve(told({ status: 'landed', targetRef, headCommit: start, commits: 0 }));
     }
     this.mirror(key);
-    // What stopped the run says why: a withdrawal, or a submission that arrived for the head of the queue.
+    // What stopped the run says why: a withdrawal, or a submission that was put at the head of the queue.
     const withdrawn = () => { if (run.stop.signal.aborted) throw run.stop.signal.reason; };
     /** Runs the checks on `commit`, the stack after `count` submissions, and writes the run down for the ledger. */
     const check = async (commit: string, count: number): Promise<CheckFailure | undefined> => {
@@ -1661,6 +1656,31 @@ export class WorkflowWorkspaces {
     return 'absent';
   }
   /**
+   * Puts the submission whose commits end at `headCommit` at the head of the queue, for a repair the landing itself
+   * waits for: behind everything else it would land after the submissions it is to unblock. It boards behind the ones
+   * that were put there before it, and those ride a train that carries nothing else, so one run of the checks lands
+   * them and nothing of theirs is searched with the rest. The train that runs makes way unless it is moving the branch
+   * already or carries nothing but such submissions: what it checks would have to be stacked and checked anew on top
+   * of this one in any case. The checks stay the same; `reason` says who asked and why, for the ledger.
+   */
+  expedite(workflowId: string, headCommit: string, reason: string): LandExpedite {
+    if (this.closed || !this.landing(workflowId)) return 'absent';
+    const same = (candidate: Candidate) => !candidate.settled && candidate.ws.workflowId === workflowId && candidate.head === headCommit;
+    for (const train of this.trains.values()) {
+      const run = train.current, riding = run?.batch.find(same), candidate = riding ?? train.queue.find(same);
+      if (!candidate) continue;
+      if (riding && run!.step === 'landing') return 'landing';
+      if (candidate.front !== undefined) return 'expedited';
+      candidate.front = { reason, turn: ++this.expedited };
+      // One that waits moves up; one on the train goes back to the queue with the others when the train stops.
+      if (!riding) this.headFirst(train);
+      if (run && run.step !== 'landing' && run.batch.some(other => !other.settled && other.front === undefined)) run.stop.abort(new Preempted('A submission was put at the head of the landing queue'));
+      this.mirror(this.trainKey(candidate.ws));
+      return 'expedited';
+    }
+    return 'absent';
+  }
+  /**
    * How long a run of the checks that passed usually takes in this repository: the median of the latest such runs
    * under the same commands, those of the train that runs included, once there are enough of them to say.
    */
@@ -1722,7 +1742,7 @@ export class WorkflowWorkspaces {
       const workflow = any?.workflowId ?? known?.workflow, repository = any?.repository ?? known?.repository;
       if (!workflow || !repository) return;
       const rider = (candidate: Candidate): LandingRider => ({ ...candidate.label, workspace: candidate.ws.id, headCommit: candidate.head, commits: candidate.commits, since: candidate.queued,
-        ...(candidate.front === undefined ? {} : { front: candidate.front }) });
+        ...(candidate.front === undefined ? {} : { front: candidate.front.reason }) });
       const live: Omit<LandingLive, 'at'> = { repository, waiting: (train?.queue ?? []).map(rider),
         ...(run ? { train: { since: run.since, step: run.step, ...(run.base === undefined ? {} : { base: run.base }),
           riders: run.batch.map(candidate => ({ ...rider(candidate), state: candidate.settled ? candidate.outcome ?? 'failed' : run.stack.includes(candidate) || run.held.has(candidate) ? 'stacked' : 'taken' })),
@@ -1747,7 +1767,7 @@ export class WorkflowWorkspaces {
       const { ws } = run.batch[0]!;
       const train: LandingTrain & { checked?: string } = { repository: ws.repository, since: run.since, ms: Date.now() - run.since, base: run.base ?? null, ...(run.head ? { head: run.head } : {}),
         submissions: run.batch.map(candidate => ({ ...candidate.label, workspace: candidate.ws.id, headCommit: candidate.head, commits: candidate.commits, outcome: candidate.settled ? candidate.outcome ?? 'failed' : 'next',
-          ...(candidate.front === undefined ? {} : { front: candidate.front }) })),
+          ...(candidate.front === undefined ? {} : { front: candidate.front.reason }) })),
         checks: run.probes, outcome, ...(error === undefined ? {} : { error: (error instanceof Error ? error.message : String(error)).slice(0, 600) }),
         ...(run.checked ? { checked: run.checked } : {}) };
       this.db.prepare('INSERT INTO landing_trains (workflow, repository, since, data) VALUES (?,?,?,?)').run(ws.workflowId, ws.repository, run.since, JSON.stringify(train));

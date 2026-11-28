@@ -178,6 +178,10 @@ export class WorkflowRuntime {
         await this.workspacePolicy(state.root);
         return this.workspaceManager().withdraw(state.workflowId, input.headCommit, input.reason);
       },
+      expedite: async (state, input) => {
+        await this.workspacePolicy(state.root);
+        return this.workspaceManager().expedite(state.workflowId, input.headCommit, input.reason);
+      },
       landing: async (state, input) => {
         await this.workspacePolicy(state.root);
         return this.workspaceManager().configure({ state, signal: new AbortController().signal }, input);

@@ -920,17 +920,19 @@ export function completeSubmission(state: WorkflowView, args: Record<string, unk
 }
 
 /**
- * The commits of an item the landing queue holds, for a request to take them out of the queue (withdraw_work).
+ * The commits of an item the landing queue holds, for a request to take them out of the queue (withdraw_work) or to
+ * put them at its head (expedite_work); `refused` is what a caller that may not ask it is told.
  * Whoever plans the item's queue may ask, and so may the member that submitted them, which `mine` tells by the claim.
  * An item the queue does not hold is answered as it stands: the queue has dealt with its commits already.
  */
-export function submittedCommits(state: WorkflowView, args: Record<string, unknown>, authority: WorkAuthority = () => 'plans', mine: (claim: ClaimView) => boolean = () => false):
+export function submittedCommits(state: WorkflowView, args: Record<string, unknown>, authority: WorkAuthority = () => 'plans', mine: (claim: ClaimView) => boolean = () => false,
+  refused = 'Commits are withdrawn from the landing queue by the member that submitted them, the main agent, the swarm lead or the lead of their queue'):
   { itemId: string; key: string; member?: string; targetCommit: string; headCommit: string } | { itemId: string; key: string; status: string; landing?: string } {
   options(args, ['itemId', 'key']);
   const item = itemOf(state, args);
   const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && claim.landing && claim.itemId === item.id);
   if (!claim) return { itemId: item.id, key: item.key, status: item.status, ...(item.landing ? { landing: item.landing.status } : {}) };
-  if (!mine(claim) && authority(item) !== 'plans') throw new Error('Commits are withdrawn from the landing queue by the member that submitted them, the main agent, the swarm lead or the lead of their queue');
+  if (!mine(claim) && authority(item) !== 'plans') throw new Error(refused);
   const member = state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
   return { itemId: item.id, key: item.key, ...(member ? { member } : {}), targetCommit: claim.landing!.targetCommit, headCommit: claim.landing!.headCommit };
 }

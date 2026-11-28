@@ -118,11 +118,6 @@ const submissions = new WeakMap<KernelContext, Map<string, Submission>>();
  * From then on the engine holds the claim of the work item the commits are for; commits submitted for none get an
  * item of their own. When they land it completes the item, as the work of that member. When the queue turns them
  * back it returns the item to the member, with what the queue answered.
- *
- * `front` puts the commits at the head of the queue and names why they cannot wait: a repair the landing itself waits
- * for, which behind everything else would land after the submissions it is to unblock. It stops the train that runs
- * and holds every other submission up for one run of the checks, so only a lead may ask it: the lead of the swarm or
- * of one of its queues, which answers for what the others wait for. The commits pass the same checks as any others.
  */
 const submitWork: WorkflowTool = {
   name: 'submit_work',
@@ -131,8 +126,7 @@ const submitWork: WorkflowTool = {
     prepare: (ctx, state) => ctx.scheduler.expireClaims(state),
     call: () => { throw new Error('submit_work runs outside a transaction'); },
     run: async (ctx, caller, args, bound) => {
-      if (Object.keys(args).some(key => !['operationId', 'claimId', 'generation', 'result', 'waitSeconds', 'front'].includes(key))) throw new Error('Unsupported submit_work option');
-      const front = args.front === undefined ? undefined : scriptText(args.front, 'front', 600).trim();
+      if (Object.keys(args).some(key => !['operationId', 'claimId', 'generation', 'result', 'waitSeconds'].includes(key))) throw new Error('Unsupported submit_work option');
       // A call that names nothing submits for the item the member holds; an ID or a claim it names must be right.
       const operationId = args.operationId === undefined ? `submit-${randomUUID()}` : scriptText(args.operationId, 'operationId', 160);
       let claim = args.claimId === undefined ? undefined : { claimId: args.claimId, generation: args.generation };
@@ -152,11 +146,6 @@ const submitWork: WorkflowTool = {
           if (prior) return { prior: prior.response };
           if (!task.workspaceId) throw new Error('submit_work requires a member that runs in a managed worktree');
           if (!ctx.host.land) throw new Error('Landing is unavailable in this workflow');
-          const member = taskAgent(state, task)?.key;
-          if (front !== undefined && !(member && plansWork(state, member) && takesTurns(state, member))) {
-            throw new Error('Only a lead (of the swarm or of one of its queues) puts commits at the head of the landing queue. Submit without front; '
-              + 'when the landing cannot go on without these commits, say so to your lead, which can land them there');
-          }
           // Commits that complete nothing would leave the item the member is at without its work when the worktree
           // goes back to the branch: they are for the item it holds, and for no item only when it holds none.
           const at = heldWork(state, task);
@@ -192,7 +181,7 @@ const submitWork: WorkflowTool = {
         // The commits join the queue: the engine takes the claim, or adds the item that follows them, and the member
         // is answered. When it cannot (the claim ended meanwhile) this throws, and the commits stay in the worktree.
         const submitted = (info: { targetCommit: string; headCommit: string; commits: number; worktree: string }) => {
-          const landing = { targetCommit: info.targetCommit, headCommit: info.headCommit, commits: info.commits, ...(front === undefined ? {} : { front }) };
+          const landing = { targetCommit: info.targetCommit, headCommit: info.headCommit, commits: info.commits };
           const taken = bound((state, task) => ({ member: taskAgent(state, task)?.key,
             ...(claim ? submitClaim(state, task, caller.attemptId, { operationId, ...claim }, ctx.now(), landing, info.worktree)
               : trackSubmission(state, task, caller.attemptId, operationId, ctx.now(), landing, info.worktree)) }));
@@ -203,7 +192,7 @@ const submitWork: WorkflowTool = {
         };
         void (async () => {
           let report;
-          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId, submitted, noticed: raise, ...(front === undefined ? {} : { front }) }, controller.signal) as { status: string; headCommit?: string; commits?: number; reason?: string; notice?: string }; }
+          try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId, submitted, noticed: raise }, controller.signal) as { status: string; headCommit?: string; commits?: number; reason?: string; notice?: string }; }
           catch (error) {
             // Before the queue had the commits this is the member's answer. After, the queue gave them up or was
             // closed: the item goes back to its member, unless the service is closing (the restart does that then) or
@@ -258,15 +247,8 @@ const submitWork: WorkflowTool = {
  * submit_work above), with who withdrew it and why in item.landing. `found` reads the commits of the named item for
  * a caller that may withdraw them.
  */
-async function withdrawWork<Task>(ctx: KernelContext, args: ToolArgs, by: string, read: <T>(apply: (state: WorkflowView, task: Task) => T) => T,
-  found: (state: WorkflowView, named: ToolArgs, task: Task) => ReturnType<typeof submittedCommits>): Promise<unknown> {
-  if (Object.keys(args).some(key => ![...CONTROL_ARGS, 'itemId', 'key', 'reason'].includes(key))) throw new Error('Unsupported withdraw_work option');
-  const reason = scriptText(args.reason, 'reason', 600).trim();
-  const named = { ...(args.itemId === undefined ? {} : { itemId: args.itemId }), ...(args.key === undefined ? {} : { key: args.key }) };
-  const { commits, view } = read((state, task) => {
-    if (state.script?.readOnly) throw new Error('Work landing is disabled in read-only workflows');
-    return { commits: found(state, named, task), view: ctx.store.workspaceView(state) };
-  });
+async function withdrawWork<Task>(ctx: KernelContext, args: ToolArgs, by: string, read: ReadQueued<Task>, found: FindQueued<Task>): Promise<unknown> {
+  const { reason, commits, view } = queuedCommits(ctx, args, 'withdraw_work', read, found);
   const { itemId, key } = commits;
   if (!('headCommit' in commits)) return { ...commits, status: 'absent', item: commits.status, note: 'The landing queue does not hold this item: it has answered the commits already, as work_status shows.' };
   if (!ctx.host.withdraw) throw new Error('Landing is unavailable in this workflow');
@@ -277,6 +259,41 @@ async function withdrawWork<Task>(ctx: KernelContext, args: ToolArgs, by: string
   await new Promise<void>(resolve => { setImmediate(resolve); });
   return { status: 'withdrawn', itemId, key, ...(commits.member ? { member: commits.member } : {}), commits: `${commits.targetCommit}..${commits.headCommit}` };
 }
+
+/**
+ * Puts the commits of an item at the head of the landing queue (expedite_work): a repair the landing itself waits
+ * for, which behind everything else would land after the submissions it is to unblock. They land on a train of
+ * their own, for which a train that runs without them stops, so every other submission waits one run of the checks
+ * longer. Who answers for what the others wait for therefore asks it, and not the member that made the commits:
+ * whoever plans their queue, or a lead for commits of its own. They pass the same checks as any others.
+ */
+async function expediteWork<Task>(ctx: KernelContext, args: ToolArgs, by: string, read: ReadQueued<Task>, found: FindQueued<Task>): Promise<unknown> {
+  const { reason, commits, view } = queuedCommits(ctx, args, 'expedite_work', read, found);
+  const { itemId, key } = commits;
+  if (!('headCommit' in commits)) return { ...commits, status: 'absent', item: commits.status, note: 'The landing queue holds no commits of this item. Commits are put first once submit_work has answered `submitted` for them; work_status shows how the item stands.' };
+  if (!ctx.host.expedite) throw new Error('Landing is unavailable in this workflow');
+  const outcome = await ctx.host.expedite(view, { headCommit: commits.headCommit, reason: `Put first by ${by}: ${reason}` });
+  if (outcome === 'landing') return { status: 'landing', itemId, key, note: 'The train that carries these commits has passed the checks and is moving the branch: they land without waiting any further.' };
+  if (outcome === 'absent') return { status: 'absent', itemId, key, note: 'The landing queue no longer holds these commits: it has answered them meanwhile, or lost them in a restart. work_status shows how the item stands.' };
+  return { status: 'expedited', itemId, key, ...(commits.member ? { member: commits.member } : {}), commits: `${commits.targetCommit}..${commits.headCommit}` };
+}
+
+type ReadQueued<Task> = <T>(apply: (state: WorkflowView, task: Task) => T) => T;
+type FindQueued<Task> = (state: WorkflowView, named: ToolArgs, task: Task) => ReturnType<typeof submittedCommits>;
+
+/** What withdraw_work and expedite_work are called with: the item whose commits the landing queue holds, and why. */
+function queuedCommits<Task>(ctx: KernelContext, args: ToolArgs, tool: string, read: ReadQueued<Task>, found: FindQueued<Task>) {
+  if (Object.keys(args).some(key => ![...CONTROL_ARGS, 'itemId', 'key', 'reason'].includes(key))) throw new Error(`Unsupported ${tool} option`);
+  const reason = scriptText(args.reason, 'reason', 600).trim();
+  const named = { ...(args.itemId === undefined ? {} : { itemId: args.itemId }), ...(args.key === undefined ? {} : { key: args.key }) };
+  return { reason, ...read((state, task) => {
+    if (state.script?.readOnly) throw new Error('Work landing is disabled in read-only workflows');
+    return { commits: found(state, named, task), view: ctx.store.workspaceView(state) };
+  }) };
+}
+
+const EXPEDITE_REFUSED = 'Commits are put at the head of the landing queue by the main agent, the swarm lead or the lead of their queue. '
+  + 'When the landing cannot go on without them, tell your lead which item they are of and what is broken';
 
 /**
  * What a member is told about the queue, in the order it meets it: taking an item, doing it, landing it and what to
@@ -365,12 +382,11 @@ const LEAD_INSTRUCTIONS = 'Changing items: you plan the queues you lead (the lea
   + 'retry_work({operationId,key or itemId,additionalAttempts?}) gives a failed item more attempts (1 by default, 8 at most) and returns it to the queue. '
   + 'withdraw_work({key or itemId,reason}) takes the commits of an item out of the landing queue before they land, when you know that they break the checks or slow them down for everyone: '
   + 'a train that carries them stops its check and runs again without them, and the item returns to the member that submitted it, with your reason in item.landing.\n'
-  + 'submit_work({front:"why"}) puts commits of yours at the head of the landing queue, which only a lead may ask. It is for a repair the landing itself waits for: '
+  + 'expedite_work({key or itemId,reason}) puts the commits of an item at the head of the landing queue, once their member has submitted them (yours as well). It is for a repair the landing itself waits for: '
   + 'the landing branch fails the checks or everyone\'s precheck by itself, or a check is broken, so that behind the other submissions the repair would land after the ones it is to unblock. '
-  + 'The train that runs stops and starts over afterwards, yours rides a train of its own and lands after one run of the checks, and every other submission waits that much longer: '
-  + 'work that is merely important or late takes its turn. front says in a sentence what is broken for everyone; the commits pass the precheck and the checks like any others. '
-  + 'When a member has made the repair, bring its commits into your own worktree (work_status of its item shows them in claim.landing; git cherry-pick <targetCommit>..<headCommit> onto the tip of the landing branch) '
-  + 'and submit them with front: the member\'s own submission then adds nothing and lands with yours.';
+  + 'The train that runs stops and starts over afterwards, the repair rides a train of its own and lands after one run of the checks, and every other submission waits that much longer: '
+  + 'work that is merely important or late takes its turn. reason says in a sentence what is broken for everyone; the commits pass the checks like any others. '
+  + 'It answers expedited, landing (their train is already moving the branch) or absent (the queue holds no commits of the item: ask again once they are submitted).';
 
 /** Durable work queues: the main agent produces and inspects items; persistent members claim and finish them. */
 export const workQueueTools: WorkflowToolPlugin = {
@@ -453,6 +469,25 @@ export const workQueueTools: WorkflowToolPlugin = {
           return withdrawWork<TaskView>(ctx, args, by, bound, (state, named, task) => {
             const member = taskAgent(state, task)?.key;
             return submittedCommits(state, named, member ? workAuthority(state, member) : () => undefined, claim => claim.agentId === (task.agentId ?? `task:${task.taskId}`));
+          });
+        },
+      },
+    },
+    {
+      name: 'expedite_work',
+      main: { kind: 'direct', doc: 'expedite_work(itemId 或 key,reason)',
+        run: async (ctx, _state, args, change) => expediteWork<undefined>(ctx, args, 'the main agent', apply => change(state => apply(state, undefined)), (state, named) => submittedCommits(state, named)) },
+      worker: {
+        verifiesRoot: true,
+        call: () => { throw new Error('expedite_work runs outside a transaction'); },
+        run: async (ctx, _caller, args, bound) => {
+          const by = bound((state, task) => { active(ctx, state); return taskAgent(state, task)?.key ?? 'a task'; });
+          return expediteWork<TaskView>(ctx, args, by, bound, (state, named, task) => {
+            const member = taskAgent(state, task)?.key;
+            // A lead puts its own commits first whatever queue their item is of; any other member asks its lead.
+            const lead = member !== undefined && plansWork(state, member) && takesTurns(state, member);
+            return submittedCommits(state, named, member ? workAuthority(state, member) : () => undefined,
+              claim => lead && claim.agentId === (task.agentId ?? `task:${task.taskId}`), EXPEDITE_REFUSED);
           });
         },
       },

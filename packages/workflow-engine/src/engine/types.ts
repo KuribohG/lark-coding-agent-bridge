@@ -476,9 +476,9 @@ export interface WorkClaim {
    * The member handed the commits for this item to the landing queue and went on to other work. The engine holds the
    * claim from then on: it is not the item the member is at work on, does not end with the member's turn, and cannot
    * be used by the member. It completes the item when the commits land and returns the item to the member when the
-   * queue turns them back. `front` is why a lead put them at the head of the queue (submit_work).
+   * queue turns them back.
    */
-  landing?: { since: number; targetCommit: string; headCommit: string; commits: number; front?: string };
+  landing?: { since: number; targetCommit: string; headCommit: string; commits: number };
   /**
    * A host restart cut short the turn that holds this claim. Until its member's next attempt adopts the claim, or
    * this time passes, the claim keeps its item, cannot be used, and does not expire by lease.
@@ -859,12 +859,10 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
    * report follows whenever the queue has dealt with them; `noticed` takes what the main agent should hear about the
    * branch while they wait, and whether that is that the branch is halted. `submitted` may answer with the key of
    * the work item the commits are for and the member they are of, which the landing ledger and the notices name.
-   * `front` says why the commits cannot wait their turn: they join the queue at its head and land on a train of
-   * their own, for which a train that runs without them stops.
    */
   land?(state: WorkspaceStateView, input: { workspace: string; taskId: string;
     submitted?: (info: { targetRef: string; targetCommit: string; headCommit: string; commits: number; worktree: 'reset' | 'kept' }) => { key?: string; member?: string } | void;
-    noticed?: (notice: string, halted: boolean) => void; front?: string }, signal: AbortSignal): Promise<unknown>;
+    noticed?: (notice: string, halted: boolean) => void }, signal: AbortSignal): Promise<unknown>;
   /**
    * Puts the worktree of the task where the item it has just claimed starts: on the commits the landing queue turned
    * back for the item (`commits`, as `base..head`), or else at the tip of the landing branch. Resolves to a
@@ -876,6 +874,11 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
    * with `reason`; resolves to a LandWithdrawal (workspace-types.ts).
    */
   withdraw?(state: WorkspaceStateView, input: { headCommit: string; reason: string }): Promise<'withdrawn' | 'landing' | 'absent'>;
+  /**
+   * Puts the submission whose commits end at `headCommit` at the head of the landing queue, where it lands on a train
+   * of its own; `reason` says who asked and why. Resolves to a LandExpedite (workspace-types.ts).
+   */
+  expedite?(state: WorkspaceStateView, input: { headCommit: string; reason: string }): Promise<'expedited' | 'landing' | 'absent'>;
   /** Reports the landing and applies the main agent's changes to it; resolves to a LandingChange (workspace-types.ts). */
   landing?(state: WorkspaceStateView, input: Record<string, unknown>): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
