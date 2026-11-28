@@ -615,6 +615,11 @@ export interface WorkflowScript {
   resultRef?: string;
   error?: string;
   readOnly?: boolean;
+  /**
+   * Directories outside its working directory that the script lets the workers of this workflow write (`allowWrites`),
+   * where the host confines what they write. It stays as the script last set it, across replays too.
+   */
+  writes?: string[];
 }
 
 export interface WorkflowArtifact {
@@ -747,6 +752,8 @@ export interface WorkflowWorkerRequest {
   task: WorkflowTask;
   /** The member plans work for others (the lead of a swarm or of a queue), so it is also told the operations only such a member may call. */
   plans?: boolean;
+  /** The directories the script lets the workflow's workers write besides their working directory. */
+  writes?: readonly string[];
   session: WorkerSession;
   attemptId: string;
   prompt: string;

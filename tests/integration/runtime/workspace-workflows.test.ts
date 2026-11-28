@@ -169,6 +169,7 @@ describe('workspace script runtime', () => {
       workerSandbox: () => ({ enabled: true, requireLandlock: true, allowTcp: true, readWrite: ['/shared/pool'], readOnly: [] }) });
     try {
       await h.call('run_script', { script: `const a=await createWorkspace({key:'a'}), q=await createWorkspace({key:'q'});
+        await allowWrites(['/project/cache','/shared/pool']);
         await enqueueWork({key:'i',title:'I',input:1,queue:'core'});
         return await swarm('Write in parallel',{key:'crew',lead:{name:'boss',harness:'codex',model:'lead'},members:[
           {name:'planner',harness:'codex',model:'planner',leads:['core'],workspace:q.id},
@@ -181,14 +182,15 @@ describe('workspace script runtime', () => {
         expect(lead.execSandbox).toBeUndefined();
         expect(lead.systemPrompt).not.toMatch(/Signals:|Writes:/);
       }
-      // A member that does the work: a cell of its own, and a sandbox that is opened for what a commit in its worktree
-      // writes outside it, which is its own Git directory and the objects of the repository.
+      // A member that does the work: a cell of its own, and a sandbox that is opened for what the machine shares with
+      // every worker, what the script shares among its own, and what a commit in its worktree writes outside it, which
+      // is its own Git directory and the objects of the repository.
       const worker = of('worker');
       expect(worker.signalCell?.id).toBe(`workflow:${h.state().workflowId}:${h.state().sessions.find(session => session.workspaceId && worker.cwd!.includes(session.workspaceId))!.sessionRef}`);
       expect(worker.execSandbox).toMatchObject({ enabled: true, requireLandlock: true, allowTcp: true, readOnly: [] });
-      expect(worker.execSandbox!.readWrite).toEqual(['/shared/pool', await git(worker.cwd!, 'rev-parse', '--absolute-git-dir'),
+      expect(worker.execSandbox!.readWrite).toEqual(['/shared/pool', '/project/cache', await git(worker.cwd!, 'rev-parse', '--absolute-git-dir'),
         join(await git(h.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'), 'objects')]);
-      expect(worker.systemPrompt).toContain('`Permission denied` anywhere else is the sandbox you run in');
+      expect(worker.systemPrompt).toContain('shared with the other members, are open to you as well: /shared/pool, /project/cache. `Permission denied` anywhere else is the sandbox you run in');
       expect(worker.systemPrompt).toContain('`Operation not permitted` from kill or pkill means');
     } finally { release(); }
   }, 60_000);

@@ -68,9 +68,15 @@ own in the bridge-wide `[workflow]` table instead:
 [workflow.worker_sandbox]
 enabled = true
 require_landlock = true
-# What the members of your workflows must write outside their worktrees.
+# What the workers of every workflow on this machine must write outside their worktrees.
 read_write = ["/shared/pool"]
 ```
+
+What only one project's workers share belongs in that workflow's script rather
+than here: `await allowWrites(['/data/project-ccache'])` opens the listed
+directories to the workers of that workflow alone (see
+[Writes](workflows.md#writes)). The table decides whether workers are confined;
+a script can only add directories for its own.
 
 It has the keys of a profile's table and takes its place for the workers that
 are not leads; edits apply to worker processes started after them. A member
@@ -89,7 +95,7 @@ A confined worker can write
   Git directory (`<repository>/.git/worktrees/<name>`, which holds its index and
   `HEAD`) and the repository's object store. The bridge adds these for each
   worker;
-- `read_write`.
+- `read_write`, and what the workflow's script opened with `allowWrites`.
 
 So a member can build, test and commit in its worktree, and
 `submit_work` lands what it committed, because the bridge does the landing. It

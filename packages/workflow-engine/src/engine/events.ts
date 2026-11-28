@@ -50,6 +50,7 @@ export type DomainEvent =
   | { type: 'workspace_key_reserved'; key: string }
   | { type: 'control_operation_recorded'; operation: { key: string; digest: string; taskId: string } }
   | { type: 'script_phase_set'; phase: string }
+  | { type: 'script_writes_set'; paths: string[] }
   | { type: 'script_logged'; text: string }
   | { type: 'script_succeeded'; resultRef: string }
   | { type: 'script_failed'; error: string; stopReason?: 'deadline' }

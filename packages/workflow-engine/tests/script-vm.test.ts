@@ -134,6 +134,13 @@ describe('script interpreter', () => {
     await expect(run('await workStatus();', { signal: AbortSignal.timeout(30), work: () => new Promise(() => {}) })).rejects.toThrow();
   });
 
+  it('passes the directories a script opens to its workers on to the host', async () => {
+    const work = vi.fn(async (input: unknown) => ({ paths: (input as { paths: string[] }).paths }));
+    expect(JSON.parse(await run('return await allowWrites(["/shared/cache", "/shared/pool"]);', { work }))).toEqual({ paths: ['/shared/cache', '/shared/pool'] });
+    expect(work).toHaveBeenCalledWith({ kind: 'writes', paths: ['/shared/cache', '/shared/pool'] });
+    await expect(run('await allowWrites("/shared/cache");', { work })).rejects.toThrow('allowWrites([path, ...]) expected');
+  });
+
   it('awaits a swarm, permits concurrent producers and cancels an idle wait', async () => {
     let drained!: (value: unknown) => void;
     const work = vi.fn(async (input: unknown) => {

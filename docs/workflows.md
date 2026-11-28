@@ -807,6 +807,14 @@ On Linux a worker can signal only the processes it started, in this turn or an e
 
 With `[workflow.worker_sandbox]` enabled in the bridge configuration, a worker that is not a lead can write only in its working directory, its scratch directory and the tool caches under the home directory, and can commit in its working directory; everything else, the main checkout and the other members' worktrees included, is read-only to it. Leads and the main agent keep what their profile allows. See [the exec sandbox for workflow workers](exec-sandbox.md#workflow-workers) for what that means for a script.
 
+What the members of one workflow share outside their worktrees, such as a build cache or the state of a resource pool, the script names itself:
+
+```js
+await allowWrites(['/data/project/.scratch', '/data/project-ccache']);
+```
+
+`allowWrites([path, ...])` takes up to 32 absolute directories and opens them to every worker of the workflow that starts a turn afterwards, so call it before `swarm()` or `agent()`. Members a lead adds later get them too; no lead and no worker can add to them. The list stays as the script last set it, across replays as well, and `allowWrites([])` closes it. On a machine that does not confine its workers the call has no effect and is not an error, so a script can keep it. A read-only workflow cannot call it, and neither can the script of a child workflow, which a worker writes: the workers of a child workflow write where those of the workflow at the top do. Do not name a repository or its `.git`: that opens the other members' checkouts and the shared Git configuration again, which the sandbox is there to keep closed.
+
 ### Interpreter and execution boundaries
 
 QuickJS/WASM runs the script with JSON-only host callbacks, no host objects, process, filesystem, network or module loader. `Date` and `Math.random` are disabled; pass such inputs through `args`. Each interpreter has a 256 MiB guest heap, 512 KiB stack, 100 ms synchronous slices, approximately 2 seconds of guest CPU and 100,000 promise jobs. There are at most four active interpreters per nesting depth, with four levels including roots (at most sixteen total). Waiting ancestors cannot exhaust the interpreter capacity needed by their children. Source, arguments, worker output and final output have bounded sizes (100,000 characters); status retains at most 50 log entries of 1,000 characters. A deadline/abort signal also terminates scripts awaiting an unresolved promise.

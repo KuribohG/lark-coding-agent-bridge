@@ -1,3 +1,4 @@
+import { posix } from 'node:path';
 import { workerSelection } from './execution';
 import { parseJsonSchema, type JsonSchema } from './json-schema';
 import type { WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowDefinition, WorkflowRoot } from './types';
@@ -34,6 +35,24 @@ export interface ScriptAgentCall {
 export function scriptText(value: unknown, name: string, max = SCRIPT_MAX_TEXT): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${name} must be nonempty text of at most ${max} characters`);
   return value;
+}
+
+/** Most directories a script opens to its workers with `allowWrites`. */
+const SCRIPT_MAX_WRITES = 32;
+
+/**
+ * The directories `allowWrites` names, as a host that confines its workers will open them: absolute paths, taken as
+ * written. Only hosts with POSIX paths confine writes, so that is the form they have; the root would open everything
+ * and is refused.
+ */
+export function scriptWrites(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > SCRIPT_MAX_WRITES) throw new Error(`allowWrites takes a list of at most ${SCRIPT_MAX_WRITES} directories`);
+  return [...new Set(value.map((path: unknown) => {
+    if (typeof path !== 'string' || path.length > 1024 || /[\0\r\n]/.test(path) || !path.startsWith('/')) throw new Error('allowWrites takes absolute paths (/dir/...)');
+    const directory = posix.normalize(path).replace(/\/+$/, '');
+    if (!directory) throw new Error('allowWrites does not open the root directory');
+    return directory;
+  }))];
 }
 
 export function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {

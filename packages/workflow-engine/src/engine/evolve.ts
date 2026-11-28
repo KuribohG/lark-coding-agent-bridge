@@ -79,6 +79,9 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'workspace_key_reserved': (state.workspaceKeys ??= []).push(event.key); return;
     case 'control_operation_recorded': (state.controlOperations ??= []).push(event.operation); return;
     case 'script_phase_set': state.script!.phase = event.phase; return;
+    case 'script_writes_set':
+      if (event.paths.length) state.script!.writes = event.paths; else delete state.script!.writes;
+      return;
     case 'script_logged': state.script!.logs = [...state.script!.logs, event.text].slice(-50); return;
     case 'script_succeeded': state.script!.resultRef = event.resultRef; state.script!.status = 'result_ready'; return;
     case 'script_failed':

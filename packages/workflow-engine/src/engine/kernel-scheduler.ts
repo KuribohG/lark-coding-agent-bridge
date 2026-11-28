@@ -427,9 +427,13 @@ export class WorkflowScheduler {
       const observed = await ctx.host.executionLedger?.lookupExecution(executionId, scopeId);
       if (observed?.state === 'completed') { await this.notifyExecution(scopeId, workflowId, executionId); return; }
       const plans = plansWork(live, live.agents?.find(agent => agent.agentId === turn.agentId)?.key);
+      // Only the script the main agent runs opens directories, and what it opens holds for the workflows started under it.
+      let top = live;
+      for (let above; top.parent && (above = store.state(scopeId, top.parent.workflowId));) top = above;
+      const writes = top.parent ? undefined : top.script?.writes;
       if (observed && (observed.state !== 'not-submitted' || !observed.proof))
         result = { status: 'unknown', quiescence: 'unknown', error: 'Host execution outcome is not proven' };
-      else result = await ctx.host.execute({ workflow, task, ...(plans ? { plans } : {}), session, attemptId, executionId, logicalCallId, prompt: memberPrompt, hostTools, signal,
+      else result = await ctx.host.execute({ workflow, task, ...(plans ? { plans } : {}), ...(writes?.length ? { writes: [...writes] } : {}), session, attemptId, executionId, logicalCallId, prompt: memberPrompt, hostTools, signal,
         onRun: runId => {
           // The watchdog starts here: queueing in the host's pool is not the agent's silence.
           this.noteActivity(taskId, attemptId, false);

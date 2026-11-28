@@ -68,8 +68,10 @@ const SIGNAL_CELL_NOTE = '\nSignals: `Operation not permitted` from kill or pkil
  * What a worker whose writes are confined is told, so that a refused write is read as the sandbox and not as a fault
  * to work around with another path or another tool.
  */
-const WORKER_SANDBOX_NOTE = '\nWrites: you can write in your working directory, in your scratch directory ($TMPDIR) and in tool caches under '
-  + 'your home directory, and commit in your working directory. `Permission denied` anywhere else is the sandbox you run in. '
+const workerSandboxNote = (shared: readonly string[]) => '\nWrites: you can write in your working directory, in your scratch directory ($TMPDIR) and in tool caches under '
+  + 'your home directory, and commit in your working directory.'
+  + (shared.length ? ` These directories, shared with the other members, are open to you as well: ${shared.join(', ')}.` : '')
+  + ' `Permission denied` anywhere else is the sandbox you run in. '
   + 'Do not look for a way around it: keep what you produce in your working directory, and say so in your result if a path you need is closed.';
 
 /**
@@ -129,15 +131,17 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
       // A lead is run as the main agent is, so that it can stop and mend what the members it plans for cannot.
       const cell = spec.lead ? undefined : deps.signalCell?.(spec.sessionKey);
       const sandbox = spec.lead ? undefined : deps.workerSandbox?.();
+      // What the machine opens to every worker, then what this workflow's script opens to its own.
+      const shared = sandbox?.enabled ? [...new Set([...sandbox.readWrite, ...spec.writes ?? []])] : [];
       const execSandbox = sandbox?.enabled
-        ? { ...sandbox, readWrite: [...sandbox.readWrite, ...await gitWritePaths(workspace?.path ?? current.policy.cwdRealpath)] }
+        ? { ...sandbox, readWrite: [...shared, ...await gitWritePaths(workspace?.path ?? current.policy.cwdRealpath)] }
         : sandbox;
       let submitted;
       try {
         submitted = await deps.executor.submit({
           scopeId: spec.sessionKey, agentScopeId: root.scopeId, agentKind, requireFinalAnswer: true,
           priority: 'background', env: spec.env,
-          systemPrompt: spec.systemPrompt + (cell ? SIGNAL_CELL_NOTE : '') + (execSandbox?.enabled ? WORKER_SANDBOX_NOTE : ''),
+          systemPrompt: spec.systemPrompt + (cell ? SIGNAL_CELL_NOTE : '') + (execSandbox?.enabled ? workerSandboxNote(shared) : ''),
           validateBeforeRun: async () => {
             const admitted = await workerGrant(root, execution);
             if (workflowDigest(admitted.execution) !== workflowDigest(execution)) throw new Error('Worker binding changed while queued');

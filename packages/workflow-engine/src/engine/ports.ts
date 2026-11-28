@@ -36,6 +36,8 @@ export interface WorkerRunSpec {
    * runs the main agent, without what confines the others.
    */
   lead?: boolean;
+  /** Directories the workflow's script lets its workers write besides their working directory; a host that confines writes opens them. */
+  writes?: readonly string[];
   roleLabel?: string;
   readOnly?: boolean;
   scriptOutput?: 'text' | 'json';

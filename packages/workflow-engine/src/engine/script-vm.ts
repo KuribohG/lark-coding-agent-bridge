@@ -115,6 +115,10 @@ const PRELUDE = `(() => {
       } catch (error) { return softFailure('null', 'pipeline item ' + index, error); }
     }));
   };
+  globalThis.allowWrites = paths => {
+    if (!Array.isArray(paths)) throw new TypeError('allowWrites([path, ...]) expected');
+    return work(JSON.stringify({kind: 'writes', paths})).then(JSON.parse);
+  };
   globalThis.phase = text => progress('phase', String(text));
   globalThis.log = text => progress('log', String(text));
   globalThis.Date = undefined;

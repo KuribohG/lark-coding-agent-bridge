@@ -175,6 +175,47 @@ describe('nested workflow capability',()=>{
     expect(h.state(child.workflowId).agents?.map(agent=>agent.key)).toEqual(['leaf']);
   });
 
+  it('hands the directories the root script opens to every turn of the tree, and lets no child script open any',async()=>{
+    const h=harness();await h.start({maxAgents:3});
+    const writes=(id:string,paths:unknown,extra:Record<string,unknown>={})=>h.kernel.scriptWork('nested-test',id,h.state(id).script!.runId,{kind:'writes',paths,...extra});
+    const root=h.state().workflowId;
+    // Taken as written, once each.
+    expect(await writes(root,['/shared/cache/','/shared/pool','/shared/x/../cache'])).toEqual({paths:['/shared/cache','/shared/pool']});
+    const refused:Array<[unknown,string]>=[[['relative/dir'],'absolute paths'],[['/shared','/'],'root directory'],[['/a/../..'],'root directory'],['/shared','list of at most'],
+      [Array.from({length:33},(_,i)=>'/d'+i),'list of at most'],[[7],'absolute paths'],[['/a\nb'],'absolute paths']];
+    for(const [paths,error] of refused) await expect(writes(root,paths)).rejects.toThrow(error);
+    await expect(writes(root,['/x'],{key:'k'})).rejects.toThrow('directories only');
+    expect(h.state().script!.writes).toEqual(['/shared/cache','/shared/pool']);
+    await h.agent(h.state());await h.run(1);
+    expect(h.requests[0]!.writes).toEqual(['/shared/cache','/shared/pool']);
+    // A worker writes the script of the child it starts. That script opens nothing, and the child's workers write where the root's do.
+    const child=await h.child(h.requests[0]!);await h.finish(h.requests[0]!);h.begin(child.workflowId);
+    await expect(writes(child.workflowId,['/anywhere'])).rejects.toThrow('belongs to the script the main agent runs');
+    await h.agent(h.state(child.workflowId),{key:'leaf',member:'leaf',workflowTool:false});await h.run(2);
+    expect(h.requests[1]!.workflow.workflowId).toBe(child.workflowId);
+    expect(h.requests[1]!.writes).toEqual(['/shared/cache','/shared/pool']);
+    expect(h.state(child.workflowId).script!.writes).toBeUndefined();
+  });
+
+  it('keeps the opened directories as the script last set them, across a replay, until it closes them',async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'workflow-writes-'));cleanup.push(()=>rm(dir,{recursive:true,force:true}));
+    const h=harness(join(dir,'state.sqlite'));await h.start({maxAgents:3});
+    const writes=(paths:unknown)=>h.kernel.scriptWork('nested-test',h.state().workflowId,h.state().script!.runId,{kind:'writes',paths});
+    await writes(['/shared/cache']);await writes(['/shared/pool']);
+    // The bridge restarts and the script runs again from its start.
+    await h.restart();await h.replay();
+    expect(h.state().script!.writes).toEqual(['/shared/pool']);
+    await h.agent(h.state(),{key:'first',workflowTool:false});await h.run(1);
+    expect(h.requests[0]!.writes).toEqual(['/shared/pool']);
+    expect(await writes([])).toEqual({paths:[]});
+    expect(h.state().script!.writes).toBeUndefined();
+    await h.finish(h.requests[0]!);await h.agent(h.state(),{key:'second',workflowTool:false});await h.run(2);
+    expect(h.requests[1]!).not.toHaveProperty('writes');
+    // A workflow that changes nothing has no use for them.
+    const ro=harness();await ro.start({readOnly:true});
+    await expect(ro.kernel.scriptWork('nested-test',ro.state().workflowId,ro.state().script!.runId,{kind:'writes',paths:['/shared/cache']})).rejects.toThrow('read-only workflows');
+  });
+
   it.each([false,true])('requires explicit permission to enqueue into the parent queue: %s',async granted=>{
     const h=harness();await h.start();await h.agent(h.state());await h.run(1);
     const child=await h.child(h.requests[0]!,{parentQueue:granted});await h.finish(h.requests[0]!);h.begin(child.workflowId);

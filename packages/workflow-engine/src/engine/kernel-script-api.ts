@@ -9,7 +9,7 @@ import { postToBoard, readBoard } from './board';
 import { mailboxOperation, receiveMessages, receiptMessages, relaySender, scheduleMemberTurn, sendMessage } from './durable-agents';
 import { inheritedWorkerExecution } from './execution';
 import { MAX_CONTROL_OPERATIONS, MAX_WORKSPACE_KEYS, SCRIPT_MAX_KEYED_CALLS } from './limits';
-import { parseScriptAgentCall, scriptText } from './script-contract';
+import { parseScriptAgentCall, scriptText, scriptWrites } from './script-contract';
 import { addArtifact, anyTask, archivedRecord, artifactOf, boardTotal, BUSY, callCount, controlOperationByKey, findTask, mailboxOperationByKey, pushEvent, readArtifact, receiptByKey, recordCall, requireState, sameRoot, scriptCall, scriptKeyRecorded, taskKeyUsed, waitByKey, workItemByKey, workspaceKeyUsed } from './kernel-state';
 import { archiveOf, emit, putText } from './kernel-store';
 import type { KernelContext } from './kernel-context';
@@ -253,6 +253,20 @@ export class ScriptApi {
     if (args.queue === 'parent') delete args.queue;
     const name = queueName(args.queue);
     if (kind === 'status') return workStatus(snapshot, args);
+    if (kind === 'writes') {
+      if (Object.keys(args).some(key => key !== 'paths')) throw new Error('allowWrites takes a list of directories only');
+      // A worker starts a child workflow and writes its script: what that script opened, the worker would have opened to itself.
+      if (snapshot.parent) throw new Error('allowWrites belongs to the script the main agent runs; the workers of a child workflow write where those of the workflow above it do');
+      if (snapshot.script?.readOnly) throw new Error('allowWrites is unavailable in read-only workflows');
+      const paths = scriptWrites(args.paths);
+      // A setting of the workflow rather than a keyed call: it holds as last set, and a replay sets it again.
+      return store.transact(() => {
+        const state = requireState(store.state(scopeId, workflowId));
+        if (!active(state)) throw new Error('Script run is inactive');
+        emit(state, { type: 'script_writes_set', paths });
+        return { paths };
+      }, 'script:' + runId);
+    }
     if (!['enqueue', 'close', 'swarm'].includes(String(kind))) throw new Error('Unknown script work operation');
     const check = (state: WorkflowView) => {
       const key = this.checkWorkKey(state, args.key, kind as 'enqueue' | 'swarm' | 'close');
