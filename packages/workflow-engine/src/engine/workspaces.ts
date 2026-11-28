@@ -190,8 +190,6 @@ export class WorkflowWorkspaces {
   private readonly supported = new Map<string, Promise<void>>();
   /** The look at a source checkout for uncommitted changes that is under way; see `uncommitted`. */
   private readonly looking = new Map<string, Promise<{ count: number; first: string[] }>>();
-  /** The repositories known to let a worktree override the shared config, asked once for each; see `sharedWorktreeConfig`. */
-  private readonly worktreeConfig = new Map<string, Promise<void>>();
   /** The worktrees whose files are being written and how to stop each; `unwatched` when no creation waits for it. */
   private readonly making = new Map<string, { workflow: string; done: Promise<WorkspaceBinding>; stop: AbortController; unwatched: boolean }>();
   /** Why the files of a worktree no creation waited for could not be written, until whoever is bound to it is told. */
@@ -430,30 +428,20 @@ export class WorkflowWorkspaces {
   }
 
   /**
-   * Makes the shared repository read a worktree's own configuration, which Git does only when it says
-   * `extensions.worktreeConfig` is true. Asked once for each repository; a failed answer is asked again next time.
-   */
-  private sharedWorktreeConfig(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir'>, signal: AbortSignal): Promise<void> {
-    const known = this.worktreeConfig.get(ws.commonDir);
-    if (known) return known;
-    const done = (async () => {
-      const current = await this.git(ws.repository, ['config', '--get', 'extensions.worktreeConfig'], signal, true);
-      if (current.code || current.stdout.trim() !== 'true') await this.git(ws.repository, ['config', 'extensions.worktreeConfig', 'true'], signal);
-    })();
-    this.worktreeConfig.set(ws.commonDir, done);
-    void done.catch(() => { if (this.worktreeConfig.get(ws.commonDir) === done) this.worktreeConfig.delete(ws.commonDir); });
-    return done;
-  }
-  /**
    * Pins `core.bare = false` in the worktree's own configuration, so that the worktree stays a worktree whatever the
-   * shared config says. A `core.bare = true` written there — a stray `git init` or `git config` run in a directory that
-   * is not a repository of its own, walking up to this one — turns every linked worktree bare: `git status`,
+   * shared config comes to say. A `core.bare = true` written there by a stray `git config`, run in a directory that is
+   * not a repository of its own and walking up to this one, turns every linked worktree bare: `git status`,
    * `git commit` and `git rev-parse --show-toplevel` then refuse to run while `git log` and `git rev-parse HEAD` still
    * work, and every member of the workflow fails at once. The pin is what the member's own Git commands read too.
+   *
+   * Both halves of that hold only in a repository with `extensions.worktreeConfig`, which `git sparse-checkout` turns
+   * on: without it Git keeps the shared `core.bare` and `core.worktree` from linked worktrees, and does not read the
+   * pin. So the pin is written everywhere and the extension is left as it is found. Turning it on here would hand the
+   * shared values to every worktree this service did not make: all of them would be bare at once in a repository that
+   * is kept bare, where each checkout is a linked worktree.
    */
-  private async pinWorktree(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir' | 'isolation'>, path: string, signal: AbortSignal): Promise<void> {
+  private async pinWorktree(ws: Pick<WorkspaceBinding, 'isolation'>, path: string, signal: AbortSignal): Promise<void> {
     if (ws.isolation === 'clone') return;
-    await this.sharedWorktreeConfig(ws, signal);
     const gitDir = (await this.git(path, ['rev-parse', '--absolute-git-dir'], signal)).stdout.trim();
     const file = join(gitDir, 'config.worktree');
     const current = await this.git(path, ['config', '--file', file, '--get', 'core.bare'], signal, true);
@@ -461,17 +449,19 @@ export class WorkflowWorkspaces {
     await this.git(path, ['config', '--file', file, 'core.bare', 'false'], signal);
   }
   /**
-   * What Git's refusal to find a work tree in `cwd` means when the repository's shared config says it is bare: the
-   * sentence that names the repository and the one command that repairs it. Nothing else is a `bare` fault.
+   * What Git's refusal to find a work tree in `cwd` means when `cwd` is a checkout and the repository's config says it
+   * is bare: the sentence that names the repository and the one command that repairs it. Nothing else is a `bare`
+   * fault, and neither is a repository that is kept bare, whose directory holds no `.git`.
    */
   private async bareFault(cwd: string, signal: AbortSignal): Promise<GitFailure | undefined> {
+    if (!await access(join(cwd, '.git')).then(() => true, () => false)) return undefined;
     const bare = await this.git(cwd, ['config', '--get', 'core.bare'], signal, true);
     if (bare.code || bare.stdout.trim() !== 'true') return undefined;
     const common = await this.git(cwd, ['rev-parse', '--git-common-dir'], signal, true);
     // The checkout the member knows, not its `.git`: an absolute common dir ends in `.git` for a repository with a work tree.
     const shared = common.code ? cwd : await realpath(resolve(cwd, common.stdout.trim()));
     const repository = basename(shared) === '.git' ? dirname(shared) : shared;
-    return new GitFailure(`Git will not work in ${cwd}: ${repository} has core.bare = true in its shared config, so every linked worktree of it is treated as bare (git status, git commit and git rev-parse --show-toplevel refuse to run; git log still works). Fix: git -C ${repository} config --unset core.bare`);
+    return new GitFailure(`Git will not work in ${cwd}: ${repository} has core.bare = true in its shared config, so Git takes this checkout for a bare repository (git status, git commit and git rev-parse --show-toplevel refuse to run; git log still works). Fix: git -C ${repository} config --unset core.bare`);
   }
 
   /** Has `listener` called when a worktree no creation waited for is ready or has failed. */

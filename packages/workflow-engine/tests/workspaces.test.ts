@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { access, chmod, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -147,10 +147,14 @@ describe('managed workflow worktrees with real Git', () => {
   }, 60_000);
 
   it('keeps a worktree a worktree when the shared repository is made bare, and mends one made before the mark', async () => {
-    const h = await fixture(), ws = await h.create('a');
+    const h = await fixture();
+    // What `git sparse-checkout` turns on. Only with it does Git apply the shared `core.bare` to a linked worktree, and
+    // only with it does Git read what a worktree says for itself.
+    await git(h.repo, 'config', 'extensions.worktreeConfig', 'true');
+    const ws = await h.create('a');
     const gitDir = await git(ws.path, 'rev-parse', '--absolute-git-dir');
-    // What a stray `git config` or `git init` run in a directory that is not a repository of its own can write: every
-    // linked worktree would be treated as bare, and every member of the workflow would fail at once.
+    // What a stray `git config` run in a directory that is not a repository of its own can write: every linked worktree
+    // would be treated as bare, and every member of the workflow would fail at once.
     await git(h.repo, 'config', 'core.bare', 'true');
     expect(await git(ws.path, 'rev-parse', '--is-inside-work-tree')).toBe('true');
     await h.commit(ws, 'after.txt', 'after\n');
@@ -163,15 +167,43 @@ describe('managed workflow worktrees with real Git', () => {
   }, 30_000);
 
   it('names the shared repository and its repair when a worktree cannot be mended', async () => {
-    const h = await fixture(), ws = await h.create('a');
+    const h = await fixture();
+    await git(h.repo, 'config', 'extensions.worktreeConfig', 'true');
+    const ws = await h.create('a');
     const gitDir = await git(ws.path, 'rev-parse', '--absolute-git-dir');
     await rm(join(gitDir, 'config.worktree'));
     await git(h.repo, 'config', 'core.bare', 'true');
-    // The mark cannot be written: Git keeps refusing, and the refusal names what to run rather than the failed command.
-    await chmod(gitDir, 0o500);
-    try {
-      await expect(h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).rejects.toThrow(new RegExp(`core\\.bare = true in its shared config.*git -C ${h.repo} config --unset core\\.bare`));
-    } finally { await chmod(gitDir, 0o700); }
+    // The mark cannot be written while its lock is held: Git keeps refusing, and the refusal names what to run rather
+    // than the command that failed.
+    await writeFile(join(gitDir, 'config.worktree.lock'), '');
+    await expect(h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).rejects.toThrow(/core\.bare = true in its shared config.*git -C .*repo config --unset core\.bare/);
+  }, 30_000);
+
+  it('leaves the shared configuration of a repository as it found it', async () => {
+    const h = await fixture();
+    // The user's own worktree of the same repository, which this service never marks.
+    const own = join(h.dir, 'own'); await git(h.repo, 'worktree', 'add', '-b', 'own', own);
+    const ws = await h.create('a');
+    // With `extensions.worktreeConfig` off, Git keeps a shared `core.bare` from every linked worktree. Turning it on to
+    // have the mark read would take that away from the worktrees this service did not make.
+    expect(await git(h.repo, 'config', '--local', '--list')).not.toMatch(/^extensions\./m);
+    await git(h.repo, 'config', 'core.bare', 'true');
+    for (const path of [own, ws.path]) expect(await git(path, 'rev-parse', '--is-inside-work-tree')).toBe('true');
+    await h.commit(ws, 'after.txt', 'after\n');
+  }, 30_000);
+
+  it('works beside the other worktrees of a repository that is kept bare', async () => {
+    const h = await fixture();
+    // Every checkout of such a repository is a linked worktree, and its shared config says `core.bare = true` by design.
+    const store = join(h.dir, 'store.git'), checkout = join(h.dir, 'checkout');
+    await git(h.dir, 'clone', '--bare', h.repo, store);
+    await git(store, 'config', 'user.name', 'Test'); await git(store, 'config', 'user.email', 'test@localhost'); await git(store, 'config', 'core.autocrlf', 'false');
+    await git(store, 'worktree', 'add', checkout, 'main');
+    const ws = await h.op<WorkspaceBinding>('create', 'a', { repo: checkout });
+    await h.commit(ws, 'member.txt', 'member\n');
+    expect(await git(checkout, 'status', '--porcelain')).toBe('');
+    // The bare repository itself is no checkout, and nobody is told to stop it being bare.
+    await expect(h.op('create', 'b', { repo: store })).rejects.toThrow('repo is not a Git checkout: ' + store);
   }, 30_000);
 
   it('writes the files of a worktree registered before an interrupted create', async () => {

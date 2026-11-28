@@ -253,6 +253,18 @@ describe.skipIf(!mounts)('wsfs workspaces', () => {
     expect(await git(a.ws.path, 'status', '--porcelain')).toBe('?? draft.txt');
   }, 60_000);
 
+  it('stays a worktree when the shared repository is made bare', async () => {
+    const h = await fixture();
+    // The repository reads what a worktree says for itself, as after `git sparse-checkout`: only then does a shared
+    // `core.bare` reach a linked worktree, and a wsfs workspace is one.
+    await git(h.repo, 'config', 'extensions.worktreeConfig', 'true');
+    const a = await h.member('a');
+    await git(h.repo, 'config', 'core.bare', 'true');
+    expect(await git(a.ws.path, 'status', '--porcelain')).toBe('');
+    await a.commit('after.txt', 'after\n');
+    expect(await h.manager.binding(h.root, h.state.workflowId, a.ws.id, signal())).toMatchObject({ id: a.ws.id, status: 'ready' });
+  }, 60_000);
+
   it('removes a workspace with what it holds, and stops serving after the last one', async () => {
     const h = await fixture();
     const a = await h.member('a'), b = await h.member('b');
