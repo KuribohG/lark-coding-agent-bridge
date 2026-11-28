@@ -214,6 +214,15 @@ describe('landing members\' work on a shared branch', () => {
     expect(await h.runs()).toHaveLength(1);
   }, 60_000);
 
+  it('runs the checks and the precheck with Git told to leave the index unlocked when it only reads', async () => {
+    const h = await fixture();
+    // `git status` locks the index to save what it refreshed unless it is told not to, and a check that is stopped then leaves the lock.
+    const unlocked = (where: string) => node(`if(process.env.GIT_OPTIONAL_LOCKS!=='0'){console.error('${where}: GIT_OPTIONAL_LOCKS is '+process.env.GIT_OPTIONAL_LOCKS);process.exit(3)}`);
+    await h.configure([unlocked('checks')], { precheck: [unlocked('precheck')] });
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 1 });
+  }, 60_000);
+
   it('lets the checks print as much as they like and reports the end of it', async () => {
     const h = await fixture();
     const noisy = (code: number) => node(`process.stdout.write('x'.repeat(3e6)+'last line');process.stderr.write('e'.repeat(3e6)+'last error');process.exitCode=${code}`);
@@ -846,6 +855,33 @@ describe('taking a submission out of the queue', () => {
       { key: 'item-slow', member: 'slow', outcome: 'withdrawn', headCommit: slow.submitted().headCommit, commits: 1 }]);
     expect(again).toMatchObject({ outcome: 'done', head: await h.head(), checks: [{ submissions: 2, passed: true }] });
     expect(byKey(again)).toMatchObject([{ key: 'item-a', outcome: 'landed' }, { key: 'item-c', outcome: 'landed' }]);
+  }, 60_000);
+
+  it('asks the check it stops to end, so that the lock it held in the train\'s Git directory is gone when the train runs again', async () => {
+    const h = await fixture();
+    const holds = join(h.dir, 'holds');
+    // With slow.txt on the train the check holds the lock of the train's index as a Git command would, and removes it
+    // when it is asked to stop, as Git does. One that is killed leaves it, and the reset of the next run fails on it.
+    const check = node(`const fs=require('fs'),cp=require('child_process');fs.appendFileSync(${JSON.stringify(h.log)},process.cwd()+'\\n');`
+      + `if(fs.existsSync('slow.txt')){const lock=cp.execFileSync('git',['rev-parse','--absolute-git-dir']).toString().trim()+'/index.lock';fs.writeFileSync(lock,'');`
+      + `process.on('SIGTERM',()=>{fs.rmSync(lock);process.exit(1)});fs.writeFileSync(${JSON.stringify(holds)},lock);setInterval(()=>{},1000)}`
+      + `else if(fs.existsSync('block.txt')){const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(h.gate)}))clearInterval(t)},10)}`);
+    const landing = await h.configure([check]);
+    const a = await h.member('a'), slow = await h.member('slow');
+    await a.commit('a.txt', 'a\n'); await slow.commit('slow.txt', 's\n');
+    const { first, rest } = await behind(h, 2, () => [a.land(), slow.land()]);
+    await writeFile(h.gate, '');
+    expect(await first).toMatchObject({ status: 'landed' });
+    await vi.waitFor(async () => expect(await readFile(holds, 'utf8').catch(() => '')).toContain('index.lock'), { timeout: 20_000, interval: 20 });
+    const lock = await readFile(holds, 'utf8');
+    expect(h.manager.withdraw(h.state.workflowId, slow.submitted().headCommit, 'Withdrawn by lead: its test never ends')).toBe('withdrawn');
+    expect(await rest[1]).toMatchObject({ status: 'withdrawn' });
+    // The other lands at once: the train did not have to wait out a lock nobody holds.
+    expect(await rest[0]).toMatchObject({ status: 'landed' });
+    await expect(readFile(lock)).rejects.toThrow();
+    expect((await h.branch()).retrying).toBeUndefined();
+    expect((await h.trains()).map(train => train.outcome)).toEqual(['done', 'restacked', 'done']);
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n').sort()).toEqual(['a.txt', 'block.txt', 'shared.txt']);
   }, 60_000);
 
   it('does not stop the check for a withdrawn submission that added no commit to the stack', async () => {

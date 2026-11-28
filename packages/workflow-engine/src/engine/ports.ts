@@ -22,6 +22,8 @@ export interface WorkflowProcesses {
   spawn(command: string, args: readonly string[], options: SpawnOptions): ChildProcess;
   /** Kills a child whose process group cannot be signalled (Windows). */
   killTree(child: ChildProcess): void;
+  /** How long a command that is being stopped has to end by itself before it is killed; three seconds when left out. */
+  stopGraceMs?: number;
 }
 
 export interface WorkerRunSpec {

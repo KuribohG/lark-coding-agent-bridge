@@ -22,6 +22,14 @@ export interface CommandOutput {
 }
 const OUTPUT_LIMIT = 2_000_000;
 const KEPT_BYTES = 65_536;
+/**
+ * How long a command that is being stopped has to end by itself before it is killed. It is asked first because of
+ * what it may be in the middle of: a Git that is killed leaves its lock files behind, and the next Git command in
+ * that worktree fails on them until someone removes them, while a Git that is asked to stop removes them itself.
+ */
+const STOP_GRACE_MS = 3_000;
+/** How long after the kill the processes of a stopped command are waited for; one that is gone but not reaped still counts as there. */
+const STOP_REAP_MS = 1_000;
 
 /** Calls `each` with the records of a stream as its chunks arrive; every record ends with the separator. */
 export function records(each: (record: string) => void, separator = '\0'): (chunk: Buffer) => void {
@@ -57,7 +65,12 @@ function holder(keep: 'head' | 'tail' | undefined, bytes: number) {
 
 export const nodeProcesses: WorkflowProcesses = { spawn: (command, args, options) => spawn(command, [...args], options), killTree: child => { child.kill('SIGKILL'); } };
 
-/** Foreground, bounded commands. Keep the promise pending until process stdio closes. */
+/**
+ * Foreground, bounded commands. Keep the promise pending until process stdio closes. A command that is stopped (the
+ * signal, its time limit, too much output) is sent SIGTERM with everything it started, and SIGKILL when that has not
+ * ended it in time; the promise then stays pending until none of those processes is left, since what the caller does
+ * next is for the same directory.
+ */
 export function workspaceCommand(command: string, args: string[], cwd: string, signal: AbortSignal,
   timeoutMs = 60_000, env = process.env, processes = nodeProcesses, output: CommandOutput = {}): Promise<CommandResult> {
   signal.throwIfAborted();
@@ -67,12 +80,15 @@ export function workspaceCommand(command: string, args: string[], cwd: string, s
     // What a scanned command writes to stderr is only ever read as the reason it failed.
     const keep = output.keep ?? (output.scan ? 'tail' : undefined), room = output.bytes ?? KEPT_BYTES;
     const stdout = holder(keep, room), stderr = holder(keep, room);
-    let bytes = 0, failure: Error | undefined;
+    let bytes = 0, failure: Error | undefined, killer: NodeJS.Timeout | undefined, killedAt: number | undefined;
+    // The command leads a process group of its own, so what it started is signalled with it.
+    const group = (name: NodeJS.Signals | 0): boolean => { try { process.kill(-child.pid!, name); return true; } catch { return false; } };
     const stop = (reason: Error) => {
-      failure ??= reason;
-      if (process.platform !== 'win32' && child.pid) {
-        try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
-      } else processes.killTree(child);
+      if (failure) return;
+      failure = reason;
+      if (process.platform === 'win32' || !child.pid) { processes.killTree(child); return; }
+      if (!group('SIGTERM')) child.kill('SIGTERM');
+      killer = setTimeout(() => { killedAt = Date.now(); if (!group('SIGKILL')) child.kill('SIGKILL'); }, processes.stopGraceMs ?? STOP_GRACE_MS);
     };
     const abort = () => stop(new Error('Workspace command aborted'));
     const timer = setTimeout(() => stop(new Error('Workspace command timed out')), timeoutMs);
@@ -95,7 +111,14 @@ export function workspaceCommand(command: string, args: string[], cwd: string, s
     child.once('error', error => { failure = error; });
     child.once('close', (code, killedBy) => {
       clearTimeout(timer); signal.removeEventListener('abort', abort);
-      if (failure) reject(failure); else resolve({ code: code ?? -1, stdout: stdout.text(), stderr: stderr.text(), ...(killedBy ? { signal: killedBy } : {}) });
+      if (!failure) { resolve({ code: code ?? -1, stdout: stdout.text(), stderr: stderr.text(), ...(killedBy ? { signal: killedBy } : {}) }); return; }
+      const failed = failure;
+      // A process that let go of the command's output may still be putting its house in order, or be yet to be killed.
+      const ended = () => {
+        if (!killer || !group(0) || (killedAt !== undefined && Date.now() - killedAt > STOP_REAP_MS)) { clearTimeout(killer); reject(failed); }
+        else setTimeout(ended, 20);
+      };
+      ended();
     });
   });
 }

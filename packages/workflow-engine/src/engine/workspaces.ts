@@ -33,6 +33,13 @@ export const CLONE_REMOTE = 'bridge-source';
 /** Where a clone offers the commit the source is about to fetch. */
 const CLONE_PUBLISH_REF = 'refs/bridge-workflow/publish';
 const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' });
+/**
+ * What a check runs with, a precheck in a member's worktree and the checks on a train alike. Its Git commands that
+ * only read, `git status` above all, leave the index unlocked: by default they lock it to save what they refreshed,
+ * and a check that is stopped at that moment (its train makes way, or its time is up) can leave the lock behind, on
+ * which the next Git command in the worktree fails. On a train that is the reset every run starts with.
+ */
+const checkEnv = () => ({ ...gitEnv(), GIT_OPTIONAL_LOCKS: '0' });
 
 /**
  * A counting semaphore: callers beyond the bound wait for a free slot instead of all running at once. A slot that
@@ -1107,7 +1114,7 @@ export class WorkflowWorkspaces {
     for (const command of commands) {
       // Only the end of a check's output is reported, so only that is held: a build may print as much as it likes.
       const result = await workspaceCommand(command.argv[0]!, command.argv.slice(1), path, signal,
-        Math.max(1, Math.min(command.timeoutMs, deadlineAt - Date.now())), gitEnv(), this.processes, { keep: 'tail' });
+        Math.max(1, Math.min(command.timeoutMs, deadlineAt - Date.now())), checkEnv(), this.processes, { keep: 'tail' });
       results.push({ argv: command.argv, code: result.code, stdout: result.stdout.slice(-16000), stderr: result.stderr.slice(-16000) });
       if (result.code) break;
     }

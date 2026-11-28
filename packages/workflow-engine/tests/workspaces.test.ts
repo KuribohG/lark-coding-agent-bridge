@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowWorkspaces } from '../src/engine/workspaces';
-import { records, workspaceCommand, type CommandOutput } from '../src/engine/workspace-process';
+import { nodeProcesses, records, workspaceCommand, type CommandOutput } from '../src/engine/workspace-process';
 import { LARGE_PATHS, largeCommit, printed } from './helpers/large-tree';
 import { WorkflowKernel } from '../src/engine/kernel';
 import type { WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceIntegration } from '../src/engine/workspace-types';
@@ -440,4 +440,55 @@ describe.skipIf(process.platform === 'win32')('worktrees of a repository with mo
     // Each name is cut to 200 characters in the refusal.
     await expect(h.create('member')).rejects.toThrow(/uncommitted changes \((\?\? stray\/u{191}, ){5}and 9595 more, in .*repo\)/);
   }, 120_000);
+});
+
+describe.skipIf(process.platform === 'win32')('stopping a workspace command', () => {
+  const start = (code: string, stop: AbortSignal, graceMs?: number) => workspaceCommand(process.execPath, ['-e', code], tmpdir(), stop, 60_000, process.env,
+    graceMs === undefined ? undefined : { ...nodeProcesses, stopGraceMs: graceMs });
+  const place = async () => { const dir = await mkdtemp(join(tmpdir(), 'workflow-stop-')); closes.push(() => rm(dir, { recursive: true, force: true })); return dir; };
+  const soon = { timeout: 20_000, interval: 10 };
+
+  it('asks the command to stop, so that it removes what it must not leave behind', async () => {
+    const dir = await place(), lock = join(dir, 'index.lock'), stop = new AbortController();
+    // As Git does with the lock of an index: there while it works, removed when it is asked to stop.
+    const pending = start(`const fs=require('fs');fs.writeFileSync(${JSON.stringify(lock)},'');process.on('SIGTERM',()=>{fs.rmSync(${JSON.stringify(lock)});process.exit(0)});setInterval(()=>{},1000)`, stop.signal);
+    await vi.waitFor(async () => expect(await exists(lock)).toBe(true), soon);
+    stop.abort();
+    await expect(pending).rejects.toThrow('Workspace command aborted');
+    expect(await exists(lock)).toBe(false);
+  }, 30_000);
+
+  it('kills a command that does not stop when asked, and what it started with it', async () => {
+    const dir = await place(), beat = join(dir, 'beat'), stop = new AbortController();
+    // Neither the command nor the process it started ends when asked; that one has let go of the command's output.
+    const child = `process.on('SIGTERM',()=>{});const fs=require('fs');setInterval(()=>fs.appendFileSync(${JSON.stringify(beat)},'x'),10)`;
+    const pending = start(`process.on('SIGTERM',()=>{});require('child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'});setInterval(()=>{},1000)`, stop.signal, 300);
+    await vi.waitFor(async () => expect(await exists(beat)).toBe(true), soon);
+    const asked = Date.now();
+    stop.abort();
+    await expect(pending).rejects.toThrow('Workspace command aborted');
+    expect(Date.now() - asked).toBeGreaterThanOrEqual(280);
+    // Nothing of it is left running once the command has been answered for.
+    const size = async () => (await readFile(beat)).length, before = await size();
+    await new Promise(resolve => { setTimeout(resolve, 200); });
+    expect(await size()).toBe(before);
+  }, 30_000);
+
+  it('waits for what the command started to finish stopping, though the command itself is gone', async () => {
+    const dir = await place(), up = join(dir, 'up'), done = join(dir, 'done'), stop = new AbortController();
+    // The command ends at once when asked; what it started takes a moment to put its house in order.
+    const child = `const fs=require('fs');process.on('SIGTERM',()=>setTimeout(()=>{fs.writeFileSync(${JSON.stringify(done)},'');process.exit(0)},300));fs.writeFileSync(${JSON.stringify(up)},'');setInterval(()=>{},1000)`;
+    const pending = start(`require('child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'});setInterval(()=>{},1000)`, stop.signal);
+    await vi.waitFor(async () => expect(await exists(up)).toBe(true), soon);
+    stop.abort();
+    await expect(pending).rejects.toThrow('Workspace command aborted');
+    expect(await exists(done)).toBe(true);
+  }, 30_000);
+
+  it('stops a command whose time is up the same way', async () => {
+    const dir = await place(), lock = join(dir, 'index.lock');
+    const code = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(lock)},'');process.on('SIGTERM',()=>{fs.rmSync(${JSON.stringify(lock)});process.exit(0)});setInterval(()=>{},1000)`;
+    await expect(workspaceCommand(process.execPath, ['-e', code], tmpdir(), signal(), 1_500)).rejects.toThrow('Workspace command timed out');
+    expect(await exists(lock)).toBe(false);
+  }, 30_000);
 });
